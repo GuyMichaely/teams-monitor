@@ -50,11 +50,11 @@ tfs-agent/          VM-side TFS worker — code-complete, NEVER deployed, NEVER 
                     against live TFS. run_agent_task is an unimplemented TODO.
 scripts/
   start-stack.ps1   THE canonical startup: starts GUI + orchestrator + cloudflared tunnel,
-                    each only if not already running (safe to re-run). Loads GUI_TOKEN from
-                    the user env store.
+                    each only if not already running (safe to re-run). Loads GUI_TOKEN and
+                    GEMINI_API_KEY from the user env store.
   launch-teams.ps1  Manual Teams launch with debug port.
-config/config.json  Live config (GITIGNORED — contains the Gemini API key). Example in
-                    config/config.example.json documents every knob.
+config/config.json  Live tracked config. Never put secrets here; Gemini uses the env var
+                    named by brain.apiKeyEnv (currently GEMINI_API_KEY).
 context/user-profile.md  The brain's user context, editable live from the dashboard.
 data/               Runtime state (gitignored): state.json, activity.jsonl, logs,
                     heartbeat.json, STOP file.
@@ -83,8 +83,8 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
   cmd //c "gradlew.bat assembleDebug --no-daemon"
   ```
   The GUI serves the result at /app-debug.apk immediately (no copy step).
-- After editing server code, restart processes with the GUI_TOKEN env loaded —
-  use the pattern in scripts/start-stack.ps1 (read from the user env store).
+- After editing server code, restart processes with GUI_TOKEN and GEMINI_API_KEY
+  loaded — use the pattern in scripts/start-stack.ps1 (read from the user env store).
   The orchestrator needs GUI_TOKEN too: alert POSTs to the hub are authenticated.
 
 ## Hard-won gotchas (do not rediscover these)
@@ -138,8 +138,9 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
 
 - `GUI_TOKEN` — user-level Windows env var. Guards /api/*, /ws/alerts,
   dashboard overlay. (Not /app-debug.apk — public by decision.)
-- Gemini API key — `config/config.json` → `brain.apiKey` (gitignored; user
-  said hardcoding there is fine). `brain.apiKeyEnv` is the env fallback.
+- Gemini API key — `GEMINI_API_KEY` user-level Windows env var for local runs.
+  `brain.apiKeyEnv` names the env var. Use a GitHub Actions repository secret
+  with the same name when a workflow needs the key; never hardcode it in tracked files.
 - `config/fcm-service-account.json` — expected path for FCM (gitignored),
   doesn't exist yet; FCM never set up.
 - `TFS_AGENT_TOKEN` — env var for the TFS dispatcher (disabled).
@@ -154,7 +155,7 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
 - The app allows OkHttp; no Compose, plain Views, appcompat.
 - Minimal diffs; match surrounding style; don't refactor opportunistically.
 - Don't run git mutations without explicit instruction.
-- data/ and config/config.json are gitignored — never commit them.
+- data/ is gitignored. config/config.json is tracked and must never contain secrets.
 
 ## Where things stand / likely next steps
 
