@@ -1,140 +1,91 @@
 # Teams Monitor — Android companion app
 
-Personal-use, sideloaded Android app for the Teams-monitoring system in this repo.
-Not for Play Store.
+Personal-use, sideloaded Android app for the Teams monitoring system in this repo.
 
-- **Main screen (native)**: three large quick toggles (**Alarm sound**,
-  **Notifications**, **Alarm when screen is on** — green ON / grey OFF, they
-  flip the same settings as the Settings screen and take effect immediately),
-  connection status (WebSocket state, server URL, last alert received), plus
-  buttons: **Open dashboard**, **Settings**, **Disable battery optimization**,
-  and **Test alarm** (plays the alarm with the current settings so you can
-  tune it; press again — now labeled **Stop alarm** — to cut it short).
-- **Dashboard**: full-screen WebView wrapping the web dashboard, reached via
-  the Cloudflare tunnel (`https://gui.<domain>`). Server URL is set in the
-  app's Settings screen. Plain HTTP is intentionally unsupported (cleartext
-  traffic is disabled) — https only.
-- **Alerts**: foreground service holds a WebSocket to
-  `ws(s)://<host>:8090/ws/alerts` and, for each alert, posts a HIGH-importance
-  (silent) notification and plays an alarm sound via MediaPlayer on the alarm
-  stream (system alarm ringtone by default, or the bundled alarm.wav — see
-  Settings). Behavior is configurable in Settings (see below). If an access token is configured it is appended as `?access_token=<token>` to the
-  WebSocket URL. The dashboard's own login overlay handles token entry for the
-  WebView — the app does not inject HTTP headers.
+## What it does
+
+The native main screen shows WebSocket connection status, server URL, the last alert, quick alert toggles, and buttons for the web dashboard, Settings, battery-optimization exemption, and alarm testing.
+
+The foreground `AlertService` maintains a WebSocket connection to the configured HTTPS server. For the normal Cloudflare setup, configure:
+
+```text
+Server URL: https://gui.guymichaely.com
+Access token: same value as GUI_TOKEN on the laptop
+```
+
+The app converts that to the WSS alert endpoint and supplies the token as the WebSocket access token. Plain HTTP is intentionally unsupported.
+
+Alerts can show a notification and/or play the alarm stream. Do Not Disturb bypass requires notification-policy access. There is deliberately no boot receiver; after reboot, open the app once.
 
 ## Settings
 
-Two sections:
+Connection settings:
 
-- **Connection**: server URL (`https://gui.<domain>`) and optional access
-  token. Saving reconnects the alert listener immediately.
-- **Alerts**:
-  - *Play alarm sound* (default on) — master switch for the alarm.
-  - *Show notification* (default on) — master switch for the notification.
-  - *Alarm even when screen is on* (default off) — when off, the alarm sound
-    is suppressed while the screen is on/interactive (the notification still
-    posts); when on, it always sounds.
-  - *Use system alarm ringtone* (default on) — the phone's built-in alarm
-    ringtone; turn off to use the bundled alarm.wav instead.
-  - *Alarm volume* (0–100, default 100) — scales within the alarm stream.
-  - *Alarm duration* (seconds, default 8) — how long the loop plays.
+- Server URL
+- Access token
 
-The main screen's **Test alarm** button is a toggle: it plays the alarm with
-these settings (ignoring the screen-on rule — it's an explicit test) and
-stops it on a second press.
+Alert settings:
 
-A playing alarm stops when: its duration elapses, you press **Stop alarm**,
-you press a **physical volume button** (any stream volume change while
-playing counts as dismiss), you turn the screen **on** (unconditional — even
-with *Alarm even when screen is on* enabled), you move the volume slider in
-Settings, or the main screen comes to the foreground.
+- Play alarm sound
+- Show notification
+- Alarm even when screen is on
+- Use system alarm ringtone
+- Alarm volume
+- Alarm duration
 
-## Prerequisites
+The main screen's **Test alarm** button uses the current alarm settings and becomes **Stop alarm** while the sound is playing.
 
-Two ways to get a toolchain:
+## Recommended install/update path: GitHub Release
 
-- **In-repo toolchain (already set up on the dev machine)**: the repo's
-  gitignored `tools/` dir holds a portable JDK 17 (`tools/jdk17`), the Android
-  SDK with platform 34 + build-tools + adb (`tools/android-sdk`), and Gradle
-  8.9 (`tools/gradle`). From Git Bash:
-  ```bash
-  export JAVA_HOME="$PWD/tools/jdk17"
-  export ANDROID_HOME="$PWD/tools/android-sdk"
-  export ANDROID_SDK_ROOT="$ANDROID_HOME"
-  ```
-- **Android Studio** (Koala or newer), with **Android SDK 34** installed
-  (SDK Manager → Android 14). JDK 17 is bundled with Android Studio.
+The repository workflow `.github/workflows/android-apk.yml` builds the app on Android changes. Once signing is configured, it publishes a signed APK to a stable GitHub Release tagged `android-latest` and also stores the APK as a workflow artifact.
 
-Either way: the laptop's GUI server must be running (`node src/cli.mjs gui`)
-for the app to connect.
+One-time signing setup from the Windows development machine:
 
-## First open in Android Studio
+```powershell
+.\scripts\setup-android-signing.ps1
+```
 
-1. Open the `android-app/` directory (not the repo root).
-2. Trust the project when prompted.
-3. If asked, install Android SDK 34 via the SDK Manager prompt.
-4. If `gradlew` hasn't been generated yet (no checked-in wrapper jar), let
-   Android Studio sync once — it generates it from
-   `gradle/wrapper/gradle-wrapper.properties` (Gradle 8.9). CLI alternative:
-   `gradle wrapper` once with a local Gradle.
+The script:
 
-## Build & install
+1. Creates or reuses a persistent Android signing key under `%USERPROFILE%\.teams-monitor`.
+2. Stores the keystore and password as GitHub Actions secrets.
+3. Triggers the APK workflow.
 
-- From Android Studio: **Build → Build APK(s)** →
-  `app/build/outputs/apk/debug/app-debug.apk`.
-- From CLI (with the in-repo toolchain):
-  ```bash
-  cd android-app
-  ./gradlew assembleDebug
-  ```
+It requires the GitHub CLI (`gh`) to be authenticated and a JDK 17 `keytool` either on PATH or in the local `tools\jdk17` toolchain.
 
-The laptop's GUI server serves the latest build straight from the Gradle
-output dir, so installing is: on the phone (same Wi-Fi), open
-`http://<laptop-LAN-IP>:8090/app-debug.apk` in the browser, download, and
-allow install from unknown sources when prompted.
+**Keep the `%USERPROFILE%\.teams-monitor` signing-key backup.** Android updates must be signed by the same key as the installed app.
 
-## Testing (tunnel only)
+After setup, Android-related pushes automatically refresh the `android-latest` Release. Download `teams-monitor.apk` from that Release on the phone and install it over the existing copy.
 
-There is no localhost/`adb reverse` test path — cleartext HTTP is disabled.
-Run the Cloudflare tunnel, then in the app set the server URL to
-`https://gui.<domain>` (and the access token if the server requires one).
+## Local build
 
-The first launch opens Settings automatically; afterwards use the **Settings**
-button on the main screen (or the overflow menu). Saving connection settings
-restarts the alert listener; the dashboard picks up the new URL next time it
-opens.
+Requirements are JDK 17, Android SDK 34, and Gradle 8.9 (the wrapper is checked in).
 
-## Do Not Disturb
+```powershell
+cd android-app
+.\gradlew.bat assembleDebug
+```
 
-The `alerts2` channel is created with `setBypassDnd(true)`, but that only
-takes effect after the user grants the app notification-policy access. The app
-asks for this on first run (the system DND-access settings screen opens once),
-and until access is granted a red banner sits at the top of the main screen
-warning that alarms may be silenced — its **Allow** button reopens the
-settings screen.
+Debug output:
 
-## Regenerating the alarm sound
+```text
+app\build\outputs\apk\debug\app-debug.apk
+```
 
-`node tools/gen-alarm.mjs` rewrites `app/src/main/res/raw/alarm.wav`
-(22050 Hz 16-bit mono, three ascending beeps repeated 3x, ~2.1s).
-Only used when *Use system alarm ringtone* is off. The sound is played by the
-app via MediaPlayer (alarm stream), not bound to
-the notification channel, so a new build with a new WAV just works — no
-channel-reset gymnastics.
+The local GUI also serves the current debug build at `/app-debug.apk` when that file exists.
 
-## Battery optimization (known weak point)
+## Testing
 
-WebSocket connections doze with the phone. The **Disable battery
-optimization** button (also in the overflow menu) fires
-`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`; accept the prompt. Do this once
-after installing. Even then, OEM task killers (Xiaomi, Samsung, etc.) may
-still reap the service, and there is deliberately **no boot receiver** — after
-a reboot, open the app once to restart the listener.
+The intended remote connection path is the Cloudflare tunnel. Run the GUI and tunnel, then set the app's server URL to `https://gui.guymichaely.com` and use the same access token as the server's `GUI_TOKEN`.
+
+Saving connection settings reconnects the alert listener immediately. The dashboard WebView uses the same server URL.
+
+## Do Not Disturb / battery behavior
+
+The `alerts2` notification channel is deliberately silent; alarm audio is played through `MediaPlayer` on the alarm stream. The app requests notification-policy access so alarms can work under DND.
+
+Use **Disable battery optimization** once after installation. OEM background-process policies can still terminate the foreground service, and there is deliberately no boot receiver.
 
 ## FCM later
 
-Alert handling is centralized in `AlertNotifier.alert(...)`; a future
-`FirebaseMessagingService` should parse its data payload and call that instead
-of duplicating notification code. The WebSocket path (`AlertService`) then
-becomes the fallback for when FCM is unavailable. No Firebase dependencies are
-in the build yet.
+Alert handling is centralized in `AlertNotifier.alert(...)`; a future `FirebaseMessagingService` can call that same path. The current WebSocket connection remains the active transport.
