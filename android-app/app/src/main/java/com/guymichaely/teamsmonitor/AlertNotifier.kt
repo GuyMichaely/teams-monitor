@@ -38,10 +38,6 @@ object AlertNotifier {
     /** Channel settings are immutable after creation — get them right here. */
     fun createChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
-
-        // v1 channel had the sound baked in; the alarm now plays via MediaPlayer
-        // (AlertNotifier.playAlarm), so the channel itself must be SILENT —
-        // otherwise every alert double-plays. Clean up the legacy channel.
         nm.deleteNotificationChannel(CHANNEL_ALERTS_LEGACY)
 
         val alerts = NotificationChannel(
@@ -49,10 +45,9 @@ object AlertNotifier {
             context.getString(R.string.channel_alerts),
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            setSound(null, null) // silent on purpose — see playAlarm
+            setSound(null, null)
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 400, 200, 400)
-            // only takes effect if the user grants DND access
             setBypassDnd(true)
         }
 
@@ -65,20 +60,7 @@ object AlertNotifier {
         nm.createNotificationChannels(listOf(alerts, service))
     }
 
-    // ---- alarm playback ------------------------------------------------------
-    //
-    // The alarm sound is played by the app on the ALARM stream rather than via
-    // the notification channel: alarm-stream volume (not notification volume),
-    // audible under Do-Not-Disturb (alarms are DND-exempt unless the user set
-    // total silence), and no dependence on immutable channel settings.
-
     private var player: MediaPlayer? = null
-
-    // Volume-button stop: apps can't intercept hardware volume keys in the
-    // background, so while playing we watch the system volume settings —
-    // any press changes a stream volume, and we treat that as "dismiss".
-    // Our own MediaPlayer.setVolume doesn't touch system volumes, so the
-    // app's volume slider can't self-trigger this.
     private var volumeObserver: ContentObserver? = null
     private var observerContext: Context? = null
 
@@ -87,30 +69,46 @@ object AlertNotifier {
 
     @Synchronized
     fun playAlarm(context: Context, volume: Float = 1f, durationMs: Long = 8000) {
-        stopAlarm()
-        val sound = if (Prefs(context).useSystemRingtone) {
+        stopAlarm("replaced")
+        val systemRingtone = Prefs(context).useSystemRingtone
+        val sound = if (systemRingtone) {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: Settings.System.DEFAULT_RINGTONE_URI
         } else {
             Uri.parse("android.resource://${context.packageName}/${R.raw.alarm}")
         }
         val p = MediaPlayer()
-        p.setDataSource(context, sound)
-        p.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
-        )
-        p.setVolume(volume, volume)
-        p.isLooping = true
-        p.prepare()
-        p.start()
+        try {
+            p.setDataSource(context, sound)
+            p.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            p.setVolume(volume, volume)
+            p.isLooping = true
+            p.prepare()
+            p.start()
+        } catch (e: Exception) {
+            p.release()
+            AppLog.event(
+                context,
+                "alarm_failure",
+                "error=${e.javaClass.simpleName}:${e.message ?: ""} systemRingtone=$systemRingtone"
+            )
+            throw e
+        }
         player = p
+        AppLog.event(
+            context,
+            "alarm_started",
+            "volume=$volume durationMs=$durationMs systemRingtone=$systemRingtone"
+        )
         val appContext = context.applicationContext
         volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
-                if (isAlarmPlaying()) stopAlarm()
+                if (isAlarmPlaying()) stopAlarm("volume_changed")
             }
         }.also {
             appContext.contentResolver.registerContentObserver(
@@ -119,14 +117,14 @@ object AlertNotifier {
         }
         observerContext = appContext
         notifyPlaybackChanged()
-        Handler(Looper.getMainLooper()).postDelayed({ stopAlarm() }, durationMs)
+        Handler(Looper.getMainLooper()).postDelayed({ stopAlarm("timeout") }, durationMs)
     }
 
     @Synchronized
     fun isAlarmPlaying(): Boolean = player?.isPlaying == true
 
     @Synchronized
-    fun stopAlarm() {
+    fun stopAlarm(reason: String = "unspecified") {
         val p = player ?: return
         try { p.stop() } catch (_: Exception) { /* already stopped */ }
         p.release()
@@ -134,6 +132,8 @@ object AlertNotifier {
         volumeObserver?.let { observerContext?.contentResolver?.unregisterContentObserver(it) }
         volumeObserver = null
         observerContext = null
+        observerContext = null
+        AppLog.event(observerContext ?: return notifyPlaybackChanged(), "alarm_stopped", "reason=$reason")
         notifyPlaybackChanged()
     }
 
@@ -144,23 +144,46 @@ object AlertNotifier {
     /** Applies the user's alert settings: notification on/off, alarm on/off + screen-on rule. */
     fun alert(context: Context, chat: String, author: String, text: String) {
         val prefs = Prefs(context)
+        val screenOn = context.getSystemService(PowerManager::class.java)?.isInteractive == true
+        val alarmWillPlay = prefs.alarmEnabled && (prefs.alarmWhenScreenOn || !screenOn)
+        AppLog.event(
+            context,
+            "alert_dispatch",
+            "chat=$chat author=$author notifEnabled=${prefs.notifEnabled} alarmEnabled=${prefs.alarmEnabled} screenOn=$screenOn alarmWhenScreenOn=${prefs.alarmWhenScreenOn} alarmWillPlay=$alarmWillPlay"
+        )
         if (prefs.notifEnabled) show(context, chat, author, text)
-        val screenOn =
-            context.getSystemService(PowerManager::class.java)?.isInteractive == true
-        if (prefs.alarmEnabled && (prefs.alarmWhenScreenOn || !screenOn)) {
+        else AppLog.event(context, "notification_suppressed", "reason=app_setting")
+
+        if (alarmWillPlay) {
             playAlarm(
                 context,
                 volume = prefs.alarmVolume / 100f,
                 durationMs = prefs.alarmDurationSec * 1000L
             )
+        } else {
+            val reason = if (!prefs.alarmEnabled) "app_setting" else "screen_on_rule"
+            AppLog.event(context, "alarm_suppressed", "reason=$reason")
         }
     }
 
     fun show(context: Context, chat: String, author: String, text: String) {
         if (Build.VERSION.SDK_INT >= 33 &&
-            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) return
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            AppLog.event(context, "notification_suppressed", "reason=permission")
+            return
+        }
+
+        val compatManager = NotificationManagerCompat.from(context)
+        if (!compatManager.areNotificationsEnabled()) {
+            AppLog.event(context, "notification_suppressed", "reason=os_disabled")
+            return
+        }
+        val nm = context.getSystemService(NotificationManager::class.java)
+        if (nm?.getNotificationChannel(CHANNEL_ALERTS)?.importance == NotificationManager.IMPORTANCE_NONE) {
+            AppLog.event(context, "notification_suppressed", "reason=channel_disabled")
+            return
+        }
 
         val tap = PendingIntent.getActivity(
             context, 0,
@@ -178,6 +201,8 @@ object AlertNotifier {
             .setContentIntent(tap)
             .build()
 
-        NotificationManagerCompat.from(context).notify(nextId.incrementAndGet(), n)
+        val id = nextId.incrementAndGet()
+        compatManager.notify(id, n)
+        AppLog.event(context, "notification_posted", "id=$id chat=$chat author=$author")
     }
 }
