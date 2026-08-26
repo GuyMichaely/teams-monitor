@@ -28,7 +28,9 @@ import java.util.concurrent.TimeUnit
 class AlertService : Service() {
 
     private lateinit var prefs: Prefs
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .pingInterval(30, TimeUnit.SECONDS)
+        .build()
     private lateinit var executor: ScheduledExecutorService
     @Volatile private var webSocket: WebSocket? = null
     private var retries = 0
