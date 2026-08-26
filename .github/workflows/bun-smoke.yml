@@ -1,0 +1,35 @@
+name: Bun runtime smoke test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/smoke-gui.mjs"
+      - "scripts/start-stack.ps1"
+      - "package.json"
+      - ".github/workflows/bun-smoke.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "scripts/smoke-gui.mjs"
+      - "scripts/start-stack.ps1"
+      - "package.json"
+      - ".github/workflows/bun-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Show Bun version
+        run: bun --version
+
+      - name: Test GUI and WebSocket upgrade
+        run: bun scripts/smoke-gui.mjs
