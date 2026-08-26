@@ -3,6 +3,8 @@ package com.guymichaely.teamsmonitor
 import android.Manifest
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -14,6 +16,7 @@ import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -28,7 +31,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val notifPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            AppLog.event(this, "notification_permission_result", "granted=$granted")
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,19 +41,23 @@ class MainActivity : AppCompatActivity() {
 
         prefs = Prefs(this)
         AlertNotifier.createChannels(this)
+        AppLog.event(this, "main_create", "network=${AppLog.networkSummary(this)}")
 
         findViewById<View>(R.id.dnd_fix).setOnClickListener { openDndSettings() }
 
         findViewById<Button>(R.id.toggle_alarm_sound).setOnClickListener {
             prefs.alarmEnabled = !prefs.alarmEnabled
+            AppLog.event(this, "setting_changed", "alarmEnabled=${prefs.alarmEnabled}")
             refreshToggles()
         }
         findViewById<Button>(R.id.toggle_notifications).setOnClickListener {
             prefs.notifEnabled = !prefs.notifEnabled
+            AppLog.event(this, "setting_changed", "notifEnabled=${prefs.notifEnabled}")
             refreshToggles()
         }
         findViewById<Button>(R.id.toggle_screen_on).setOnClickListener {
             prefs.alarmWhenScreenOn = !prefs.alarmWhenScreenOn
+            AppLog.event(this, "setting_changed", "alarmWhenScreenOn=${prefs.alarmWhenScreenOn}")
             refreshToggles()
         }
 
@@ -72,9 +81,9 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btn_test_alarm).setOnClickListener {
             if (AlertNotifier.isAlarmPlaying()) {
-                AlertNotifier.stopAlarm()
+                AlertNotifier.stopAlarm("test_button")
             } else {
-                // explicit test: current sound/volume/duration, ignoring the screen-on rule
+                AppLog.event(this, "alarm_test_requested")
                 AlertNotifier.playAlarm(
                     this,
                     volume = prefs.alarmVolume / 100f,
@@ -82,6 +91,12 @@ class MainActivity : AppCompatActivity() {
                 )
             }
             refreshTestButton()
+        }
+        findViewById<Button>(R.id.btn_copy_diagnostics).setOnClickListener {
+            AppLog.event(this, "diagnostics_copied")
+            val clipboard = getSystemService(ClipboardManager::class.java)
+            clipboard?.setPrimaryClip(ClipData.newPlainText("Teams Monitor diagnostics", AppLog.report(this)))
+            Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
         }
 
         AlertService.start(this)
@@ -94,7 +109,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        AlertNotifier.stopAlarm() // user is here — silence any playing alert
+        AppLog.event(this, "main_resume", "network=${AppLog.networkSummary(this)}")
+        AlertNotifier.stopAlarm("app_resume")
         AlertNotifier.onPlaybackChanged = { refreshTestButton() }
         ContextCompat.registerReceiver(
             this, statusReceiver, IntentFilter(AlertState.ACTION_STATUS),
@@ -102,7 +118,7 @@ class MainActivity : AppCompatActivity() {
         )
         refreshStatus()
         refreshTestButton()
-        refreshToggles() // picks up changes made in SettingsActivity
+        refreshToggles()
 
         val nm = getSystemService(NotificationManager::class.java)
         val granted = nm?.isNotificationPolicyAccessGranted == true
@@ -158,20 +174,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openDndSettings() {
+        AppLog.event(this, "dnd_settings_opened")
         startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
     }
 
     private fun requestNotifPermission() {
         if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
+            AppLog.event(this, "notification_permission_requested")
             notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
     companion object {
-        private val COLOR_TOGGLE_ON = 0xFF2E7D32.toInt()  // green
-        private val COLOR_TOGGLE_OFF = 0xFF757575.toInt() // grey
+        private val COLOR_TOGGLE_ON = 0xFF2E7D32.toInt()
+        private val COLOR_TOGGLE_OFF = 0xFF757575.toInt()
     }
 }
