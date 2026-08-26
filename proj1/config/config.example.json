@@ -1,5 +1,5 @@
 {
-  "//": "Copy to config/config.json and edit. config.json is gitignored.",
+  "//": "Copy to config/config.json and edit. Keep secrets out of this tracked file.",
 
   "pollIntervalMs": 15000,
 
@@ -18,8 +18,7 @@
     "//model": "For gemini: a current flash-lite model, e.g. gemini-3.1-flash-lite. Check",
     "//model2": "GET https://generativelanguage.googleapis.com/v1beta/models with your key if 404s.",
     "model": "",
-    "//apiKey": "Gemini key can go here directly (config.json is gitignored) or in the env var below.",
-    "apiKey": "",
+    "//apiKeyEnv": "Gemini key must be supplied through this environment variable; never hardcode it here.",
     "apiKeyEnv": "GEMINI_API_KEY"
   },
 
