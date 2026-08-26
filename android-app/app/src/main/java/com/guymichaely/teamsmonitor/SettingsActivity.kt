@@ -41,7 +41,7 @@ class SettingsActivity : AppCompatActivity() {
         volume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 volumeValue.text = progress.toString()
-                if (fromUser) AlertNotifier.stopAlarm() // old volume no longer applies
+                if (fromUser) AlertNotifier.stopAlarm("settings_volume_changed")
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
@@ -56,6 +56,11 @@ class SettingsActivity : AppCompatActivity() {
             prefs.useSystemRingtone = useSystemRingtone.isChecked
             prefs.alarmVolume = volume.progress
             prefs.alarmDurationSec = duration.text.toString().toIntOrNull() ?: 8
+            AppLog.event(
+                this,
+                "settings_saved",
+                "server=${prefs.serverUrl} tokenConfigured=${prefs.token.isNotBlank()} alarmEnabled=${prefs.alarmEnabled} notifEnabled=${prefs.notifEnabled} alarmWhenScreenOn=${prefs.alarmWhenScreenOn} useSystemRingtone=${prefs.useSystemRingtone} alarmVolume=${prefs.alarmVolume} alarmDurationSec=${prefs.alarmDurationSec}"
+            )
             AlertService.reconnect(this)
             setResult(RESULT_OK)
             finish()
