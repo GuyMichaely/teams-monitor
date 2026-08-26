@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - .github/workflows/purge-history.yml
+  pull_request:
+    branches: [main]
+    types: [opened]
   workflow_dispatch:
 
 permissions:
@@ -16,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           persist-credentials: false
 
@@ -29,7 +33,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B main "$GITHUB_SHA"
+          git checkout -B main origin/main
           git filter-repo --force --sensitive-data-removal --invert-paths \
             --path data/ \
             --path proj1/data/ \
@@ -39,10 +43,10 @@ jobs:
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin main
 
-          # Remove temporary backup refs created during the cleanup session so they
-          # cannot keep the pre-purge history reachable.
+          # Remove temporary refs so they cannot keep pre-purge history reachable.
           git push origin --delete pre-purge-backup || true
           git push origin --delete tmp-noop || true
+          git push origin --delete purge-trigger || true
 
           # This workflow is intentionally one-shot. Remove it from the clean history.
           git rm .github/workflows/purge-history.yml
