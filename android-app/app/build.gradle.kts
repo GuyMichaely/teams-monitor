@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val appVersionCode = providers.gradleProperty("appVersionCode").orNull?.toInt() ?: 1
+val appVersionName = providers.gradleProperty("appVersionName").orNull ?: "1.0"
+
 android {
     namespace = "com.guymichaely.teamsmonitor"
     compileSdk = 34
@@ -11,8 +14,8 @@ android {
         applicationId = "com.guymichaely.teamsmonitor"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildTypes {
