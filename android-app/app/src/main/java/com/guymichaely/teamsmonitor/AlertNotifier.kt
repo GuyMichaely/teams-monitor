@@ -126,14 +126,14 @@ object AlertNotifier {
     @Synchronized
     fun stopAlarm(reason: String = "unspecified") {
         val p = player ?: return
+        val logContext = observerContext
         try { p.stop() } catch (_: Exception) { /* already stopped */ }
         p.release()
         player = null
         volumeObserver?.let { observerContext?.contentResolver?.unregisterContentObserver(it) }
         volumeObserver = null
         observerContext = null
-        observerContext = null
-        AppLog.event(observerContext ?: return notifyPlaybackChanged(), "alarm_stopped", "reason=$reason")
+        logContext?.let { AppLog.event(it, "alarm_stopped", "reason=$reason") }
         notifyPlaybackChanged()
     }
 
