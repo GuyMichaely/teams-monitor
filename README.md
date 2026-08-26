@@ -1,183 +1,149 @@
-# teams-automation
+# teams-monitor
 
-Read and send Microsoft Teams messages programmatically by driving the **new Teams
-client** (MSIX / WebView2) over the **Chrome DevTools Protocol (CDP)**.
-
-The new Teams runs on Edge WebView2 (Chromium). When launched with a remote-debugging
-port, its app window becomes a controllable CDP target — so we get real DOM access
-(`querySelector`, click, type) instead of brittle screen-coordinate automation.
+Personal Microsoft Teams monitoring/automation system. It drives the new Teams desktop client (WebView2) over the Chrome DevTools Protocol (CDP), triages unread messages, exposes a management GUI, and can alert the Android companion app through a Cloudflare Tunnel.
 
 ## Requirements
 
-- New Teams desktop client (MSIX build; the `ms-teams.exe` process).
-- Node.js 20+ (uses built-in `fetch` and `WebSocket` — **no npm dependencies**).
+- Windows with the new Teams desktop client (`ms-teams.exe`).
+- Bun 1.4+.
+- An existing Cloudflare Tunnel named `teams-gui` if remote GUI/phone connectivity is wanted.
 
-## Setup
+There are no server package dependencies.
 
-You normally don't need to do anything: if Teams isn't running with the debug port,
-the CLI restarts it automatically — kills any existing instance, then launches via
-the app execution alias with the debug flag scoped to that process. To launch it
-manually instead, two options:
-
-### Option A — per-launch (recommended, safer)
-
-Fully quit Teams (tray icon → **Quit**), then:
+Install Bun on Windows if needed:
 
 ```powershell
-./scripts/launch-teams.ps1        # opens port 9222
+powershell -c "irm bun.sh/install.ps1|iex"
+bun --version
 ```
 
-This scopes the debug flag to just that Teams process.
+## Environment
 
-### Option B — persistent (every launch, all WebView2 apps)
+Create an untracked `.env` in the repo root:
+
+```dotenv
+GEMINI_API_KEY=...
+GUI_TOKEN=...
+```
+
+Bun loads it explicitly through the package scripts. Runtime state and logs stay under the gitignored `data/` directory.
+
+## Normal startup
+
+From the repo root:
 
 ```powershell
-setx WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS "--remote-debugging-port=9222"
+bun run gui
 ```
 
-Then fully quit and reopen Teams. **Security note:** this applies to *every* WebView2
-app you launch, and an open debug port lets any local process drive them. Prefer
-Option A unless you specifically want it always on.
+This starts the management GUI on the port configured in `config/config.json` (currently 8090). From the dashboard you can start/stop the monitor and start/stop the existing `teams-gui` Cloudflare tunnel.
 
-### Verify the port is live
+To run the monitor directly without the GUI:
+
+```powershell
+bun start
+```
+
+The all-in-one Windows launcher remains available:
+
+```powershell
+.\scripts\start-stack.ps1
+```
+
+It starts the GUI, orchestrator, and existing Cloudflare tunnel when each is not already running.
+
+## CLI
+
+```powershell
+bun src/cli.mjs chats
+bun src/cli.mjs unread
+bun src/cli.mjs readchat "Andrew Coe"
+bun src/cli.mjs read 10
+bun src/cli.mjs send "hello"
+bun src/cli.mjs watch 3000
+bun src/cli.mjs run
+bun src/cli.mjs stop
+bun src/cli.mjs catchup
+```
+
+Equivalent package scripts are available for the common operations:
+
+```powershell
+bun start
+bun run gui
+bun run read -- 10
+bun run send -- "hello"
+bun run watch -- 3000
+```
+
+## Teams CDP setup
+
+The monitor normally handles this automatically: if Teams is not running with a CDP port, it restarts Teams with the WebView2 remote-debugging argument scoped to that process.
+
+Manual launch:
+
+```powershell
+.\scripts\launch-teams.ps1
+```
+
+Verify:
 
 ```powershell
 Invoke-RestMethod http://localhost:9222/json/version
 ```
 
-## Usage
+A persistent alternative is:
 
-Low-level (operate on whatever chat is open, or by name):
-
-```bash
-node src/cli.mjs chats                 # list all chats/channels
-node src/cli.mjs unread                # list chats with unread messages
-node src/cli.mjs readchat "Andrew Coe" # open a chat by name and read it (marks read)
-node src/cli.mjs read 10               # last 10 messages of the open chat, as JSON
-node src/cli.mjs send "hello"          # send into the open chat
-node src/cli.mjs watch 3000            # print new messages as they arrive
+```powershell
+setx WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS "--remote-debugging-port=9222"
 ```
 
-The orchestrator (monitor → decide → respond/hold/escalate):
-
-```bash
-node src/cli.mjs run       # start the loop (Ctrl+C to stop)
-node src/cli.mjs stop      # kill a running loop immediately (break glass)
-node src/cli.mjs catchup   # per-chat "resume reading here" markers
-```
-
-Configure it in `config/config.json` (copy from `config.example.json`).
+The per-launch method is preferable because a persistent WebView2 debugging variable affects other WebView2 apps too.
 
 ## Architecture
 
-```
-teams.mjs      CDP core: listChats / setUnreadFilter / openChat / readOpenChat / sendMessage
-monitor.mjs    enumerate chats, find unread (Teams' own filter), open+read a chat
-brain.mjs      decide respond | hold | escalate (+ draft). Providers: stub | gemini | anthropic/openai (seams)
-actions.mjs    escalation + the brain's action registry (its "tools"), incl. alert_phone
-alerts.mjs     phone-alert transports: websocket (via GUI hub) | fcm (Firebase direct)
-context.mjs    config loading + user-profile.md (the context fed to the brain)
-state.mjs      audit: per-chat first-read markers + data/activity.jsonl
-orchestrator.mjs   the loop tying it together; kill switches: Ctrl+C / SIGTERM / `stop` (hard kill)
-```
-
-Config knobs: `whitelist.autoSend` (chats Claude may auto-reply in), `holdMessage`,
-`brain.provider`, `alerts.*` (phone alerts), `debug.echoLoop`.
-
-### Phone alerts (the `alert_phone` tool)
-
-The brain (or the loop itself) can push alerts to your phone via the
-`alert_phone` action. Transport is selected by `alerts.transport`:
-
-- **`websocket`** (default) — the orchestrator POSTs to the GUI server's
-  `POST /api/alerts`, which broadcasts to companion apps subscribed on
-  `ws://<gui>/ws/alerts`. Works with any WebSocket client today; the Android
-  companion app will just be one of those. Requires the GUI server to be running.
-- **`fcm`** — Firebase Cloud Messaging (HTTP v1) direct from the orchestrator.
-  Data-only message, Android HIGH priority, so the app's own receiver controls
-  the alarm. Needs `alerts.fcm.projectId`, the app's `deviceToken`, and a
-  service-account JSON at `alerts.fcm.serviceAccountFile` (gitignored).
-
-With **`alerts.notifyAll: true`** there is no brain in the loop at all: every
-incoming message pushes an alert and nothing is decided or sent. Authors in
-`alerts.ignoreAuthors` (e.g. yourself) never alert.
-
-### Cross-app actions (TFS)
-
-TFS work runs on a **separate VM**. `tfs-agent/` is that remote service (holds the PAT);
-the laptop talks to it over **TFS Agent Protocol v1** (`tfs-agent/PROTOCOL.md`). The
-laptop end (`src/integrations/tfs-server.mjs`) registers each TFS primitive as an
-action the brain can call. See `tfs-agent/README.md`.
-
-## Monitor + auto-respond (the orchestrator)
-
-Beyond the low-level read/send, there's a monitor loop that scans your chats,
-decides what to do about new messages, and either replies, holds, or escalates.
-
-```bash
-node src/cli.mjs run        # start the loop
-node src/cli.mjs stop       # kill it immediately (from any terminal)
-node src/cli.mjs catchup    # per-chat: where to resume reading yourself
+```text
+src/teams.mjs            CDP/WebSocket core for Teams
+src/monitor.mjs          unread enumeration + chat reading
+src/brain.mjs            respond | hold | escalate decision layer
+src/orchestrator.mjs     poll → read → decide → act → log loop
+src/actions.mjs          action registry, including alert_phone
+src/alerts.mjs           phone-alert transports
+src/gui-server*.mjs      dashboard, API, WebSocket alert hub, diagnostics
+src/state.mjs            runtime state/activity under data/
+config/config.json       tracked non-secret configuration
+context/user-profile.md  context supplied to the brain
+android-app/             Android companion app
+tfs-agent/               separate TFS worker integration
 ```
 
-Configure it in `config/config.json` (copy from `config/config.example.json`):
+The GUI's `/ws/alerts` endpoint is the live alert channel used by the Android app. With the existing Cloudflare tunnel running, `https://gui.guymichaely.com` routes to the local GUI and WebSocket connections use the same hostname over WSS.
 
-- **`whitelist.autoSend`** — chats where Claude may actually send replies. Everything
-  else defaults to **hold + escalate**. Starts as just your self-chat.
-- **`brain.provider`** — `stub` (rule-based, no API key) drives the whole pipeline
-  today. `anthropic`/`openai` are seams in `src/brain.mjs` to fill in later.
-- **`context/user-profile.md`** — your projects/tone/people, fed to the brain as its
-  context about you. This is the channel for "what the AI should know about me".
+## GUI diagnostics
 
-### Stopping (kill switches)
+The dashboard has **Connection diagnostics** with Refresh/Copy controls. It records WebSocket connection/rejection/disconnection events and includes redacted Cloudflare tunnel logs. `access_token`/`GUI_TOKEN` values are not intentionally exposed by the diagnostics API.
 
-The loop has **no self-reply prevention by design** — so any of these halts it:
+## Android app
 
-- **`node src/cli.mjs stop`** or the GUI **Stop** button — **break glass**: kills the
-  orchestrator process immediately, via the pid in `data/heartbeat.json`. (Refuses
-  to kill on a stale heartbeat, so a recycled pid is never signaled. Also drops a
-  `data/STOP` file as a fallback for a loop that hasn't heartbeated yet.)
-- **Ctrl+C** in the run terminal (SIGINT), or SIGTERM — graceful halt.
+See `android-app/README.md` for app behavior and local builds.
 
-### Safe test with your self-chat
+The repository also has `.github/workflows/android-apk.yml`. After the one-time signing setup:
 
-1. Set `debug.echoLoop: true` and keep `whitelist.autoSend: ["Guy Michaely (You)"]`.
-2. `node src/cli.mjs run`
-3. From another Teams client, send yourself a message. Claude replies, then (echoLoop)
-   keeps replying to its own replies — an intentional infinite loop.
-4. Halt with Ctrl+C or `node src/cli.mjs stop`.
+```powershell
+.\scripts\setup-android-signing.ps1
+```
 
-With `echoLoop: false`, the loop instead scans **unread** chats each tick; opening a
-chat to read it marks it read (tracked in `catchup` so you can review from there).
-While the monitor runs, Teams' **Unread filter is left switched on** — Teams isn't
-meant to be used for anything else during a monitor session, and the filter is not
-restored on exit.
+Android changes automatically build a signed APK and publish it to the stable GitHub Release tag `android-latest`, while also retaining an Actions artifact. Keep the signing-key backup created under `%USERPROFILE%\.teams-monitor`; losing that key prevents future APKs from updating the installed app.
 
-## How it works
+## Bun compatibility guard
 
-- `src/teams.mjs` — core CDP library: connect to the chat window, read/send, plus
-  rail helpers (`listChats`, `setUnreadFilter`, `openChat`). Restarts Teams with the
-  debug port automatically if it isn't reachable.
-- `src/monitor.mjs` — enumerate chats, find unread (via Teams' own "Unread" filter,
-  which stays on for the whole monitor session), read a specific chat.
-- `src/brain.mjs` — decide `respond | hold | escalate` (+ optional actions). Message
-  text is treated as untrusted (prompt-injection-safe prompt assembly).
-- `src/actions.mjs` — escalation (console) + the brain's action registry
-  (`alert_phone` is registered here; transports live in `src/alerts.mjs`).
-- `src/orchestrator.mjs` — the loop: poll → decide → act → log.
-- `src/state.mjs` — per-chat catch-up markers + `data/activity.jsonl` audit log.
-- Stable selectors (this Teams build): compose `[data-tid="ckeditor"]`,
-  send `[data-tid="sendMessageCommands-send"]`, messages `[data-tid="chat-pane-message"]`,
-  author `[data-tid="message-author-name"]`; rail rows are `role="treeitem"` leaves
-  with a `<time>` (last-message timestamp).
+`.github/workflows/bun-smoke.yml` runs on Windows and starts the real GUI under Bun, then performs an authenticated WebSocket handshake against `/ws/alerts`. This keeps the Node-compatibility-sensitive part of the server under CI instead of relying on assumption alone.
 
-## Known limitations / TODO
+## Safety / operational notes
 
-- **Targets the currently-open chat only.** No chat navigation yet — see roadmap below.
-- **Selectors can break on Teams updates.** They're `data-tid`-based (more stable than
-  visible text), but a major client update may require re-inspection. Re-run a DOM scan
-  if reads/sends stop matching.
-- **Send requires a focused, ready compose box.** Returns `send-disabled` if Teams
-  hasn't enabled the send button yet.
-- Roadmap: select a chat by name from the left rail; open a chat by deep link;
-  read a specific chat without changing what's on screen; message de-dup by stable id.
+- `config/config.json` is tracked; never put secrets in it.
+- `.env` and `data/` are ignored.
+- The monitor can restart Teams to expose its debugging port.
+- The Cloudflare GUI uses `GUI_TOKEN`; stopping the tunnel while using `gui.guymichaely.com` disconnects that remote session.
+- Stop the orchestrator with the GUI Stop button or `bun src/cli.mjs stop`.
+- Teams DOM selectors can break when Microsoft changes the client.
