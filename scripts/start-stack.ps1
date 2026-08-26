@@ -1,18 +1,9 @@
 # Starts the Teams-monitor stack: GUI server, orchestrator, Cloudflare tunnel.
 # Safe to re-run — each component starts only if it isn't already running.
-# Logs land in data\. Scheduled to run at logon (Task Scheduler: TeamsMonitorStack).
+# Logs land in data\.
 
-$root = "C:\Users\GuyMichaely\projects\proj1"
+$root = "C:\Users\GuyMichaely\projects\teams-monitor"
 $cloudflared = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
-
-# Secrets live in the per-user env store; make sure child processes inherit them
-# even when this script runs from a shell started before they were set.
-if (-not $env:GUI_TOKEN) {
-  $env:GUI_TOKEN = [Environment]::GetEnvironmentVariable("GUI_TOKEN", "User")
-}
-if (-not $env:GEMINI_API_KEY) {
-  $env:GEMINI_API_KEY = [Environment]::GetEnvironmentVariable("GEMINI_API_KEY", "User")
-}
 
 function Test-Port($port) {
   try {
@@ -23,9 +14,9 @@ function Test-Port($port) {
   } catch { return $false }
 }
 
-# GUI server (port 8090)
+# GUI server (port 8090). Node loads GUI_TOKEN/GEMINI_API_KEY from .env.
 if (-not (Test-Port 8090)) {
-  Start-Process node -ArgumentList 'src/cli.mjs gui' -WorkingDirectory $root -WindowStyle Hidden `
+  Start-Process node -ArgumentList '--env-file=.env src/cli.mjs gui' -WorkingDirectory $root -WindowStyle Hidden `
     -RedirectStandardError "$root\data\gui.log" -RedirectStandardOutput "$root\data\gui.out.log"
 }
 
@@ -39,12 +30,15 @@ if (Test-Path $hb) {
   } catch {}
 }
 if (-not $orchRunning) {
-  Start-Process node -ArgumentList 'src/cli.mjs run' -WorkingDirectory $root -WindowStyle Hidden `
+  Start-Process node -ArgumentList '--env-file=.env src/cli.mjs run' -WorkingDirectory $root -WindowStyle Hidden `
     -RedirectStandardError "$root\data\orchestrator.log" -RedirectStandardOutput "$root\data\orchestrator.out.log"
 }
 
-# Cloudflare tunnel (gui.guymichaely.com -> 127.0.0.1:8090)
-if (-not (Get-Process cloudflared -ErrorAction SilentlyContinue)) {
+# Cloudflare tunnel (gui.guymichaely.com -> 127.0.0.1:8090).
+# Match this tunnel specifically so another cloudflared process does not block it.
+$tunnelRunning = Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" -ErrorAction SilentlyContinue | `
+  Where-Object { $_.CommandLine -match '(?i)tunnel\s+run' -and $_.CommandLine -match '(?i)teams-gui' }
+if (-not $tunnelRunning) {
   Start-Process $cloudflared -ArgumentList 'tunnel run teams-gui' -WorkingDirectory $root -WindowStyle Hidden `
     -RedirectStandardError "$root\data\tunnel.log" -RedirectStandardOutput "$root\data\tunnel.out.log"
 }
