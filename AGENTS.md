@@ -50,42 +50,52 @@ tfs-agent/          VM-side TFS worker — code-complete, NEVER deployed, NEVER 
                     against live TFS. run_agent_task is an unimplemented TODO.
 scripts/
   start-stack.ps1   THE canonical startup: starts GUI + orchestrator + cloudflared tunnel,
-                    each only if not already running (safe to re-run). Loads GUI_TOKEN and
-                    GEMINI_API_KEY from the user env store.
+                    each only if not already running (safe to re-run). Bun loads GUI_TOKEN
+                    and GEMINI_API_KEY from the repo-root .env file.
   launch-teams.ps1  Manual Teams launch with debug port.
+  setup-android-signing.ps1  One-time persistent APK signing + GitHub Actions secret setup.
 config/config.json  Live tracked config. Never put secrets here; Gemini uses the env var
                     named by brain.apiKeyEnv (currently GEMINI_API_KEY).
 context/user-profile.md  The brain's user context, editable live from the dashboard.
 data/               Runtime state (gitignored): state.json, activity.jsonl, logs,
                     heartbeat.json, STOP file.
-tools/              Gitignored local toolchain: jdk17, android-sdk, gradle (for APK builds).
+tools/              Gitignored local toolchain: jdk17, android-sdk, gradle (for local APK builds).
+.github/workflows/android-apk.yml  Builds Android release APKs; after one-time signing setup,
+                    publishes the stable android-latest GitHub Release + Actions artifact.
+.github/workflows/bun-smoke.yml  Windows Bun runtime test covering child_process + GUI WebSocket.
 FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hierarchy,
                     GUI-as-avatar, companion app status, known gaps).
 ```
 
 ## Running state & operations
 
+- Server runtime is **Bun 1.4+**, not Node. Relevant Node-compatible built-ins are used
+  through Bun; keep the Windows Bun smoke workflow passing.
 - Three long-running processes, all started by `scripts/start-stack.ps1`:
-  GUI server (`node src/cli.mjs gui`, port 8090, bound 0.0.0.0), orchestrator
-  (`node src/cli.mjs run`), cloudflared (`tunnel run teams-gui` →
+  GUI server (`bun src/cli.mjs gui`, port 8090, bound 0.0.0.0), orchestrator
+  (`bun src/cli.mjs run`), cloudflared (`tunnel run teams-gui` →
   https://gui.guymichaely.com). Windows Firewall has an inbound allow rule for
   TCP 8090 (LAN access for the phone).
-- Stop the orchestrator: `node src/cli.mjs stop` (hard kill via heartbeat pid;
+- Normal interactive startup is `bun run gui`; the GUI can start/stop the orchestrator
+  and the existing teams-gui Cloudflare tunnel. `bun start` runs the orchestrator directly.
+- Stop the orchestrator: `bun src/cli.mjs stop` (hard kill via heartbeat pid;
   the STOP file is a fallback). GUI Stop button does the same.
 - Starting the orchestrator may RESTART the user's Teams (to get the debug
   port). That's inherent; don't try to avoid it.
-- Rebuild the APK (toolchain is in-repo, gitignored):
+- Rebuild the APK locally (toolchain is in-repo, gitignored):
   ```bash
   cd android-app
-  export JAVA_HOME="C:/Users/GuyMichaely/projects/proj1/tools/jdk17"
-  export ANDROID_HOME="C:/Users/GuyMichaely/projects/proj1/tools/android-sdk"
+  export JAVA_HOME="C:/Users/GuyMichaely/projects/teams-monitor/tools/jdk17"
+  export ANDROID_HOME="C:/Users/GuyMichaely/projects/teams-monitor/tools/android-sdk"
   export ANDROID_SDK_ROOT="$ANDROID_HOME"
   cmd //c "gradlew.bat assembleDebug --no-daemon"
   ```
   The GUI serves the result at /app-debug.apk immediately (no copy step).
-- After editing server code, restart processes with GUI_TOKEN and GEMINI_API_KEY
-  loaded — use the pattern in scripts/start-stack.ps1 (read from the user env store).
-  The orchestrator needs GUI_TOKEN too: alert POSTs to the hub are authenticated.
+- Preferred Android distribution is the signed `android-latest` GitHub Release.
+  Run `scripts/setup-android-signing.ps1` once on the dev machine to establish the
+  persistent signing key and Actions secrets. Preserve `%USERPROFILE%\.teams-monitor`.
+- After editing server code, restart processes so Bun reloads `.env`. The orchestrator
+  needs GUI_TOKEN too: alert POSTs to the hub are authenticated.
 
 ## Hard-won gotchas (do not rediscover these)
 
@@ -133,14 +143,23 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
 14. Sending requires a focused compose box; `sendMessage` returns reason
     strings, not exceptions. `readChat` marks the chat read (inherent to the
     GUI-hook approach).
+15. **Runtime data must never be committed.** A Cloudflare tunnel log once exposed
+    a WebSocket access token through the query string. `data/` is gitignored and GUI
+    diagnostics redact `access_token`; preserve both protections.
+16. **Android update signing must stay stable.** Replacing the release signing key
+    means Android will refuse the new APK as an update to the installed app. Keep the
+    local signing backup and the Actions secrets aligned.
 
 ## Secrets inventory
 
-- `GUI_TOKEN` — user-level Windows env var. Guards /api/*, /ws/alerts,
-  dashboard overlay. (Not /app-debug.apk — public by decision.)
-- Gemini API key — `GEMINI_API_KEY` user-level Windows env var for local runs.
-  `brain.apiKeyEnv` names the env var. Use a GitHub Actions repository secret
-  with the same name when a workflow needs the key; never hardcode it in tracked files.
+- `.env` (gitignored) holds local `GUI_TOKEN` and `GEMINI_API_KEY`. Bun package scripts
+  explicitly load it. Do not restore tracked secrets or runtime logs.
+- `GUI_TOKEN` guards /api/*, /ws/alerts, dashboard overlay. (Not /app-debug.apk — public
+  by decision.) The phone must use the same value.
+- `GEMINI_API_KEY` is named by `brain.apiKeyEnv` for local brain calls.
+- GitHub Actions Android signing secrets: `ANDROID_KEYSTORE_BASE64` and
+  `ANDROID_KEYSTORE_PASSWORD`; persistent key backup lives outside the repo under
+  `%USERPROFILE%\.teams-monitor`.
 - `config/fcm-service-account.json` — expected path for FCM (gitignored),
   doesn't exist yet; FCM never set up.
 - `TFS_AGENT_TOKEN` — env var for the TFS dispatcher (disabled).
@@ -148,8 +167,8 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
 
 ## Conventions
 
-- Zero npm dependencies for the server (Node 20+ built-ins only); hand-rolled
-  WS server, FCM OAuth, etc. Keep it that way unless there's a strong reason.
+- Zero npm dependencies for the server; Bun 1.4+ runs the Node-compatible built-ins.
+  Keep it dependency-free unless there's a strong reason.
 - ESM (.mjs), terse comment style explaining WHY not WHAT. Comments live in
   file headers and above non-obvious blocks.
 - The app allows OkHttp; no Compose, plain Views, appcompat.
