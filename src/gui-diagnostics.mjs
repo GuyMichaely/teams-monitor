@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 
@@ -33,8 +33,15 @@ export function requestMeta(req) {
   };
 }
 
+export function redactSecrets(text) {
+  return String(text ?? "")
+    .replace(/([?&]access_token=)[^&\s\"]+/gi, "$1<redacted>")
+    .replace(/([?&]token=)[^&\s\"]+/gi, "$1<redacted>");
+}
+
 export function logDiagnostic(kind, data = {}) {
   try {
+    mkdirSync(DATA_DIR, { recursive: true });
     appendFileSync(
       DIAGNOSTICS_LOG,
       JSON.stringify({ at: new Date().toISOString(), kind, ...data }) + "\n",
