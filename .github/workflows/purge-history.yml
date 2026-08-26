@@ -42,7 +42,7 @@ jobs:
             --path .env \
             --path proj1/.env
 
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin main
 
           # Remove temporary refs so they cannot keep pre-purge history reachable.
