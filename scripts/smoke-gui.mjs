@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import { startGui } from "../src/gui-server.mjs";
 
 const port = 18090;
@@ -14,23 +13,37 @@ const { server, close } = startGui({
 
 let ws;
 try {
-  if (!server.listening) await once(server, "listening");
+  if (!server.listening) {
+    await new Promise((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+  }
 
   ws = new WebSocket(`ws://127.0.0.1:${port}/ws/alerts?access_token=runtime-smoke-token`);
-  await Promise.race([
-    once(ws, "open"),
-    once(ws, "error").then(([event]) => {
-      throw new Error(`WebSocket smoke test failed: ${event?.message || "connection error"}`);
-    }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("WebSocket smoke test timed out")), 5000)),
-  ]);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("WebSocket smoke test timed out")), 5000);
+    ws.addEventListener("open", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+    ws.addEventListener("error", () => {
+      clearTimeout(timer);
+      reject(new Error("WebSocket smoke test connection failed"));
+    }, { once: true });
+  });
 
   console.log("GUI WebSocket smoke test passed.");
 } finally {
   if (ws?.readyState === WebSocket.OPEN) {
-    const closed = once(ws, "close");
-    ws.close();
-    await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 500))]);
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 500);
+      ws.addEventListener("close", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+      ws.close();
+    });
   }
   await close();
 }
