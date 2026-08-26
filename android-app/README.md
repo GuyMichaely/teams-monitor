@@ -47,13 +47,13 @@ One-time signing setup from the Windows development machine:
 
 The script:
 
-1. Creates or reuses a persistent Android signing key under `%USERPROFILE%\.teams-monitor`.
-2. Stores the keystore and password as GitHub Actions secrets.
-3. Triggers the APK workflow.
+1. Reuses `%USERPROFILE%\.android\debug.keystore` when it is the standard Android debug key. This normally preserves update compatibility with an app previously installed from this PC's local `assembleDebug` build.
+2. If that key is unavailable, creates a dedicated persistent signing key under `%USERPROFILE%\.teams-monitor` instead.
+3. Backs up the chosen signing material under `%USERPROFILE%\.teams-monitor`, stores it as GitHub Actions secrets, and triggers the APK workflow.
 
 It requires the GitHub CLI (`gh`) to be authenticated and a JDK 17 `keytool` either on PATH or in the local `tools\jdk17` toolchain.
 
-**Keep the `%USERPROFILE%\.teams-monitor` signing-key backup.** Android updates must be signed by the same key as the installed app.
+**Keep the `%USERPROFILE%\.teams-monitor` signing-key backup.** Android updates must be signed by the same key as the installed app. If Android reports a signature mismatch on the first GitHub-built APK, uninstall the old copy once and install the Release APK; subsequent CI builds will update normally.
 
 After setup, Android-related pushes automatically refresh the `android-latest` Release. Download `teams-monitor.apk` from that Release on the phone and install it over the existing copy.
 
