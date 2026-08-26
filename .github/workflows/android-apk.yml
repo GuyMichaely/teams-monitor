@@ -13,9 +13,7 @@ permissions:
   contents: write
 
 env:
-  ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-  ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+  ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
 
 jobs:
   build:
@@ -34,43 +32,42 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Build release APK
+      - name: Check signing configuration
+        id: signing
+        shell: bash
+        run: |
+          if [[ -n "$ANDROID_DEBUG_KEYSTORE_BASE64" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::APK publishing is waiting for your existing Android debug keystore. Run scripts/setup-android-signing.ps1 once from your Windows machine."
+          fi
+
+      - name: Restore debug signing key
+        if: steps.signing.outputs.configured == 'true'
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+          printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build debug APK
         working-directory: android-app
         shell: bash
         run: |
           chmod +x gradlew
           version_code=$((100000 + GITHUB_RUN_NUMBER))
-          ./gradlew assembleRelease --no-daemon \
+          ./gradlew assembleDebug --no-daemon \
             -PappVersionCode="$version_code" \
             -PappVersionName="1.0.${GITHUB_RUN_NUMBER}"
 
-      - name: Check signing configuration
-        id: signing
-        shell: bash
-        run: |
-          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_ALIAS" ]]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::APK publishing is waiting for signing secrets. Run scripts/setup-android-signing.ps1 once from your Windows machine."
-          fi
-
-      - name: Sign APK
+      - name: Prepare published APK
         if: steps.signing.outputs.configured == 'true'
         shell: bash
         run: |
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/teams-monitor-release.jks"
-          unsigned="android-app/app/build/outputs/apk/release/app-release-unsigned.apk"
-          signed="$RUNNER_TEMP/teams-monitor.apk"
-          apksigner="$ANDROID_HOME/build-tools/34.0.0/apksigner"
-          "$apksigner" sign \
-            --ks "$RUNNER_TEMP/teams-monitor-release.jks" \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --out "$signed" \
-            "$unsigned"
-          "$apksigner" verify --verbose "$signed"
+          apk="android-app/app/build/outputs/apk/debug/app-debug.apk"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$apk"
+          cp "$apk" "$RUNNER_TEMP/teams-monitor.apk"
 
       - name: Upload workflow artifact
         if: steps.signing.outputs.configured == 'true'
@@ -89,7 +86,7 @@ jobs:
           apk="$RUNNER_TEMP/teams-monitor.apk"
           tag="android-latest"
           title="Latest Android build"
-          notes="Automated sideload build from ${GITHUB_SHA}. Download teams-monitor.apk on the phone and install it over the existing app. If Android reports a signature mismatch, uninstall the old app once and install this build; future CI builds will then update normally."
+          notes="Automated debug build from ${GITHUB_SHA}, signed with the same debug key used by local builds on the development PC. Download teams-monitor.apk on the phone and install it over the existing app."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             git tag -f "$tag" "$GITHUB_SHA"
