@@ -5,6 +5,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import { closeSync, existsSync, openSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ import { startGui as startCoreGui } from "./gui-server-core.mjs";
 import { DATA_DIR } from "./state.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const CONFIG_FILE = join(ROOT, "config", "config.json");
 const TUNNEL_NAME = "teams-gui";
 const TUNNEL_HOST = "gui.guymichaely.com";
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
@@ -28,6 +30,39 @@ function authOk(header, token) {
   const a = Buffer.from(m[1]);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+
+async function readJsonBody(req, cap = 8192) {
+  let body = "";
+  for await (const chunk of req) {
+    body += chunk.toString("utf8");
+    if (Buffer.byteLength(body) > cap) {
+      throw Object.assign(new Error("payload too large"), { httpCode: 400 });
+    }
+  }
+  try { return JSON.parse(body || "{}"); }
+  catch { throw Object.assign(new Error("invalid JSON"), { httpCode: 400 }); }
+}
+
+async function runtimeConfig() {
+  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  return {
+    pollIntervalMs: cfg.pollIntervalMs || 15000,
+    mode: cfg.automation?.mode || "respond",
+  };
+}
+
+async function savePollInterval(req) {
+  const body = await readJsonBody(req);
+  const pollIntervalMs = Number(body.pollIntervalMs);
+  if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 1000 || pollIntervalMs > 300000) {
+    throw Object.assign(new Error("pollIntervalMs must be an integer from 1000 to 300000"), { httpCode: 400 });
+  }
+  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  cfg.pollIntervalMs = pollIntervalMs;
+  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  return { pollIntervalMs };
 }
 
 function tunnelProcesses() {
@@ -130,21 +165,47 @@ function stopTunnel() {
 }
 
 const TUNNEL_HTML = `
-  <h2>Cloudflare tunnel</h2>
+  <h2>Runtime</h2>
   <div class="card">
     <div class="row" style="justify-content:space-between">
       <div class="row">
+        <span id="statusDot" class="dot" style="background:var(--dim)"></span>
+        <strong>Teams orchestrator</strong>
+        <span id="statusText" style="color:var(--dim)">checking…</span>
+      </div>
+      <div class="row">
+        <button id="btnStart" onclick="startOrch()" disabled>Start</button>
+        <button id="btnStop" class="danger" onclick="stopOrch()" disabled>Stop</button>
+      </div>
+    </div>
+
+    <div class="row" style="justify-content:space-between;border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+      <div class="row">
         <span id="tunnelDot" class="dot" style="background:var(--dim)"></span>
-        <strong>teams-gui</strong>
+        <strong>Cloudflare tunnel</strong>
         <span id="tunnelText" style="color:var(--dim)">checking…</span>
       </div>
       <div class="row">
-        <button id="btnTunnelStart" onclick="startCloudflareTunnel()" disabled>Start tunnel</button>
-        <button id="btnTunnelStop" class="danger" onclick="stopCloudflareTunnel()" disabled>Stop tunnel</button>
+        <button id="btnTunnelStart" onclick="startCloudflareTunnel()" disabled>Start</button>
+        <button id="btnTunnelStop" class="danger" onclick="stopCloudflareTunnel()" disabled>Stop</button>
       </div>
     </div>
-    <p style="color:var(--dim);font-size:12px;margin:8px 0 0">
-      Existing tunnel only: gui.guymichaely.com → this GUI. Stopping it remotely disconnects this page and the phone app.
+
+    <div class="row" style="justify-content:space-between;border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+      <div>
+        <strong>Polling interval</strong>
+        <div style="color:var(--dim);font-size:12px">Applies live; no orchestrator restart required.</div>
+      </div>
+      <div class="row">
+        <input id="pollIntervalSec" type="number" min="1" max="300" step="0.5"
+          style="width:90px;background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
+        <span style="color:var(--dim)">seconds</span>
+        <button class="secondary" onclick="savePollInterval()">Save</button>
+      </div>
+    </div>
+
+    <p style="color:var(--dim);font-size:12px;margin:10px 0 0">
+      The tunnel exposes gui.guymichaely.com to this GUI and the phone app. Stopping it remotely disconnects both.
     </p>
   </div>
 `;
@@ -168,15 +229,49 @@ function renderTunnelStatus(s) {
   document.getElementById("btnTunnelStart").disabled = s.running;
   document.getElementById("btnTunnelStop").disabled = !s.running;
 }
+function applyRuntimeConfig(c) {
+  const input = document.getElementById("pollIntervalSec");
+  if (input && document.activeElement !== input) input.value = String(c.pollIntervalMs / 1000);
+  const alertOnly = c.mode === "alert-only";
+  const whitelistHeading = [...document.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Auto-send whitelist");
+  if (whitelistHeading) {
+    whitelistHeading.style.display = alertOnly ? "none" : "";
+    if (whitelistHeading.nextElementSibling) whitelistHeading.nextElementSibling.style.display = alertOnly ? "none" : "";
+  }
+  const alarmHeading = [...document.querySelectorAll("h2")].find((h) => ["Escalations", "Alarms"].includes(h.textContent.trim()));
+  if (alarmHeading) alarmHeading.textContent = alertOnly ? "Alarms" : "Escalations";
+}
 async function refreshTunnelStatus() {
   try { renderTunnelStatus(await tunnelApi("/api/tunnel/status")); } catch { /* transient */ }
+}
+async function refreshRuntimeConfig() {
+  try { applyRuntimeConfig(await tunnelApi("/api/runtime/config")); } catch { /* transient */ }
+}
+async function refreshRuntimeStatus() {
+  await Promise.all([refreshTunnelStatus(), refreshRuntimeConfig()]);
+}
+async function savePollInterval() {
+  const seconds = Number(document.getElementById("pollIntervalSec").value);
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) {
+    toast("Polling interval must be 1–300 seconds");
+    return;
+  }
+  try {
+    const result = await tunnelApi("/api/config/poll-interval", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pollIntervalMs: Math.round(seconds * 1000) }),
+    });
+    document.getElementById("pollIntervalSec").value = String(result.pollIntervalMs / 1000);
+    toast("Polling interval saved");
+  } catch (e) { toast(e.message); }
 }
 async function startCloudflareTunnel() {
   try {
     await tunnelApi("/api/tunnel/start", { method:"POST" });
     toast("Cloudflare tunnel starting…");
   } catch (e) { toast(e.message); }
-  setTimeout(refreshTunnelStatus, 1200);
+  setTimeout(refreshRuntimeStatus, 1200);
 }
 async function stopCloudflareTunnel() {
   const remote = location.hostname === "gui.guymichaely.com";
@@ -187,16 +282,29 @@ async function stopCloudflareTunnel() {
   } catch (e) {
     toast(remote ? "Tunnel stop sent; remote connection may now be offline" : e.message);
   }
-  setTimeout(refreshTunnelStatus, 1200);
+  setTimeout(refreshRuntimeStatus, 1200);
 }
-refreshTunnelStatus();
-setInterval(refreshTunnelStatus, 5000);
+refreshRuntimeStatus();
+setInterval(refreshRuntimeStatus, 5000);
 </script>`;
 
 function injectTunnelControls(page) {
   if (page.includes('id="btnTunnelStart"')) return page;
+  const oldHeader = `  <div class="row" style="justify-content:space-between">
+    <div class="row">
+      <span id="statusDot" class="dot" style="background:var(--dim)"></span>
+      <h1>Teams Automation</h1>
+      <span id="statusText" style="color:var(--dim)">…</span>
+    </div>
+    <div class="row">
+      <button id="btnStart" onclick="startOrch()" disabled>Start</button>
+      <button id="btnStop" class="danger" onclick="stopOrch()" disabled>Stop</button>
+    </div>
+  </div>`;
+  const titleOnly = `  <div class="row"><h1>Teams Automation</h1></div>`;
   return page
-    .replace("  <h2>Auto-send whitelist</h2>", TUNNEL_HTML + "\n  <h2>Auto-send whitelist</h2>")
+    .replace(oldHeader, titleOnly)
+    .replace("  <h2>Overview</h2>", TUNNEL_HTML + "\n  <h2>Overview</h2>")
     .replace("</body>", TUNNEL_SCRIPT + "\n</body>");
 }
 
@@ -210,10 +318,16 @@ export function startGui(config) {
 
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
-    if (url.pathname.startsWith("/api/tunnel/")) {
+    if (url.pathname.startsWith("/api/tunnel/") || url.pathname === "/api/runtime/config" || url.pathname === "/api/config/poll-interval") {
       try {
         if (token && !authOk(req.headers.authorization, token)) {
           return sendJson(res, 401, { ok: false, error: "unauthorized" });
+        }
+        if (req.method === "GET" && url.pathname === "/api/runtime/config") {
+          return sendJson(res, 200, await runtimeConfig());
+        }
+        if (req.method === "PUT" && url.pathname === "/api/config/poll-interval") {
+          return sendJson(res, 200, { ok: true, ...(await savePollInterval(req)) });
         }
         if (req.method === "GET" && url.pathname === "/api/tunnel/status") {
           return sendJson(res, 200, tunnelStatus());

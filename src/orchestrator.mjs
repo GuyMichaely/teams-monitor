@@ -174,6 +174,21 @@ export function isAddressed(text, mentionNames) {
   );
 }
 
+function normalizeIdentity(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isSelfAuthored(author, mentionNames) {
+  const normalized = normalizeIdentity(author);
+  return normalized === "you" || (mentionNames || []).some((name) => normalizeIdentity(name) === normalized);
+}
+
+function looksLikeDirectChat(chat, author) {
+  const chatName = normalizeIdentity(chat);
+  const authorName = normalizeIdentity(author);
+  return !!chatName && chatName === authorName;
+}
+
 async function processChat({ chat, config, brain, userProfile, whitelist, state, echoLoop }) {
   const { messages } = await readChat(chat, 15, config.port);
   if (!messages?.length) return;
@@ -235,6 +250,37 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
     reply: decision.reply || null,
   });
   console.error(`[${chat}] ${decision.action} — ${decision.reason}`);
+
+  // Alert-only mode: the brain classifies alarm vs ignore, and the orchestrator
+  // performs the phone alert deterministically. Whitelists and reply text cannot
+  // cause a Teams send while this mode is active.
+  if (config.automation?.mode === "alert-only") {
+    const mentionNames = config.alerts?.mentionNames || [];
+    const ignoredAuthor =
+      (config.alerts?.ignoreAuthors || []).includes(latest.author) ||
+      isSelfAuthored(latest.author, mentionNames);
+    const directChat = !ignoredAuthor && looksLikeDirectChat(chat, latest.author);
+    const addressed = !ignoredAuthor && isAddressed(latest.text, mentionNames);
+    const shouldAlarm = !ignoredAuthor && (decision.action === "alarm" || directChat || addressed);
+
+    if (shouldAlarm) {
+      const reason = decision.action === "alarm"
+        ? decision.reason
+        : directChat
+          ? "direct chat backstop"
+          : "addressed backstop (name match)";
+      await escalate({ chat, latest, reason });
+      const results = await runActions(
+        [{ name: "alert_phone", args: { chat, author: latest.author, text: latest.text, time: latest.time } }],
+        { chat, latest }
+      );
+      await logActivity({ kind: "alert", chat, latest, reason, results });
+      console.error(`[${chat}] alarm — ${reason} (${results[0]?.error || "sent"})`);
+    } else {
+      console.error(`[${chat}] no alarm — ${ignoredAuthor ? "message authored by user/ignored author" : decision.reason}`);
+    }
+    return;
+  }
 
   // Carry out the decision. readChat() above already navigated to `chat`, so the
   // compose box targets it — no re-open needed.

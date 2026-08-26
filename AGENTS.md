@@ -68,6 +68,7 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
 
 ## Running state & operations
 
+- Automation mode is currently **alert-only**: Gemini decides `alarm` vs `ignore`; the orchestrator never sends Teams replies in this mode, even if a whitelist entry exists. Direct 1:1 chats and name-addressed messages have deterministic alarm backstops.
 - Server runtime is **Bun 1.4+**, not Node. Relevant Node-compatible built-ins are used
   through Bun; keep the Windows Bun smoke workflow passing.
 - Three long-running processes, all started by `scripts/start-stack.ps1`:
