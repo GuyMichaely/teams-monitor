@@ -4,7 +4,7 @@ Personal-use, sideloaded Android app for the Teams monitoring system in this rep
 
 ## What it does
 
-The native main screen shows WebSocket connection status, server URL, the last alert, quick alert toggles, and buttons for the web dashboard, Settings, battery-optimization exemption, and alarm testing.
+The native main screen shows WebSocket connection status, server URL, the last alert, quick alert toggles, and buttons for the web dashboard, Settings, battery-optimization exemption, alarm testing, and diagnostics export.
 
 The foreground `AlertService` maintains a WebSocket connection to the configured HTTPS server. For the normal Cloudflare setup, configure:
 
@@ -16,6 +16,14 @@ Access token: same value as GUI_TOKEN on the laptop
 The app converts that to the WSS alert endpoint and supplies the token as the WebSocket access token. Plain HTTP is intentionally unsupported.
 
 Alerts can show a notification and/or play the alarm stream. Do Not Disturb bypass requires notification-policy access. There is deliberately no boot receiver; after reboot, open the app once.
+
+## Diagnostics
+
+The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, 15-minute service heartbeats, WebSocket connection/reconnect/failure details, received alert metadata, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
+
+Tap **Copy diagnostics** on the main screen to copy a report containing the recent log plus app/device version, current network state, battery-optimization status, notification permission/state, DND access, and relevant alert settings. Paste that report into a bug report or debugging chat.
+
+The log is capped at roughly 1 MB and automatically retains the newest entries.
 
 ## Settings
 
@@ -39,22 +47,22 @@ The main screen's **Test alarm** button uses the current alarm settings and beco
 
 The repository workflow `.github/workflows/android-apk.yml` runs the same `assembleDebug` build used locally. GitHub Actions restores the development PC's existing `%USERPROFILE%\.android\debug.keystore` first, so CI APKs have the same signature as local debug builds and can update the currently installed app.
 
-One-time setup from the Windows development machine:
+One-time setup:
 
-```powershell
-.\scripts\setup-android-signing.ps1
-```
+1. Confirm `%USERPROFILE%\.android\debug.keystore` exists. A local `assembleDebug` build creates it if necessary.
+2. In PowerShell, copy it as Base64:
 
-The script uploads `%USERPROFILE%\.android\debug.keystore` as the `ANDROID_DEBUG_KEYSTORE_BASE64` GitHub Actions secret and triggers the APK workflow. If the debug keystore does not exist yet, run a local debug build once first:
+   ```powershell
+   [Convert]::ToBase64String(
+       [IO.File]::ReadAllBytes("$HOME\.android\debug.keystore")
+   ) | Set-Clipboard
+   ```
 
-```powershell
-cd android-app
-.\gradlew.bat assembleDebug
-cd ..
-.\scripts\setup-android-signing.ps1
-```
+3. In GitHub, open **Settings → Secrets and variables → Actions → New repository secret**.
+4. Name the secret `ANDROID_DEBUG_KEYSTORE_BASE64`, paste the clipboard value, and save it.
+5. Open **Actions → Android APK → Run workflow** for the first published build.
 
-It requires the GitHub CLI (`gh`) to be installed and authenticated.
+No GitHub CLI is required.
 
 **Back up `%USERPROFILE%\.android\debug.keystore`.** Android updates must continue to use the same signing key as the installed app.
 
