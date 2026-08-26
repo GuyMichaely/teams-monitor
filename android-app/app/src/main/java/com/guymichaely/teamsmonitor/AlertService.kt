@@ -33,28 +33,51 @@ class AlertService : Service() {
     @Volatile private var webSocket: WebSocket? = null
     private var retries = 0
     @Volatile private var stopped = false
+
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
         executor = Executors.newSingleThreadScheduledExecutor()
         AlertNotifier.createChannels(this)
+        AppLog.event(
+            this,
+            "service_create",
+            "server=${prefs.serverUrl.ifBlank { "(not set)" }} tokenConfigured=${prefs.token.isNotBlank()} network=${AppLog.networkSummary(this)}"
+        )
         ServiceCompat.startForeground(
             this,
             AlertNotifier.SERVICE_NOTIFICATION_ID,
             buildNotification(),
             if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
         )
-        // user woke the screen — silence any playing alarm, unconditionally
         ContextCompat.registerReceiver(
             this, screenOnReceiver, IntentFilter(Intent.ACTION_SCREEN_ON),
             ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        executor.scheduleAtFixedRate(
+            {
+                AppLog.event(
+                    this,
+                    "service_heartbeat",
+                    "connection=${AlertState.connection} network=${AppLog.networkSummary(this)}"
+                )
+            },
+            HEARTBEAT_MINUTES,
+            HEARTBEAT_MINUTES,
+            TimeUnit.MINUTES
         )
         connect()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        AppLog.event(
+            this,
+            "service_start_command",
+            "action=${intent?.action ?: "(none)"} startId=$startId flags=$flags"
+        )
         if (intent?.action == ACTION_RECONNECT) {
             retries = 0
+            AppLog.event(this, "ws_manual_reconnect")
             // clear the field first so the cancelled socket's failure callback is ignored
             val old = webSocket
             webSocket = null
@@ -64,7 +87,13 @@ class AlertService : Service() {
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        AppLog.event(this, "service_task_removed")
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        AppLog.event(this, "service_destroy")
         stopped = true
         unregisterReceiver(screenOnReceiver)
         webSocket?.cancel()
@@ -76,10 +105,24 @@ class AlertService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun connect() {
-        if (stopped) return
-        if (webSocket != null) return // already connected or connecting — never hold two sockets
-        if (prefs.serverUrl.isBlank()) return // not configured yet; settings save triggers RECONNECT
+        if (stopped) {
+            AppLog.event(this, "ws_connect_skipped", "reason=service_stopped")
+            return
+        }
+        if (webSocket != null) {
+            AppLog.event(this, "ws_connect_skipped", "reason=socket_exists")
+            return
+        }
+        if (prefs.serverUrl.isBlank()) {
+            AppLog.event(this, "ws_connect_skipped", "reason=server_not_configured")
+            return
+        }
         AlertState.onConnection(this, AlertState.Connection.CONNECTING)
+        AppLog.event(
+            this,
+            "ws_connecting",
+            "server=${prefs.serverUrl} tokenConfigured=${prefs.token.isNotBlank()} network=${AppLog.networkSummary(this)}"
+        )
         val req = Request.Builder().url(wsUrl()).build()
         webSocket = client.newWebSocket(req, listener)
     }
@@ -102,6 +145,7 @@ class AlertService : Service() {
         if (stopped) return
         val delay = minOf(1L shl retries.coerceAtMost(6), MAX_BACKOFF_S)
         retries++
+        AppLog.event(this, "ws_reconnect_scheduled", "delaySeconds=$delay attempt=$retries")
         executor.schedule({ connect() }, delay, TimeUnit.SECONDS)
     }
 
@@ -122,7 +166,8 @@ class AlertService : Service() {
 
     private val screenOnReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            AlertNotifier.stopAlarm()
+            AppLog.event(this@AlertService, "screen_on")
+            AlertNotifier.stopAlarm("screen_on")
         }
     }
 
@@ -130,17 +175,39 @@ class AlertService : Service() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             retries = 0
             AlertState.onConnection(this@AlertService, AlertState.Connection.CONNECTED)
+            AppLog.event(
+                this@AlertService,
+                "ws_connected",
+                "http=${response.code} protocol=${response.protocol}"
+            )
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            val msg = try { JSONObject(text) } catch (e: Exception) { return }
-            if (msg.optString("kind") != "alert") return
+            val msg = try {
+                JSONObject(text)
+            } catch (e: Exception) {
+                AppLog.event(
+                    this@AlertService,
+                    "ws_message_invalid_json",
+                    "error=${e.javaClass.simpleName}:${e.message ?: ""} length=${text.length}"
+                )
+                return
+            }
+            val kind = msg.optString("kind")
+            if (kind != "alert") {
+                AppLog.event(this@AlertService, "ws_message_ignored", "kind=$kind length=${text.length}")
+                return
+            }
             val chat = msg.optString("chat")
             val author = msg.optString("author")
             val alertText = msg.optString("text")
-            AlertState.onAlert(
-                this@AlertService, chat, author, alertText, msg.optString("time")
+            val alertTime = msg.optString("time")
+            AppLog.event(
+                this@AlertService,
+                "alert_received",
+                "chat=$chat author=$author serverTime=$alertTime textLength=${alertText.length}"
             )
+            AlertState.onAlert(this@AlertService, chat, author, alertText, alertTime)
             AlertNotifier.alert(this@AlertService, chat, author, alertText)
         }
 
@@ -154,30 +221,40 @@ class AlertService : Service() {
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            AppLog.event(this@AlertService, "ws_closing", "code=$code reason=$reason")
             webSocket.close(1000, null)
             onSocketDead(webSocket)
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            AppLog.event(this@AlertService, "ws_closed", "code=$code reason=$reason")
             onSocketDead(webSocket)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            AppLog.event(
+                this@AlertService,
+                "ws_failure",
+                "error=${t.javaClass.simpleName}:${t.message ?: ""} http=${response?.code ?: "none"} network=${AppLog.networkSummary(this@AlertService)}"
+            )
             onSocketDead(webSocket)
         }
     }
 
     companion object {
         private const val MAX_BACKOFF_S = 60L
+        private const val HEARTBEAT_MINUTES = 15L
         private const val ACTION_RECONNECT = "com.guymichaely.teamsmonitor.RECONNECT"
 
         fun start(context: Context) {
+            AppLog.event(context, "service_start_requested")
             val i = Intent(context, AlertService::class.java)
             ContextCompat.startForegroundService(context, i)
         }
 
         /** Drop the current socket and reconnect immediately (settings changed). */
         fun reconnect(context: Context) {
+            AppLog.event(context, "service_reconnect_requested")
             val i = Intent(context, AlertService::class.java).setAction(ACTION_RECONNECT)
             ContextCompat.startForegroundService(context, i)
         }
