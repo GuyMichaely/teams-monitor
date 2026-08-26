@@ -1,0 +1,50 @@
+name: Purge leaked runtime data
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/purge-history.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install git-filter-repo
+        run: python -m pip install --disable-pip-version-check git-filter-repo
+
+      - name: Rewrite history
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B main "$GITHUB_SHA"
+          git filter-repo --force --sensitive-data-removal --invert-paths \
+            --path data/ \
+            --path proj1/data/ \
+            --path .env \
+            --path proj1/.env
+
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin main
+
+          # Remove temporary backup refs created during the cleanup session so they
+          # cannot keep the pre-purge history reachable.
+          git push origin --delete pre-purge-backup || true
+          git push origin --delete tmp-noop || true
+
+          # This workflow is intentionally one-shot. Remove it from the clean history.
+          git rm .github/workflows/purge-history.yml
+          git commit -m "Remove one-time history purge workflow"
+          git push origin main
