@@ -40,19 +40,21 @@ object AppLog {
         }
     }
 
+    @Suppress("DEPRECATION")
     fun report(context: Context): String {
         val app = context.applicationContext
         val prefs = Prefs(app)
         val pm = app.getSystemService(PowerManager::class.java)
         val nm = app.getSystemService(NotificationManager::class.java)
         val packageInfo = app.packageManager.getPackageInfo(app.packageName, 0)
+        val versionCode = if (Build.VERSION.SDK_INT >= 28) packageInfo.longVersionCode else packageInfo.versionCode.toLong()
         val notificationsPermission = Build.VERSION.SDK_INT < 33 ||
             app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
         val header = buildString {
             appendLine("Teams Monitor diagnostics")
             appendLine("generated=${Instant.now()}")
-            appendLine("appVersion=${packageInfo.versionName} (${packageInfo.longVersionCode})")
+            appendLine("appVersion=${packageInfo.versionName} ($versionCode)")
             appendLine("android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}")
             appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("connection=${AlertState.connection}")
