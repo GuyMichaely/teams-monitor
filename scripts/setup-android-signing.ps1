@@ -15,6 +15,7 @@ if (-not $gh) {
   throw "GitHub CLI (gh) is required. Install it, run 'gh auth login', then re-run this script."
 }
 & $gh.Source auth status | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not authenticated. Run 'gh auth login' first." }
 
 $keytool = Get-Command keytool -ErrorAction SilentlyContinue
 if ($keytool) {
@@ -37,7 +38,8 @@ if (Test-Path $keystore) {
   Write-Host "Using existing signing key: $keystore"
 } else {
   $bytes = New-Object byte[] 32
-  [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
   $password = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 
   & $keytoolExe -genkeypair -v `
@@ -50,10 +52,11 @@ if (Test-Path $keystore) {
     -keysize 2048 `
     -validity 10000 `
     -dname "CN=Teams Monitor, OU=Personal, O=GuyMichaely, C=US"
+  if ($LASTEXITCODE -ne 0) { throw "keytool failed to create the Android signing key." }
 
   Set-Content -NoNewline $passwordFile $password
   try {
-    icacls $backupDir /inheritance:r /grant:r "$env:USERNAME:(OI)(CI)F" | Out-Null
+    icacls $backupDir /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" | Out-Null
   } catch {
     Write-Warning "Could not tighten ACLs on $backupDir; protect the signing-key backup manually."
   }
@@ -63,10 +66,13 @@ if (Test-Path $keystore) {
 
 $keystoreBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($keystore))
 $keystoreBase64 | & $gh.Source secret set ANDROID_KEYSTORE_BASE64 --repo $repo
+if ($LASTEXITCODE -ne 0) { throw "Failed to set ANDROID_KEYSTORE_BASE64." }
 $password | & $gh.Source secret set ANDROID_KEYSTORE_PASSWORD --repo $repo
+if ($LASTEXITCODE -ne 0) { throw "Failed to set ANDROID_KEYSTORE_PASSWORD." }
 
 Write-Host "GitHub Actions signing secrets configured."
 Write-Host "Keep $backupDir safe; losing the signing key prevents future APKs from updating the installed app."
 
 & $gh.Source workflow run android-apk.yml --repo $repo
+if ($LASTEXITCODE -ne 0) { throw "Signing is configured, but triggering android-apk.yml failed." }
 Write-Host "Triggered the Android APK workflow. The resulting APK will appear in the android-latest GitHub Release."
