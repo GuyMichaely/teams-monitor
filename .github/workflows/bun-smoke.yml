@@ -7,6 +7,7 @@ on:
       - "src/**"
       - "scripts/smoke-gui.mjs"
       - "scripts/start-stack.ps1"
+      - "scripts/setup-android-signing.ps1"
       - "package.json"
       - ".github/workflows/bun-smoke.yml"
   pull_request:
@@ -14,6 +15,7 @@ on:
       - "src/**"
       - "scripts/smoke-gui.mjs"
       - "scripts/start-stack.ps1"
+      - "scripts/setup-android-signing.ps1"
       - "package.json"
       - ".github/workflows/bun-smoke.yml"
   workflow_dispatch:
@@ -31,5 +33,9 @@ jobs:
       - name: Show Bun version
         run: bun --version
 
-      - name: Test GUI and WebSocket upgrade
+      - name: Parse signing setup script
+        shell: powershell
+        run: '[scriptblock]::Create((Get-Content scripts/setup-android-signing.ps1 -Raw)) | Out-Null'
+
+      - name: Test Bun child process and GUI WebSocket
         run: bun scripts/smoke-gui.mjs
