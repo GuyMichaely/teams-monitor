@@ -37,25 +37,28 @@ The main screen's **Test alarm** button uses the current alarm settings and beco
 
 ## Recommended install/update path: GitHub Release
 
-The repository workflow `.github/workflows/android-apk.yml` builds the app on Android changes. Once signing is configured, it publishes a signed APK to a stable GitHub Release tagged `android-latest` and also stores the APK as a workflow artifact.
+The repository workflow `.github/workflows/android-apk.yml` runs the same `assembleDebug` build used locally. GitHub Actions restores the development PC's existing `%USERPROFILE%\.android\debug.keystore` first, so CI APKs have the same signature as local debug builds and can update the currently installed app.
 
-One-time signing setup from the Windows development machine:
+One-time setup from the Windows development machine:
 
 ```powershell
 .\scripts\setup-android-signing.ps1
 ```
 
-The script:
+The script uploads `%USERPROFILE%\.android\debug.keystore` as the `ANDROID_DEBUG_KEYSTORE_BASE64` GitHub Actions secret and triggers the APK workflow. If the debug keystore does not exist yet, run a local debug build once first:
 
-1. Reuses `%USERPROFILE%\.android\debug.keystore` when it is the standard Android debug key. This normally preserves update compatibility with an app previously installed from this PC's local `assembleDebug` build.
-2. If that key is unavailable, creates a dedicated persistent signing key under `%USERPROFILE%\.teams-monitor` instead.
-3. Backs up the chosen signing material under `%USERPROFILE%\.teams-monitor`, stores it as GitHub Actions secrets, and triggers the APK workflow.
+```powershell
+cd android-app
+.\gradlew.bat assembleDebug
+cd ..
+.\scripts\setup-android-signing.ps1
+```
 
-It requires the GitHub CLI (`gh`) to be authenticated and a JDK 17 `keytool` either on PATH or in the local `tools\jdk17` toolchain.
+It requires the GitHub CLI (`gh`) to be installed and authenticated.
 
-**Keep the `%USERPROFILE%\.teams-monitor` signing-key backup.** Android updates must be signed by the same key as the installed app. If Android reports a signature mismatch on the first GitHub-built APK, uninstall the old copy once and install the Release APK; subsequent CI builds will update normally.
+**Back up `%USERPROFILE%\.android\debug.keystore`.** Android updates must continue to use the same signing key as the installed app.
 
-After setup, Android-related pushes automatically refresh the `android-latest` Release. Download `teams-monitor.apk` from that Release on the phone and install it over the existing copy.
+After setup, Android-related pushes automatically refresh the `android-latest` GitHub Release and also store `teams-monitor.apk` as an Actions artifact. Download `teams-monitor.apk` from that Release on the phone and install it over the existing copy.
 
 ## Local build
 
