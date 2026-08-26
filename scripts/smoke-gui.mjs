@@ -1,7 +1,28 @@
+import { spawn } from "node:child_process";
 import { startGui } from "../src/gui-server.mjs";
 
 const port = 18090;
 process.env.GUI_TOKEN = "runtime-smoke-token";
+
+async function testChildProcess() {
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--version"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0 && stdout.trim()) resolve();
+      else reject(new Error(`Bun child_process smoke test failed (${code}): ${stderr.trim()}`));
+    });
+  });
+}
+
+await testChildProcess();
 
 const { server, close } = startGui({
   gui: {
@@ -33,7 +54,7 @@ try {
     }, { once: true });
   });
 
-  console.log("GUI WebSocket smoke test passed.");
+  console.log("Bun child_process + GUI WebSocket smoke tests passed.");
 } finally {
   if (ws?.readyState === WebSocket.OPEN) {
     await new Promise((resolve) => {
