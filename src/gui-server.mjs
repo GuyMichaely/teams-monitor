@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
-import { authOk, logDiagnostic, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
+import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
@@ -16,14 +16,14 @@ function sendJson(res, status, obj) {
 
 function diagnostics(limit) {
   const events = tailLines(join(DATA_DIR, "gui-diagnostics.jsonl"), limit).map((line) => {
-    try { return JSON.parse(line); } catch { return { raw: line }; }
+    try { return JSON.parse(line); } catch { return { raw: redactSecrets(line) }; }
   });
   return {
     generatedAt: new Date().toISOString(),
     serverPid: process.pid,
     events,
-    tunnelLog: tailLines(TUNNEL_LOG, limit),
-    tunnelOutLog: tailLines(TUNNEL_OUT_LOG, limit),
+    tunnelLog: tailLines(TUNNEL_LOG, limit).map(redactSecrets),
+    tunnelOutLog: tailLines(TUNNEL_OUT_LOG, limit).map(redactSecrets),
   };
 }
 
