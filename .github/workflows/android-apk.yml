@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - "android-app/**"
-      - "scripts/setup-android-signing.ps1"
       - ".github/workflows/android-apk.yml"
   workflow_dispatch:
 
@@ -40,7 +39,7 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::APK publishing is waiting for your existing Android debug keystore. Run scripts/setup-android-signing.ps1 once from your Windows machine."
+            echo "::notice::APK publishing is waiting for repository secret ANDROID_DEBUG_KEYSTORE_BASE64. Base64-encode your existing ~/.android/debug.keystore and add it under Settings > Secrets and variables > Actions."
           fi
 
       - name: Restore debug signing key
