@@ -4,6 +4,18 @@
 
 $root = "C:\Users\GuyMichaely\projects\teams-monitor"
 $cloudflared = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
+$data = Join-Path $root "data"
+New-Item -ItemType Directory -Force $data | Out-Null
+
+$bunCommand = Get-Command bun -ErrorAction SilentlyContinue
+if ($bunCommand) {
+  $bun = $bunCommand.Source
+} else {
+  $bun = Join-Path $HOME ".bun\bin\bun.exe"
+  if (-not (Test-Path $bun)) {
+    throw "Bun is not installed or not on PATH. Install Bun 1.4+ before starting the stack."
+  }
+}
 
 function Test-Port($port) {
   try {
@@ -14,14 +26,14 @@ function Test-Port($port) {
   } catch { return $false }
 }
 
-# GUI server (port 8090). Node loads GUI_TOKEN/GEMINI_API_KEY from .env.
+# GUI server (port 8090). Bun loads GUI_TOKEN/GEMINI_API_KEY from .env.
 if (-not (Test-Port 8090)) {
-  Start-Process node -ArgumentList '--env-file=.env src/cli.mjs gui' -WorkingDirectory $root -WindowStyle Hidden `
-    -RedirectStandardError "$root\data\gui.log" -RedirectStandardOutput "$root\data\gui.out.log"
+  Start-Process $bun -ArgumentList '--env-file=.env src/cli.mjs gui' -WorkingDirectory $root -WindowStyle Hidden `
+    -RedirectStandardError "$data\gui.log" -RedirectStandardOutput "$data\gui.out.log"
 }
 
 # Orchestrator (fresh heartbeat = alive; hard-stop kills the pid and removes it)
-$hb = "$root\data\heartbeat.json"
+$hb = "$data\heartbeat.json"
 $orchRunning = $false
 if (Test-Path $hb) {
   try {
@@ -30,8 +42,8 @@ if (Test-Path $hb) {
   } catch {}
 }
 if (-not $orchRunning) {
-  Start-Process node -ArgumentList '--env-file=.env src/cli.mjs run' -WorkingDirectory $root -WindowStyle Hidden `
-    -RedirectStandardError "$root\data\orchestrator.log" -RedirectStandardOutput "$root\data\orchestrator.out.log"
+  Start-Process $bun -ArgumentList '--env-file=.env src/cli.mjs run' -WorkingDirectory $root -WindowStyle Hidden `
+    -RedirectStandardError "$data\orchestrator.log" -RedirectStandardOutput "$data\orchestrator.out.log"
 }
 
 # Cloudflare tunnel (gui.guymichaely.com -> 127.0.0.1:8090).
@@ -40,5 +52,5 @@ $tunnelRunning = Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" 
   Where-Object { $_.CommandLine -match '(?i)tunnel\s+run' -and $_.CommandLine -match '(?i)teams-gui' }
 if (-not $tunnelRunning) {
   Start-Process $cloudflared -ArgumentList 'tunnel run teams-gui' -WorkingDirectory $root -WindowStyle Hidden `
-    -RedirectStandardError "$root\data\tunnel.log" -RedirectStandardOutput "$root\data\tunnel.out.log"
+    -RedirectStandardError "$data\tunnel.log" -RedirectStandardOutput "$data\tunnel.out.log"
 }
