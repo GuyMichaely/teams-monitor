@@ -1,9 +1,9 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Command-line entry point for the Teams automation library.
 //
-//   node src/cli.mjs read [n]         Read the last n messages (default 15) as JSON.
-//   node src/cli.mjs send "message"   Send a message into the open chat.
-//   node src/cli.mjs watch [ms]       Poll the open chat and print new messages.
+//   bun src/cli.mjs read [n]         Read the last n messages (default 15) as JSON.
+//   bun src/cli.mjs send "message"   Send a message into the open chat.
+//   bun src/cli.mjs watch [ms]       Poll the open chat and print new messages.
 
 import { readMessages, sendMessage, watchMessages } from "./teams.mjs";
 import { getAllChats, getUnreadChats, readChat } from "./monitor.mjs";
@@ -66,7 +66,7 @@ try {
     }
     case "readchat": {
       if (!arg) {
-        console.error('Usage: node src/cli.mjs readchat "Chat Name"');
+        console.error('Usage: bun src/cli.mjs readchat "Chat Name"');
         process.exit(1);
       }
       const res = await readChat(arg, 20);
@@ -80,7 +80,7 @@ try {
     }
     case "send": {
       if (!arg) {
-        console.error('Usage: node src/cli.mjs send "your message"');
+        console.error('Usage: bun src/cli.mjs send "your message"');
         process.exit(1);
       }
       const result = await sendMessage(arg);
@@ -102,16 +102,16 @@ try {
     default:
       console.error(
         "Usage:\n" +
-          "  node src/cli.mjs run                   start the monitor/respond orchestrator\n" +
-          "  node src/cli.mjs stop                  kill a running orchestrator immediately (break glass)\n" +
-          "  node src/cli.mjs gui                   serve the monitoring dashboard (see config.gui)\n" +
-          "  node src/cli.mjs catchup               show per-chat 'resume reading here' markers\n" +
-          "  node src/cli.mjs chats                 list all chats/channels\n" +
-          "  node src/cli.mjs unread                list chats with unread messages\n" +
-          '  node src/cli.mjs readchat "Name"       open a chat and read it (marks it read)\n' +
-          "  node src/cli.mjs read [n]              read the currently-open chat\n" +
-          '  node src/cli.mjs send "message"        send into the open chat\n' +
-          "  node src/cli.mjs watch [intervalMs]    poll the open chat for new messages"
+          "  bun src/cli.mjs run                   start the monitor/respond orchestrator\n" +
+          "  bun src/cli.mjs stop                  kill a running orchestrator immediately (break glass)\n" +
+          "  bun src/cli.mjs gui                   serve the monitoring dashboard (see config.gui)\n" +
+          "  bun src/cli.mjs catchup               show per-chat 'resume reading here' markers\n" +
+          "  bun src/cli.mjs chats                 list all chats/channels\n" +
+          "  bun src/cli.mjs unread                list chats with unread messages\n" +
+          '  bun src/cli.mjs readchat "Name"       open a chat and read it (marks it read)\n' +
+          "  bun src/cli.mjs read [n]              read the currently-open chat\n" +
+          '  bun src/cli.mjs send "message"        send into the open chat\n' +
+          "  bun src/cli.mjs watch [intervalMs]    poll the open chat for new messages"
       );
       process.exit(1);
   }
