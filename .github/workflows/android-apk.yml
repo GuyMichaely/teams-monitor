@@ -15,6 +15,7 @@ permissions:
 env:
   ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
   ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+  ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
 
 jobs:
   build:
@@ -47,7 +48,7 @@ jobs:
         id: signing
         shell: bash
         run: |
-          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEYSTORE_PASSWORD" ]]; then
+          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_ALIAS" ]]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -64,7 +65,7 @@ jobs:
           apksigner="$ANDROID_HOME/build-tools/34.0.0/apksigner"
           "$apksigner" sign \
             --ks "$RUNNER_TEMP/teams-monitor-release.jks" \
-            --ks-key-alias teamsmonitor \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
             --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
             --key-pass env:ANDROID_KEYSTORE_PASSWORD \
             --out "$signed" \
@@ -88,7 +89,7 @@ jobs:
           apk="$RUNNER_TEMP/teams-monitor.apk"
           tag="android-latest"
           title="Latest Android build"
-          notes="Automated sideload build from ${GITHUB_SHA}. Download teams-monitor.apk on the phone and install it over the existing app."
+          notes="Automated sideload build from ${GITHUB_SHA}. Download teams-monitor.apk on the phone and install it over the existing app. If Android reports a signature mismatch, uninstall the old app once and install this build; future CI builds will then update normally."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             git tag -f "$tag" "$GITHUB_SHA"
