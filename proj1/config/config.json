@@ -1,0 +1,41 @@
+{
+  "pollIntervalMs": 15000,
+  "whitelist": {
+    "autoSend": []
+  },
+  "holdMessage": "Thanks — I've seen this and will get back to you shortly.",
+  "brain": {
+    "provider": "gemini",
+    "model": "gemini-3.1-flash-lite",
+    "apiKeyEnv": "GEMINI_API_KEY"
+  },
+  "gui": {
+    "port": 8090,
+    "host": "0.0.0.0",
+    "authTokenEnv": "GUI_TOKEN"
+  },
+  "alerts": {
+    "notifyAll": false,
+    "transport": "websocket",
+    "websocketUrl": "",
+    "fcm": {
+      "projectId": "",
+      "serviceAccountFile": "config/fcm-service-account.json",
+      "deviceToken": ""
+    },
+    "ignoreAuthors": [],
+    "mentionNames": ["Guy Michaely", "Guy"]
+  },
+  "integrations": {
+    "tfs": {
+      "enabled": false,
+      "serverPort": 8080,
+      "authTokenEnv": "TFS_AGENT_TOKEN",
+      "resultTimeoutMs": 120000,
+      "longPollMaxMs": 30000
+    }
+  },
+  "debug": {
+    "echoLoop": false
+  }
+}

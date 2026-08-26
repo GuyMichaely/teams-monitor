@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">Teams Monitor</string>
+    <string name="settings_title">Settings</string>
+    <string name="dashboard_title">Dashboard</string>
+    <string name="menu_settings">Settings</string>
+    <string name="menu_battery">Disable battery optimization</string>
+    <string name="open_dashboard">Open dashboard</string>
+    <string name="test_alarm">Test alarm</string>
+    <string name="toggle_alarm_sound">Alarm sound</string>
+    <string name="toggle_notifications">Notifications</string>
+    <string name="toggle_screen_on">Alarm when screen is on</string>
+    <string name="state_on">ON</string>
+    <string name="state_off">OFF</string>
+    <string name="server_url_hint">https://gui.yourdomain.com</string>
+    <string name="token_hint">Access token (optional)</string>
+    <string name="save">Save</string>
+    <string name="section_connection">Connection</string>
+    <string name="section_alerts">Alerts</string>
+    <string name="alarm_enabled">Play alarm sound</string>
+    <string name="notif_enabled">Show notification</string>
+    <string name="alarm_screen_on">Alarm even when screen is on</string>
+    <string name="use_system_ringtone">Use system alarm ringtone</string>
+    <string name="stop_alarm">Stop alarm</string>
+    <string name="alarm_volume_label">Alarm volume</string>
+    <string name="alarm_duration_label">Alarm duration (seconds)</string>
+    <string name="dnd_warning">Alarms may be silenced by Do Not Disturb</string>
+    <string name="dnd_fix">Allow</string>
+    <string name="channel_alerts">Alerts</string>
+    <string name="channel_service">Alert listener</string>
+</resources>

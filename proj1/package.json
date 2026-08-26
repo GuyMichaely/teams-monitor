@@ -1,0 +1,18 @@
+{
+  "name": "teams-automation",
+  "version": "0.1.0",
+  "description": "Automate reading and sending Microsoft Teams messages via the Chrome DevTools Protocol on the new (WebView2) Teams client.",
+  "type": "module",
+  "bin": {
+    "teams": "src/cli.mjs"
+  },
+  "scripts": {
+    "read": "node src/cli.mjs read",
+    "send": "node src/cli.mjs send",
+    "watch": "node src/cli.mjs watch"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "private": true
+}
