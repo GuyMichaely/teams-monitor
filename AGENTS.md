@@ -53,15 +53,14 @@ scripts/
                     each only if not already running (safe to re-run). Bun loads GUI_TOKEN
                     and GEMINI_API_KEY from the repo-root .env file.
   launch-teams.ps1  Manual Teams launch with debug port.
-  setup-android-signing.ps1  One-time persistent APK signing + GitHub Actions secret setup.
 config/config.json  Live tracked config. Never put secrets here; Gemini uses the env var
                     named by brain.apiKeyEnv (currently GEMINI_API_KEY).
 context/user-profile.md  The brain's user context, editable live from the dashboard.
 data/               Runtime state (gitignored): state.json, activity.jsonl, logs,
                     heartbeat.json, STOP file.
 tools/              Gitignored local toolchain: jdk17, android-sdk, gradle (for local APK builds).
-.github/workflows/android-apk.yml  Builds Android release APKs; after one-time signing setup,
-                    publishes the stable android-latest GitHub Release + Actions artifact.
+.github/workflows/android-apk.yml  Builds Android debug APKs with the dev PC's stable debug key;
+                    publishes the android-latest GitHub Release + Actions artifact.
 .github/workflows/bun-smoke.yml  Windows Bun runtime test covering child_process + GUI WebSocket.
 FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hierarchy,
                     GUI-as-avatar, companion app status, known gaps).
@@ -91,9 +90,10 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
   cmd //c "gradlew.bat assembleDebug --no-daemon"
   ```
   The GUI serves the result at /app-debug.apk immediately (no copy step).
-- Preferred Android distribution is the signed `android-latest` GitHub Release.
-  Run `scripts/setup-android-signing.ps1` once on the dev machine to establish the
-  persistent signing key and Actions secrets. Preserve `%USERPROFILE%\.teams-monitor`.
+- Preferred Android distribution is the `android-latest` GitHub Release. CI runs
+  `assembleDebug` and restores `%USERPROFILE%\.android\debug.keystore` from the
+  `ANDROID_DEBUG_KEYSTORE_BASE64` Actions secret. Initial secret setup is done manually
+  in GitHub's web UI; no `gh` helper script is retained in the repo.
 - After editing server code, restart processes so Bun reloads `.env`. The orchestrator
   needs GUI_TOKEN too: alert POSTs to the hub are authenticated.
 
@@ -146,9 +146,13 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
 15. **Runtime data must never be committed.** A Cloudflare tunnel log once exposed
     a WebSocket access token through the query string. `data/` is gitignored and GUI
     diagnostics redact `access_token`; preserve both protections.
-16. **Android update signing must stay stable.** Replacing the release signing key
-    means Android will refuse the new APK as an update to the installed app. Keep the
-    local signing backup and the Actions secrets aligned.
+16. **Android update signing must stay stable.** CI intentionally uses the same
+    `%USERPROFILE%\.android\debug.keystore` as local `assembleDebug` builds. Losing or
+    replacing that key prevents future APKs from updating the installed app.
+17. **Android alert reliability is auditable now.** `AppLog.kt` keeps a rolling app-private
+    log, `AlertService` writes 15-minute heartbeats and detailed WS lifecycle failures,
+    and the main screen has Copy diagnostics. The OkHttp WebSocket sends a ping every
+    30 seconds so stale half-open sockets fail into the existing reconnect loop.
 
 ## Secrets inventory
 
@@ -157,9 +161,8 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
 - `GUI_TOKEN` guards /api/*, /ws/alerts, dashboard overlay. (Not /app-debug.apk — public
   by decision.) The phone must use the same value.
 - `GEMINI_API_KEY` is named by `brain.apiKeyEnv` for local brain calls.
-- GitHub Actions Android signing secrets: `ANDROID_KEYSTORE_BASE64` and
-  `ANDROID_KEYSTORE_PASSWORD`; persistent key backup lives outside the repo under
-  `%USERPROFILE%\.teams-monitor`.
+- GitHub Actions Android signing secret: `ANDROID_DEBUG_KEYSTORE_BASE64`, containing
+  the dev PC's `%USERPROFILE%\.android\debug.keystore` encoded as Base64.
 - `config/fcm-service-account.json` — expected path for FCM (gitignored),
   doesn't exist yet; FCM never set up.
 - `TFS_AGENT_TOKEN` — env var for the TFS dispatcher (disabled).
