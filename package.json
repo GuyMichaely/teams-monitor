@@ -7,14 +7,14 @@
     "teams": "src/cli.mjs"
   },
   "scripts": {
-    "start": "node --env-file=.env src/cli.mjs run",
-    "gui": "node --env-file=.env src/cli.mjs gui",
-    "read": "node --env-file=.env src/cli.mjs read",
-    "send": "node --env-file=.env src/cli.mjs send",
-    "watch": "node --env-file=.env src/cli.mjs watch"
+    "start": "bun --env-file=.env src/cli.mjs run",
+    "gui": "bun --env-file=.env src/cli.mjs gui",
+    "read": "bun --env-file=.env src/cli.mjs read",
+    "send": "bun --env-file=.env src/cli.mjs send",
+    "watch": "bun --env-file=.env src/cli.mjs watch"
   },
   "engines": {
-    "node": ">=20"
+    "bun": ">=1.4.0"
   },
   "private": true
 }
