@@ -1,19 +1,11 @@
-// Thin runtime-control layer around the dashboard server.
-// The dashboard implementation lives in gui-server-core.mjs; this module adds
-// local start/stop/status controls for the already-provisioned `teams-gui`
-// Cloudflare tunnel. It does not create tunnels, edit DNS, or call Cloudflare APIs.
+// Diagnostics layer around the runtime GUI/tunnel server.
+// Logs connection behavior without logging GUI_TOKEN/access_token values.
 
-import { timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, openSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { startGui as startCoreGui } from "./gui-server-core.mjs";
+import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
+import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
+import { authOk, logDiagnostic, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TUNNEL_NAME = "teams-gui";
-const TUNNEL_HOST = "gui.guymichaely.com";
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
 
@@ -22,224 +14,140 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-function authOk(header, token) {
-  const m = /^Bearer\s+(.+)$/.exec(header || "");
-  if (!m) return false;
-  const a = Buffer.from(m[1]);
-  const b = Buffer.from(token);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-function tunnelProcesses() {
-  if (process.platform !== "win32") return [];
-  const command =
-    "$p = Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | " +
-    "Where-Object { $_.CommandLine -match '(?i)tunnel\\s+run' -and $_.CommandLine -match '(?i)teams-gui' } | " +
-    "Select-Object ProcessId,CommandLine; if ($p) { $p | ConvertTo-Json -Compress }";
-  try {
-    const out = execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", command],
-      { encoding: "utf8", windowsHide: true }
-    ).trim();
-    if (!out) return [];
-    const parsed = JSON.parse(out);
-    return (Array.isArray(parsed) ? parsed : [parsed]).map((p) => ({
-      pid: Number(p.ProcessId),
-      commandLine: p.CommandLine || "",
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function tunnelStatus() {
-  const processes = tunnelProcesses();
+function diagnostics(limit) {
+  const events = tailLines(join(DATA_DIR, "gui-diagnostics.jsonl"), limit).map((line) => {
+    try { return JSON.parse(line); } catch { return { raw: line }; }
+  });
   return {
-    running: processes.length > 0,
-    pids: processes.map((p) => p.pid),
-    name: TUNNEL_NAME,
-    hostname: TUNNEL_HOST,
+    generatedAt: new Date().toISOString(),
+    serverPid: process.pid,
+    events,
+    tunnelLog: tailLines(TUNNEL_LOG, limit),
+    tunnelOutLog: tailLines(TUNNEL_OUT_LOG, limit),
   };
 }
 
-function resolveCloudflared() {
-  const candidates = [
-    process.env.CLOUDFLARED_EXE,
-    "C:\\Program Files (x86)\\cloudflared\\cloudflared.exe",
-    "C:\\Program Files\\cloudflared\\cloudflared.exe",
-  ].filter(Boolean);
-  for (const path of candidates) {
-    if (existsSync(path)) return path;
-  }
-  try {
-    const found = execFileSync("where.exe", ["cloudflared.exe"], {
-      encoding: "utf8",
-      windowsHide: true,
-    }).trim().split(/\r?\n/)[0];
-    if (found) return found;
-  } catch { /* fall through */ }
-  throw Object.assign(
-    new Error("cloudflared.exe not found; install it or set CLOUDFLARED_EXE"),
-    { httpCode: 500 }
-  );
-}
-
-function startTunnel() {
-  const current = tunnelStatus();
-  if (current.running) {
-    throw Object.assign(new Error(`already running (pid ${current.pids.join(", ")})`), { httpCode: 409 });
-  }
-  const out = openSync(TUNNEL_OUT_LOG, "a");
-  const err = openSync(TUNNEL_LOG, "a");
-  let child;
-  try {
-    child = spawn(resolveCloudflared(), ["tunnel", "run", TUNNEL_NAME], {
-      detached: true,
-      stdio: ["ignore", out, err],
-      cwd: ROOT,
-      windowsHide: true,
-    });
-  } finally {
-    closeSync(out);
-    closeSync(err);
-  }
-  child.on("error", () => {});
-  child.unref();
-  return { pid: child.pid };
-}
-
-function stopTunnel() {
-  const current = tunnelStatus();
-  if (!current.running) return { killed: false, pids: [], reason: "not-running" };
-  const killed = [];
-  for (const pid of current.pids) {
-    try {
-      execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      killed.push(pid);
-    } catch { /* process may already have exited */ }
-  }
-  return {
-    killed: killed.length > 0,
-    pids: killed,
-    reason: killed.length ? null : "kill-failed",
-  };
-}
-
-const TUNNEL_HTML = `
-  <h2>Cloudflare tunnel</h2>
+const DIAGNOSTICS_HTML = `
+  <h2>Connection diagnostics</h2>
   <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <div class="row">
-        <span id="tunnelDot" class="dot" style="background:var(--dim)"></span>
-        <strong>teams-gui</strong>
-        <span id="tunnelText" style="color:var(--dim)">checking…</span>
-      </div>
-      <div class="row">
-        <button id="btnTunnelStart" onclick="startCloudflareTunnel()" disabled>Start tunnel</button>
-        <button id="btnTunnelStop" class="danger" onclick="stopCloudflareTunnel()" disabled>Stop tunnel</button>
-      </div>
+    <div class="row" style="margin-bottom:8px">
+      <button class="secondary" onclick="refreshDiagnostics()">Refresh</button>
+      <button class="secondary" onclick="copyDiagnostics()">Copy diagnostics</button>
     </div>
+    <pre id="diagnosticsLog">(no diagnostics loaded)</pre>
     <p style="color:var(--dim);font-size:12px;margin:8px 0 0">
-      Existing tunnel only: gui.guymichaely.com → this GUI. Stopping it remotely disconnects this page and the phone app.
+      Retry the phone connection, then copy this block. Auth-token values are never logged.
     </p>
   </div>
 `;
 
-const TUNNEL_SCRIPT = `<script>
-async function tunnelApi(path, opts = {}) {
-  const tunnelToken = localStorage.guiToken || "";
-  const res = await fetch(path, { ...opts,
-    headers: { ...(tunnelToken ? { "Authorization": "Bearer " + tunnelToken } : {}), ...(opts.headers || {}) } });
-  if (res.status === 401) { if (typeof showLogin === "function") showLogin(); throw new Error("unauthorized"); }
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || res.status);
-  return body;
-}
-function renderTunnelStatus(s) {
-  const dot = document.getElementById("tunnelDot");
-  const text = document.getElementById("tunnelText");
-  if (!dot || !text) return;
-  dot.style.background = s.running ? "var(--ok)" : "var(--bad)";
-  text.textContent = s.running ? "running · pid " + s.pids.join(", ") : "stopped";
-  document.getElementById("btnTunnelStart").disabled = s.running;
-  document.getElementById("btnTunnelStop").disabled = !s.running;
-}
-async function refreshTunnelStatus() {
-  try { renderTunnelStatus(await tunnelApi("/api/tunnel/status")); } catch { /* transient */ }
-}
-async function startCloudflareTunnel() {
+const DIAGNOSTICS_SCRIPT = `<script>
+let latestDiagnostics = "";
+async function refreshDiagnostics() {
   try {
-    await tunnelApi("/api/tunnel/start", { method:"POST" });
-    toast("Cloudflare tunnel starting…");
+    const d = await tunnelApi("/api/diagnostics?limit=120");
+    latestDiagnostics = JSON.stringify(d, null, 2);
+    const pre = document.getElementById("diagnosticsLog");
+    if (pre) { pre.textContent = latestDiagnostics; pre.scrollTop = pre.scrollHeight; }
   } catch (e) { toast(e.message); }
-  setTimeout(refreshTunnelStatus, 1200);
 }
-async function stopCloudflareTunnel() {
-  const remote = location.hostname === "gui.guymichaely.com";
-  if (remote && !confirm("Stop the Cloudflare tunnel? This page will disconnect, and you cannot restart the tunnel from this remote URL until it is reachable again locally.")) return;
+async function copyDiagnostics() {
+  if (!latestDiagnostics) await refreshDiagnostics();
   try {
-    const r = await tunnelApi("/api/tunnel/stop", { method:"POST" });
-    toast(r.killed ? "Cloudflare tunnel stopped" : "Tunnel is not running");
-  } catch (e) {
-    toast(remote ? "Tunnel stop sent; remote connection may now be offline" : e.message);
-  }
-  setTimeout(refreshTunnelStatus, 1200);
+    await navigator.clipboard.writeText(latestDiagnostics);
+    toast("Diagnostics copied");
+  } catch { toast("Clipboard unavailable — select the diagnostics text manually"); }
 }
-refreshTunnelStatus();
-setInterval(refreshTunnelStatus, 5000);
+refreshDiagnostics();
 </script>`;
 
-function injectTunnelControls(page) {
-  if (page.includes('id="btnTunnelStart"')) return page;
+function injectDiagnostics(page) {
+  if (page.includes('id="diagnosticsLog"')) return page;
   return page
-    .replace("  <h2>Auto-send whitelist</h2>", TUNNEL_HTML + "\n  <h2>Auto-send whitelist</h2>")
-    .replace("</body>", TUNNEL_SCRIPT + "\n</body>");
+    .replace("  <h2>Auto-send whitelist</h2>", DIAGNOSTICS_HTML + "\n  <h2>Auto-send whitelist</h2>")
+    .replace("</body>", DIAGNOSTICS_SCRIPT + "\n</body>");
 }
 
 export function startGui(config) {
-  const result = startCoreGui(config);
+  const result = startRuntimeGui(config);
   const { server } = result;
-  const coreHandler = server.listeners("request")[0];
-  server.removeListener("request", coreHandler);
+  const runtimeHandler = server.listeners("request")[0];
+  server.removeListener("request", runtimeHandler);
   const g = config?.gui || {};
   const token = process.env[g.authTokenEnv || "GUI_TOKEN"] || null;
 
+  logDiagnostic("gui_started", {
+    pid: process.pid,
+    host: g.host || "127.0.0.1",
+    port: g.port || 8090,
+    tokenConfigured: !!token,
+  });
+
+  // Core WebSocket upgrade handling is already installed. This observer runs
+  // afterward and records whether the same request was accepted or rejected.
+  server.on("upgrade", (req, socket) => {
+    const startedAt = Date.now();
+    const meta = requestMeta(req);
+    let url;
+    try { url = new URL(req.url, "http://x"); } catch { url = new URL("http://x/"); }
+    const tokenSupplied = url.searchParams.has("access_token");
+    let reason = null;
+
+    if (url.pathname !== "/ws/alerts") reason = "wrong-path";
+    else if (token && !tokenMatches(url.searchParams.get("access_token") || "", token)) reason = "unauthorized";
+    else if (!req.headers["sec-websocket-key"]) reason = "missing-websocket-key";
+    else if (socket.destroyed) reason = "socket-destroyed-during-upgrade";
+
+    if (reason) {
+      logDiagnostic("ws_rejected", { ...meta, reason, tokenConfigured: !!token, tokenSupplied });
+      return;
+    }
+
+    logDiagnostic("ws_connected", { ...meta, tokenConfigured: !!token, tokenSupplied });
+    socket.on("error", (e) => logDiagnostic("ws_socket_error", { ...meta, error: e.message }));
+    socket.once("close", (hadError) => {
+      logDiagnostic("ws_disconnected", {
+        ...meta,
+        hadError: !!hadError,
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
-    if (url.pathname.startsWith("/api/tunnel/")) {
-      try {
-        if (token && !authOk(req.headers.authorization, token)) {
-          return sendJson(res, 401, { ok: false, error: "unauthorized" });
-        }
-        if (req.method === "GET" && url.pathname === "/api/tunnel/status") {
-          return sendJson(res, 200, tunnelStatus());
-        }
-        if (req.method === "POST" && url.pathname === "/api/tunnel/start") {
-          return sendJson(res, 200, { ok: true, ...startTunnel() });
-        }
-        if (req.method === "POST" && url.pathname === "/api/tunnel/stop") {
-          return sendJson(res, 200, { ok: true, ...stopTunnel() });
-        }
-        return sendJson(res, 404, { ok: false, error: "not found" });
-      } catch (e) {
-        return sendJson(res, e.httpCode || 500, { ok: false, error: e.message });
+
+    if (url.pathname === "/api/diagnostics") {
+      if (token && !authOk(req.headers.authorization, token)) {
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
       }
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 120, 1), 500);
+      return sendJson(res, 200, diagnostics(limit));
+    }
+
+    if (url.pathname === "/api/alerts" || url.pathname === "/api/tunnel/start" || url.pathname === "/api/tunnel/stop") {
+      const meta = requestMeta(req);
+      const startedAt = Date.now();
+      res.once("finish", () => {
+        logDiagnostic(url.pathname === "/api/alerts" ? "alert_http" : "tunnel_control_http", {
+          ...meta,
+          statusCode: res.statusCode,
+          durationMs: Date.now() - startedAt,
+        });
+      });
     }
 
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-      const coreEnd = res.end.bind(res);
+      const runtimeEnd = res.end.bind(res);
       res.end = (chunk, encoding, callback) => {
         let body = chunk;
-        if (typeof chunk === "string") body = injectTunnelControls(chunk);
-        else if (Buffer.isBuffer(chunk)) body = Buffer.from(injectTunnelControls(chunk.toString("utf8")));
-        return coreEnd(body, encoding, callback);
+        if (typeof chunk === "string") body = injectDiagnostics(chunk);
+        else if (Buffer.isBuffer(chunk)) body = Buffer.from(injectDiagnostics(chunk.toString("utf8")));
+        return runtimeEnd(body, encoding, callback);
       };
     }
-    return coreHandler(req, res);
+
+    return runtimeHandler(req, res);
   });
 
   return result;
