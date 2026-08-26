@@ -7,9 +7,11 @@
     "teams": "src/cli.mjs"
   },
   "scripts": {
-    "read": "node src/cli.mjs read",
-    "send": "node src/cli.mjs send",
-    "watch": "node src/cli.mjs watch"
+    "start": "node --env-file=.env src/cli.mjs run",
+    "gui": "node --env-file=.env src/cli.mjs gui",
+    "read": "node --env-file=.env src/cli.mjs read",
+    "send": "node --env-file=.env src/cli.mjs send",
+    "watch": "node --env-file=.env src/cli.mjs watch"
   },
   "engines": {
     "node": ">=20"
