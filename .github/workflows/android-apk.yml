@@ -13,6 +13,7 @@ permissions:
 
 env:
   ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+  FIREBASE_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
 
 jobs:
   build:
@@ -49,6 +50,16 @@ jobs:
           mkdir -p "$HOME/.android"
           printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
           chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Restore Firebase Android config
+        if: env.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 != ''
+        shell: bash
+        run: |
+          printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > android-app/app/google-services.json
+
+      - name: Firebase configuration notice
+        if: env.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 == ''
+        run: echo "::notice::FCM is not embedded in this APK yet. Add FIREBASE_GOOGLE_SERVICES_JSON_BASE64 under repository Actions secrets, then rerun this workflow."
 
       - name: Build debug APK
         working-directory: android-app
