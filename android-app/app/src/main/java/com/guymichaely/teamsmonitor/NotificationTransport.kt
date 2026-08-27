@@ -15,6 +15,11 @@ object NotificationTransport {
     fun sync(context: Context) {
         val app = context.applicationContext
         val prefs = Prefs(app)
+
+        // Register opportunistically even while WebSocket is active. This lets the
+        // server confirm the phone token before the user switches transport to FCM.
+        FcmRegistration.syncCurrentToken(app)
+
         if (prefs.serverUrl.isBlank()) {
             apply(app, prefs.alertTransport)
             return
@@ -51,7 +56,6 @@ object NotificationTransport {
     private fun apply(context: Context, transport: String) {
         if (transport == "fcm") {
             AlertService.stop(context)
-            FcmRegistration.syncCurrentToken(context)
         } else {
             AlertService.start(context)
         }
