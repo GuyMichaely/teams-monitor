@@ -24,7 +24,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -- .github/workflows/android-apk.yml
           git rm .github/workflows/apply-fcm-transport.yml scripts/apply-fcm-transport.py
-          git add .gitignore AGENTS.md config/config.json src android-app .github/workflows/android-apk.yml
+          git add .gitignore AGENTS.md config/config.json src android-app
           git commit -m "Add Firebase Cloud Messaging transport"
           git push origin HEAD:main
