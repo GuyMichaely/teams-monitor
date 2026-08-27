@@ -20,9 +20,11 @@ import { createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DATA_DIR } from "./state.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
+const FCM_DEVICE_TOKEN_FILE = join(DATA_DIR, "fcm-device-token.txt");
 
 const truncate = (s, n = 200) => {
   const t = String(s ?? "").replace(/\s+/g, " ").trim();
@@ -98,10 +100,13 @@ async function fcmAccessToken(sa) {
 }
 
 async function sendViaFcm(body, fcm) {
-  if (!fcm?.projectId || !fcm?.deviceToken || !fcm?.serviceAccountFile) {
-    throw new Error(
-      "alerts.fcm not configured — need projectId, deviceToken (from the app), and serviceAccountFile"
-    );
+  if (!fcm?.projectId || !fcm?.serviceAccountFile) {
+    throw new Error("alerts.fcm not configured — need projectId and serviceAccountFile");
+  }
+  let deviceToken = "";
+  try { deviceToken = (await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* not registered yet */ }
+  if (!deviceToken) {
+    throw new Error("FCM device token not registered — open the Android app while the GUI/tunnel is reachable");
   }
   const saPath = join(ROOT, fcm.serviceAccountFile);
   const sa = JSON.parse(await readFile(saPath, "utf8"));
@@ -111,7 +116,7 @@ async function sendViaFcm(body, fcm) {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({
       message: {
-        token: fcm.deviceToken,
+        token: deviceToken,
         // Data-only: the app renders/alarms itself. Values must all be strings.
         data: { chat: body.chat, author: body.author, text: body.text, time: body.time || "" },
         android: { priority: "HIGH" },

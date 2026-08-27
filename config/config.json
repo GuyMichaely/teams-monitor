@@ -3,7 +3,7 @@
   "whitelist": {
     "autoSend": []
   },
-  "holdMessage": "Thanks \u2014 I've seen this and will get back to you shortly.",
+  "holdMessage": "Thanks — I've seen this and will get back to you shortly.",
   "brain": {
     "provider": "gemini",
     "model": "gemini-3.1-flash-lite",
@@ -20,8 +20,7 @@
     "websocketUrl": "",
     "fcm": {
       "projectId": "",
-      "serviceAccountFile": "config/fcm-service-account.json",
-      "deviceToken": ""
+      "serviceAccountFile": "config/fcm-service-account.json"
     },
     "ignoreAuthors": [],
     "mentionNames": [

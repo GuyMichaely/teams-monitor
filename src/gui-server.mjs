@@ -125,11 +125,12 @@ export function startGui(config) {
       return sendJson(res, 200, diagnostics(limit));
     }
 
-    if (url.pathname === "/api/alerts" || url.pathname === "/api/tunnel/start" || url.pathname === "/api/tunnel/stop") {
+    if (url.pathname === "/api/alerts" || url.pathname === "/api/fcm/register" || url.pathname === "/api/tunnel/start" || url.pathname === "/api/tunnel/stop") {
       const meta = requestMeta(req);
       const startedAt = Date.now();
       res.once("finish", () => {
-        logDiagnostic(url.pathname === "/api/alerts" ? "alert_http" : "tunnel_control_http", {
+        const kind = url.pathname === "/api/alerts" ? "alert_http" : url.pathname === "/api/fcm/register" ? "fcm_register_http" : "tunnel_control_http";
+        logDiagnostic(kind, {
           ...meta,
           statusCode: res.statusCode,
           durationMs: Date.now() - startedAt,

@@ -99,7 +99,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
         }
 
-        AlertService.start(this)
         requestNotifPermission()
 
         if (!prefs.configured || prefs.serverUrl.isBlank()) {
@@ -116,6 +115,7 @@ class MainActivity : AppCompatActivity() {
             this, statusReceiver, IntentFilter(AlertState.ACTION_STATUS),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        NotificationTransport.sync(this)
         refreshStatus()
         refreshTestButton()
         refreshToggles()
@@ -161,7 +161,9 @@ class MainActivity : AppCompatActivity() {
             AlertState.Connection.CONNECTING -> "connecting…"
             AlertState.Connection.DISCONNECTED -> "disconnected"
         }
-        findViewById<TextView>(R.id.conn_status).text = "WebSocket: $conn"
+        findViewById<TextView>(R.id.conn_status).text =
+            if (prefs.alertTransport == "fcm") "Notifications: Firebase Cloud Messaging"
+            else "WebSocket: $conn"
         findViewById<TextView>(R.id.server).text =
             "Server: ${prefs.serverUrl.ifBlank { "(not set)" }}"
         findViewById<TextView>(R.id.last_alert).text =

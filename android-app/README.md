@@ -6,7 +6,9 @@ Personal-use, sideloaded Android app for the Teams monitoring system in this rep
 
 The native main screen shows WebSocket connection status, server URL, the last alert, quick alert toggles, and buttons for the web dashboard, Settings, battery-optimization exemption, alarm testing, and diagnostics export.
 
-The foreground `AlertService` maintains a WebSocket connection to the configured HTTPS server. For the normal Cloudflare setup, configure:
+The server supports two mutually exclusive phone transports: WebSocket and Firebase Cloud Messaging (FCM). The server-side `alerts.transport` value is authoritative. In WebSocket mode the foreground `AlertService` maintains the connection; in FCM mode the app stops that service and receives high-priority data messages through `FirebaseMessagingService`.
+
+For either mode, configure the server connection used by the dashboard, transport sync, and FCM-token registration:
 
 ```text
 Server URL: https://gui.guymichaely.com
@@ -97,6 +99,13 @@ The `alerts2` notification channel is deliberately silent; alarm audio is played
 
 Use **Disable battery optimization** once after installation. OEM background-process policies can still terminate the foreground service, and there is deliberately no boot receiver.
 
-## FCM later
+## Firebase Cloud Messaging
 
-Alert handling is centralized in `AlertNotifier.alert(...)`; a future `FirebaseMessagingService` can call that same path. The current WebSocket connection remains the active transport.
+FCM uses the same `AlertNotifier.alert(...)` path as WebSocket alerts. The phone registration token is POSTed to `/api/fcm/register` and stored locally on the laptop under gitignored `data/fcm-device-token.txt`; it is not tracked in `config.json`.
+
+Firebase configuration files are intentionally untracked:
+
+- `android-app/app/google-services.json` — Android Firebase project configuration.
+- `config/fcm-service-account.json` — server credential used to call the FCM HTTP v1 API.
+
+GitHub Actions can embed `google-services.json` by restoring the repository secret `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`. If that secret is absent, the APK still builds and WebSocket mode continues to work, but FCM initialization is unavailable in that APK.

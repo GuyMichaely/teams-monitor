@@ -5,7 +5,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import { closeSync, existsSync, openSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import { DATA_DIR } from "./state.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_FILE = join(ROOT, "config", "config.json");
+const FCM_DEVICE_TOKEN_FILE = join(DATA_DIR, "fcm-device-token.txt");
 const TUNNEL_NAME = "teams-gui";
 const TUNNEL_HOST = "gui.guymichaely.com";
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
@@ -47,10 +48,57 @@ async function readJsonBody(req, cap = 8192) {
 
 async function runtimeConfig() {
   const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  const fcm = cfg.alerts?.fcm || {};
+  let fcmTokenRegistered = false;
+  try { fcmTokenRegistered = !!(await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* no token */ }
+  const serviceAccountFile = fcm.serviceAccountFile || "config/fcm-service-account.json";
   return {
     pollIntervalMs: cfg.pollIntervalMs || 15000,
     mode: cfg.automation?.mode || "respond",
+    alerts: {
+      transport: cfg.alerts?.transport || "websocket",
+      fcmProjectId: fcm.projectId || "",
+      fcmTokenRegistered,
+      fcmServiceAccountPresent: existsSync(join(ROOT, serviceAccountFile)),
+    },
   };
+}
+
+async function saveAlertConfig(req) {
+  const body = await readJsonBody(req);
+  const transport = String(body.transport || "");
+  const projectId = String(body.projectId || "").trim();
+  if (!["websocket", "fcm"].includes(transport)) {
+    throw Object.assign(new Error("transport must be websocket or fcm"), { httpCode: 400 });
+  }
+  if (projectId.length > 128) {
+    throw Object.assign(new Error("Firebase project ID is too long"), { httpCode: 400 });
+  }
+  if (transport === "fcm" && !projectId) {
+    throw Object.assign(new Error("Firebase project ID is required for FCM"), { httpCode: 400 });
+  }
+  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  cfg.alerts = cfg.alerts || {};
+  cfg.alerts.transport = transport;
+  cfg.alerts.fcm = {
+    ...(cfg.alerts.fcm || {}),
+    projectId,
+    serviceAccountFile: cfg.alerts.fcm?.serviceAccountFile || "config/fcm-service-account.json",
+  };
+  delete cfg.alerts.fcm.deviceToken;
+  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  return await runtimeConfig();
+}
+
+async function registerFcmToken(req) {
+  const body = await readJsonBody(req);
+  const deviceToken = typeof body.token === "string" ? body.token.trim() : "";
+  if (deviceToken.length < 20 || deviceToken.length > 4096) {
+    throw Object.assign(new Error("invalid FCM registration token"), { httpCode: 400 });
+  }
+  await mkdir(DATA_DIR, { recursive: true });
+  await writeFile(FCM_DEVICE_TOKEN_FILE, deviceToken + "\n", { mode: 0o600 });
+  return { registered: true };
 }
 
 async function savePollInterval(req) {
@@ -204,6 +252,30 @@ const TUNNEL_HTML = `
       </div>
     </div>
 
+    <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <strong>Phone notification transport</strong>
+          <div style="color:var(--dim);font-size:12px">Exactly one transport sends each alarm.</div>
+        </div>
+        <div class="row">
+          <select id="alertTransport" onchange="renderAlertTransportFields()"
+            style="background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
+            <option value="websocket">WebSocket</option>
+            <option value="fcm">Firebase Cloud Messaging</option>
+          </select>
+          <button class="secondary" onclick="saveAlertTransport()">Save</button>
+        </div>
+      </div>
+      <div id="fcmFields" style="margin-top:10px">
+        <div class="row">
+          <input id="fcmProjectId" type="text" placeholder="Firebase project ID"
+            style="min-width:260px;background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
+          <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>
+        </div>
+      </div>
+    </div>
+
     <p style="color:var(--dim);font-size:12px;margin:10px 0 0">
       The tunnel exposes gui.guymichaely.com to this GUI and the phone app. Stopping it remotely disconnects both.
     </p>
@@ -232,6 +304,20 @@ function renderTunnelStatus(s) {
 function applyRuntimeConfig(c) {
   const input = document.getElementById("pollIntervalSec");
   if (input && document.activeElement !== input) input.value = String(c.pollIntervalMs / 1000);
+  const transport = c.alerts?.transport || "websocket";
+  const transportSelect = document.getElementById("alertTransport");
+  if (transportSelect && document.activeElement !== transportSelect) transportSelect.value = transport;
+  const project = document.getElementById("fcmProjectId");
+  if (project && document.activeElement !== project) project.value = c.alerts?.fcmProjectId || "";
+  const status = document.getElementById("fcmStatus");
+  if (status) {
+    const parts = [
+      c.alerts?.fcmServiceAccountPresent ? "service account ✓" : "service account missing",
+      c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
+    ];
+    status.textContent = parts.join(" · ");
+  }
+  renderAlertTransportFields();
   const alertOnly = c.mode === "alert-only";
   const whitelistHeading = [...document.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Auto-send whitelist");
   if (whitelistHeading) {
@@ -249,6 +335,24 @@ async function refreshRuntimeConfig() {
 }
 async function refreshRuntimeStatus() {
   await Promise.all([refreshTunnelStatus(), refreshRuntimeConfig()]);
+}
+function renderAlertTransportFields() {
+  const fcm = document.getElementById("alertTransport")?.value === "fcm";
+  const fields = document.getElementById("fcmFields");
+  if (fields) fields.style.display = fcm ? "block" : "none";
+}
+async function saveAlertTransport() {
+  const transport = document.getElementById("alertTransport").value;
+  const projectId = document.getElementById("fcmProjectId").value.trim();
+  try {
+    const result = await tunnelApi("/api/config/alerts", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transport, projectId }),
+    });
+    applyRuntimeConfig(result);
+    toast(transport === "fcm" ? "FCM selected" : "WebSocket selected");
+  } catch (e) { toast(e.message); }
 }
 async function savePollInterval() {
   const seconds = Number(document.getElementById("pollIntervalSec").value);
@@ -318,7 +422,7 @@ export function startGui(config) {
 
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
-    if (url.pathname.startsWith("/api/tunnel/") || url.pathname === "/api/runtime/config" || url.pathname === "/api/config/poll-interval") {
+    if (url.pathname.startsWith("/api/tunnel/") || url.pathname === "/api/runtime/config" || url.pathname === "/api/config/poll-interval" || url.pathname === "/api/config/alerts" || url.pathname === "/api/fcm/register") {
       try {
         if (token && !authOk(req.headers.authorization, token)) {
           return sendJson(res, 401, { ok: false, error: "unauthorized" });
@@ -328,6 +432,12 @@ export function startGui(config) {
         }
         if (req.method === "PUT" && url.pathname === "/api/config/poll-interval") {
           return sendJson(res, 200, { ok: true, ...(await savePollInterval(req)) });
+        }
+        if (req.method === "PUT" && url.pathname === "/api/config/alerts") {
+          return sendJson(res, 200, await saveAlertConfig(req));
+        }
+        if (req.method === "POST" && url.pathname === "/api/fcm/register") {
+          return sendJson(res, 200, { ok: true, ...(await registerFcmToken(req)) });
         }
         if (req.method === "GET" && url.pathname === "/api/tunnel/status") {
           return sendJson(res, 200, tunnelStatus());

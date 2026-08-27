@@ -16,6 +16,10 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_TOKEN, "") ?: ""
         set(value) = sp.edit().putString(KEY_TOKEN, value).apply()
 
+    var alertTransport: String
+        get() = sp.getString(KEY_ALERT_TRANSPORT, "websocket") ?: "websocket"
+        set(value) = sp.edit().putString(KEY_ALERT_TRANSPORT, value).apply()
+
     /** False until the user has saved settings once. */
     val configured: Boolean
         get() = sp.contains(KEY_URL)
@@ -55,6 +59,7 @@ class Prefs(context: Context) {
         const val DEFAULT_URL = ""
         private const val KEY_URL = "server_url"
         private const val KEY_TOKEN = "token"
+        private const val KEY_ALERT_TRANSPORT = "alert_transport"
         private const val KEY_DND_PROMPT = "dnd_prompt_shown"
         private const val KEY_ALARM_ENABLED = "alarm_enabled"
         private const val KEY_NOTIF_ENABLED = "notif_enabled"

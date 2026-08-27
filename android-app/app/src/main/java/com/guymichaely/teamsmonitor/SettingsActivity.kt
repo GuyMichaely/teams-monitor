@@ -61,7 +61,7 @@ class SettingsActivity : AppCompatActivity() {
                 "settings_saved",
                 "server=${prefs.serverUrl} tokenConfigured=${prefs.token.isNotBlank()} alarmEnabled=${prefs.alarmEnabled} notifEnabled=${prefs.notifEnabled} alarmWhenScreenOn=${prefs.alarmWhenScreenOn} useSystemRingtone=${prefs.useSystemRingtone} alarmVolume=${prefs.alarmVolume} alarmDurationSec=${prefs.alarmDurationSec}"
             )
-            AlertService.reconnect(this)
+            NotificationTransport.sync(this)
             setResult(RESULT_OK)
             finish()
         }

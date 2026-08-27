@@ -2,3 +2,5 @@
 .env.*
 !.env.example
 data/
+config/fcm-service-account.json
+android-app/app/google-services.json

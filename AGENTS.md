@@ -32,9 +32,9 @@ src/
                     heartbeats) and isAddressed() (name-mention matcher).
   actions.mjs       Action registry (the brain's "tools") + console escalate().
                     alert_phone is registered here; transports live in alerts.mjs.
-  alerts.mjs        Phone-alert transports: "websocket" (POST to GUI hub /api/alerts) or
-                    "fcm" (Firebase direct, hand-rolled service-account OAuth — configured
-                    but never used yet).
+  alerts.mjs        Mutually exclusive phone-alert transports: "websocket" (POST to GUI hub
+                    /api/alerts) or "fcm" (Firebase HTTP v1, hand-rolled service-account OAuth).
+                    FCM registration token lives in gitignored data/fcm-device-token.txt.
   gui-server.mjs    Dashboard SPA + JSON API + WebSocket alert hub (/ws/alerts, hand-rolled
                     RFC6455) + APK download (/app-debug.apk, PUBLIC by user decision) +
                     /api/profile (live brain-context editor). Token auth: env GUI_TOKEN,
@@ -186,8 +186,9 @@ FEATURES-TODO.md    Backlog with design notes (response-policy rework, org hiera
   brain drafts/holds/alerts only. Widening it is the user's explicit call.
 - The response-policy rework (risk tiers replacing the whitelist), org-chart
   awareness, and GUI-as-avatar ideas are in FEATURES-TODO.md with design notes.
-- FCM is the planned endgame alert transport (battery-proof); server side is
-  written, Firebase project doesn't exist yet, app seam is AlertNotifier.alert().
+- FCM and WebSocket are both implemented; exactly one server transport is active.
+  In FCM mode the Android app stops its foreground WebSocket service after syncing
+  `/api/runtime/config`; both transports feed the same AlertNotifier path.
 - TFS integration: deploy tfs-agent/ on the VM + live-test + implement
   run_agent_task. Untouched for a while.
 - user-profile.md is mostly template — the brain is triaging with thin

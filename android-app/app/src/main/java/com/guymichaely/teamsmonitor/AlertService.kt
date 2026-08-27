@@ -254,6 +254,12 @@ class AlertService : Service() {
             ContextCompat.startForegroundService(context, i)
         }
 
+        fun stop(context: Context) {
+            AppLog.event(context, "service_stop_requested", "reason=transport_fcm")
+            context.stopService(Intent(context, AlertService::class.java))
+            AlertState.onConnection(context, AlertState.Connection.DISCONNECTED)
+        }
+
         /** Drop the current socket and reconnect immediately (settings changed). */
         fun reconnect(context: Context) {
             AppLog.event(context, "service_reconnect_requested")
