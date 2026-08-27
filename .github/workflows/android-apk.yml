@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-apk-release
+  cancel-in-progress: false
+
 env:
   ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
   FIREBASE_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
@@ -95,17 +99,40 @@ jobs:
         run: |
           apk="$RUNNER_TEMP/teams-monitor.apk"
           tag="android-latest"
-          title="Latest Android build"
-          notes="Automated debug build from ${GITHUB_SHA}, signed with the same debug key used by local builds on the development PC. Download teams-monitor.apk on the phone and install it over the existing app."
+          version_name="1.0.${GITHUB_RUN_NUMBER}"
+          title="Latest Android build (${version_name})"
+          notes="Automated debug build ${version_name} from ${GITHUB_SHA}, signed with the same debug key used by local builds on the development PC. Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Download teams-monitor.apk on the phone and install it over the existing app."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             git tag -f "$tag" "$GITHUB_SHA"
             git push origin "refs/tags/$tag" --force
-            gh release edit "$tag" --title "$title" --notes "$notes"
+            gh release edit "$tag" \
+              --target "$GITHUB_SHA" \
+              --latest \
+              --title "$title" \
+              --notes "$notes"
             gh release upload "$tag" "$apk" --clobber
           else
             gh release create "$tag" "$apk" \
               --target "$GITHUB_SHA" \
+              --latest \
               --title "$title" \
               --notes "$notes"
+          fi
+
+          release_target="$(gh release view "$tag" --json targetCommitish --jq '.targetCommitish')"
+          if [[ "$release_target" != "$GITHUB_SHA" ]]; then
+            echo "::error::Release target is $release_target; expected $GITHUB_SHA"
+            exit 1
+          fi
+
+          remote_tag="$(git ls-remote origin "refs/tags/$tag" | cut -f1)"
+          if [[ "$remote_tag" != "$GITHUB_SHA" ]]; then
+            echo "::error::Remote tag is $remote_tag; expected $GITHUB_SHA"
+            exit 1
+          fi
+
+          if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fxq 'teams-monitor.apk'; then
+            echo "::error::Release is missing teams-monitor.apk"
+            exit 1
           fi
