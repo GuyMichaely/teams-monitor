@@ -25,20 +25,10 @@ export async function resolveFcmConfig(fcm = {}) {
     serviceAccountError = error;
   }
 
-  const projectIdOverride = String(fcm.projectId || "").trim();
-  const serviceAccountProjectId = String(serviceAccount?.project_id || "").trim();
-  const projectId = projectIdOverride || serviceAccountProjectId;
-  const projectIdSource = projectIdOverride
-    ? "override"
-    : serviceAccountProjectId
-      ? "service-account"
-      : "missing";
+  const projectId = String(serviceAccount?.project_id || "").trim();
 
   return {
     projectId,
-    projectIdSource,
-    projectIdOverride,
-    serviceAccountProjectId,
     serviceAccountFile,
     serviceAccountPath,
     serviceAccount,

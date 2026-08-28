@@ -59,8 +59,6 @@ async function runtimeConfig() {
     alerts: {
       transport: cfg.alerts?.transport || "websocket",
       fcmProjectId: resolvedFcm.projectId,
-      fcmProjectIdOverride: resolvedFcm.projectIdOverride,
-      fcmProjectIdSource: resolvedFcm.projectIdSource,
       fcmTokenRegistered,
       fcmServiceAccountPresent: resolvedFcm.serviceAccountPresent,
       fcmServiceAccountValid: resolvedFcm.serviceAccountValid,
@@ -71,26 +69,19 @@ async function runtimeConfig() {
 async function saveAlertConfig(req) {
   const body = await readJsonBody(req);
   const transport = String(body.transport || "");
-  const projectId = String(body.projectId || "").trim();
   if (!["websocket", "fcm"].includes(transport)) {
     throw Object.assign(new Error("transport must be websocket or fcm"), { httpCode: 400 });
-  }
-  if (projectId.length > 128) {
-    throw Object.assign(new Error("Firebase project ID is too long"), { httpCode: 400 });
   }
   const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
   cfg.alerts = cfg.alerts || {};
   const nextFcm = {
     ...(cfg.alerts.fcm || {}),
-    projectId,
     serviceAccountFile: cfg.alerts.fcm?.serviceAccountFile || DEFAULT_FCM_SERVICE_ACCOUNT_FILE,
   };
+  delete nextFcm.projectId;
   const resolvedFcm = await resolveFcmConfig(nextFcm);
   if (transport === "fcm" && !resolvedFcm.projectId) {
-    throw Object.assign(
-      new Error("Firebase project ID missing from both override and service account"),
-      { httpCode: 400 }
-    );
+    throw Object.assign(new Error("Firebase project ID missing from service account"), { httpCode: 400 });
   }
   cfg.alerts.transport = transport;
   cfg.alerts.fcm = nextFcm;
@@ -277,11 +268,7 @@ const TUNNEL_HTML = `
         </div>
       </div>
       <div id="fcmFields" style="margin-top:10px">
-        <div class="row">
-          <input id="fcmProjectId" type="text" placeholder="Optional Firebase project ID override"
-            style="min-width:260px;background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
-          <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>
-        </div>
+        <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>
       </div>
     </div>
 
@@ -317,31 +304,19 @@ function applyRuntimeConfig(c) {
   const transportSelect = document.getElementById("alertTransport");
   if (transportSelect && document.activeElement !== transportSelect) transportSelect.value = transport;
 
-const project = document.getElementById("fcmProjectId");
-if (project && document.activeElement !== project) {
-  project.value = c.alerts?.fcmProjectIdOverride || "";
-  project.placeholder = c.alerts?.fcmProjectIdSource === "service-account"
-    ? "Auto: " + c.alerts.fcmProjectId
-    : "Optional Firebase project ID override";
-}
 const status = document.getElementById("fcmStatus");
 if (status) {
-  const projectStatus = !c.alerts?.fcmProjectId
-    ? "project ID missing"
-    : c.alerts?.fcmProjectIdSource === "override"
-      ? "project ID ✓ (override)"
-      : "project ID ✓ (service account)";
+  const projectStatus = c.alerts?.fcmProjectId ? "project ID ✓ (service account)" : "project ID missing";
   const serviceAccountStatus = c.alerts?.fcmServiceAccountValid
     ? "service account ✓"
     : c.alerts?.fcmServiceAccountPresent
       ? "service account invalid"
       : "service account missing";
-  const parts = [
+  status.textContent = [
     projectStatus,
     serviceAccountStatus,
     c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
-  ];
-  status.textContent = parts.join(" · ");
+  ].join(" · ");
 }
 renderAlertTransportFields();
   const alertOnly = c.mode === "alert-only";
@@ -369,12 +344,11 @@ function renderAlertTransportFields() {
 }
 async function saveAlertTransport() {
   const transport = document.getElementById("alertTransport").value;
-  const projectId = document.getElementById("fcmProjectId").value.trim();
   try {
     const result = await tunnelApi("/api/config/alerts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transport, projectId }),
+      body: JSON.stringify({ transport }),
     });
     applyRuntimeConfig(result);
     toast(transport === "fcm" ? "FCM selected" : "WebSocket selected");
