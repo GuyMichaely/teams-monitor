@@ -12,6 +12,7 @@
 //     in case the target loop hasn't written its first heartbeat yet.
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { getUnreadChats, readChat } from "./monitor.mjs";
 import { sendMessage } from "./teams.mjs";
@@ -213,35 +214,76 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
     return;
   }
 
-  // Alert-everything mode (config.alerts.notifyAll): no brain in the loop —
-  // every incoming message pushes a phone alert via the alert_phone tool and
-  // nothing else is decided or sent.
+  const flowId = randomUUID();
+  let effectCount = 0;
+  const flow = async (stage, fields = {}) => {
+    await logActivity({ kind: "flow", flowId, stage, chat, ...fields });
+  };
+  const recordEffect = async (effect, status, fields = {}) => {
+    effectCount++;
+    await flow("effect", { effect, status, ...fields });
+  };
+  const actionStatus = (results) =>
+    (results || []).some((r) => r?.error) ? "error" : "ok";
+
+  await flow("message", { latest, historyCount: messages.length });
+
+  // Alert-everything mode bypasses the brain, but still emits a complete flow so
+  // the GUI makes that bypass explicit rather than leaving mysterious gaps.
   if (config.alerts?.notifyAll) {
+    await flow("brain_input", { skipped: true, reason: "alerts.notifyAll bypasses the brain" });
     if ((config.alerts?.ignoreAuthors || []).includes(latest.author)) {
-      await logActivity({ kind: "alert", chat, latest, skipped: `author ignored: ${latest.author}` });
+      const reason = `author ignored: ${latest.author}`;
+      await flow("decision", { action: "ignore", reason });
+      await logActivity({ kind: "alert", flowId, chat, latest, skipped: reason });
+      await recordEffect("ignored", "ignored", { reason });
       return;
     }
+    const reason = "alerts.notifyAll enabled; brain bypassed";
+    await flow("decision", { action: "alarm", reason });
     const results = await runActions(
       [{ name: "alert_phone", args: { chat, author: latest.author, text: latest.text, time: latest.time } }],
       { chat, latest }
     );
-    await logActivity({ kind: "alert", chat, latest, results });
+    await logActivity({ kind: "alert", flowId, chat, latest, results });
+    await recordEffect("phone_alert", actionStatus(results), { reason, results });
     console.error(`[${chat}] alert — ${results[0]?.error || "sent"}`);
     return;
   }
 
   const whitelisted = whitelist.has(chat);
-  const decision = await brain.decide({
-    chat,
-    latest,
-    history: messages,
-    userProfile,
-    whitelisted,
-    config,
-  });
+  let decision;
+  try {
+    decision = await brain.decide(
+      {
+        chat,
+        latest,
+        history: messages,
+        userProfile,
+        whitelisted,
+        config,
+      },
+      {
+        onInput: (payload) => flow("brain_input", payload),
+        onOutput: (payload) => flow("brain_output", payload),
+        onDecision: ({ decision: d }) => flow("decision", {
+          action: d.action,
+          reason: d.reason,
+          reply: d.reply || null,
+          invokeActions: d.invokeActions || [],
+        }),
+      }
+    );
+  } catch (e) {
+    await flow("error", { source: "brain", error: e.message });
+    throw e;
+  }
 
+  // Keep the pre-existing decision record for compatibility with counters and
+  // older tooling. flowId links it to the richer pipeline trace.
   await logActivity({
     kind: "decision",
+    flowId,
     chat,
     whitelisted,
     latest,
@@ -269,15 +311,19 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
         : directChat
           ? "direct chat backstop"
           : "addressed backstop (name match)";
-      await escalate({ chat, latest, reason });
+      await escalate({ chat, latest, reason, flowId });
+      await recordEffect("escalation_log", "ok", { reason });
       const results = await runActions(
         [{ name: "alert_phone", args: { chat, author: latest.author, text: latest.text, time: latest.time } }],
         { chat, latest }
       );
-      await logActivity({ kind: "alert", chat, latest, reason, results });
+      await logActivity({ kind: "alert", flowId, chat, latest, reason, results });
+      await recordEffect("phone_alert", actionStatus(results), { reason, results });
       console.error(`[${chat}] alarm — ${reason} (${results[0]?.error || "sent"})`);
     } else {
-      console.error(`[${chat}] no alarm — ${ignoredAuthor ? "message authored by user/ignored author" : decision.reason}`);
+      const reason = ignoredAuthor ? "message authored by user/ignored author" : decision.reason;
+      await recordEffect("ignored", "ignored", { reason });
+      console.error(`[${chat}] no alarm — ${reason}`);
     }
     return;
   }
@@ -285,22 +331,32 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
   // Carry out the decision. readChat() above already navigated to `chat`, so the
   // compose box targets it — no re-open needed.
   if (decision.action === "respond" && whitelisted && decision.reply) {
-    const result = await sendMessage(decision.reply, config.port);
-    await logActivity({ kind: "send", chat, text: decision.reply, result });
-    console.error(`   ↳ sent: ${decision.reply}  (${result})`);
+    try {
+      const result = await sendMessage(decision.reply, config.port);
+      await logActivity({ kind: "send", flowId, chat, text: decision.reply, result });
+      await recordEffect("teams_reply", result === "sent" ? "ok" : "error", {
+        text: decision.reply,
+        result,
+      });
+      console.error(`   ↳ sent: ${decision.reply}  (${result})`);
+    } catch (e) {
+      await recordEffect("teams_reply", "error", { text: decision.reply, detail: e.message });
+      throw e;
+    }
   } else if (decision.action === "respond" && !whitelisted) {
-    // Not allowed to auto-send here: fall back to hold + escalate.
-    await holdAndEscalate(config, chat, latest, "respond requested in non-whitelisted chat");
+    await holdAndEscalate(config, chat, latest, "respond requested in non-whitelisted chat", flowId, recordEffect);
   } else if (decision.action === "hold") {
-    await holdAndEscalate(config, chat, latest, decision.reason);
+    await holdAndEscalate(config, chat, latest, decision.reason, flowId, recordEffect);
   } else if (decision.action === "escalate") {
-    await escalate({ chat, latest, reason: decision.reason });
+    await escalate({ chat, latest, reason: decision.reason, flowId });
+    await recordEffect("escalation_log", "ok", { reason: decision.reason });
   }
 
   // Brain-requested actions. Only actions registered in actions.mjs run.
   if (decision.invokeActions?.length) {
     const results = await runActions(decision.invokeActions, { chat, latest });
-    await logActivity({ kind: "actions", chat, results });
+    await logActivity({ kind: "actions", flowId, chat, results });
+    await recordEffect("brain_actions", actionStatus(results), { results });
   }
 
   // Addressed backstop: the brain is prompted to invoke alert_phone when the
@@ -315,19 +371,32 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
         [{ name: "alert_phone", args: { chat, author: latest.author, text: latest.text, time: latest.time } }],
         { chat, latest }
       );
-      await logActivity({ kind: "alert", chat, latest, reason: "addressed backstop (name match)", results });
+      const reason = "addressed backstop (name match)";
+      await logActivity({ kind: "alert", flowId, chat, latest, reason, results });
+      await recordEffect("phone_alert_backstop", actionStatus(results), { reason, results });
       console.error(`[${chat}] alert — addressed backstop (${results[0]?.error || "sent"})`);
     }
   }
+
+  if (!effectCount) {
+    await recordEffect("none", "ignored", { reason: "decision produced no side effect" });
+  }
 }
 
-async function holdAndEscalate(config, chat, latest, reason) {
-  if (config.holdMessage) {
-    // A non-committal holding reply only goes out where auto-send is allowed.
-    if ((config.whitelist?.autoSend || []).includes(chat)) {
-      await sendMessage(config.holdMessage, config.port);
-      await logActivity({ kind: "send", chat, text: config.holdMessage, hold: true });
+async function holdAndEscalate(config, chat, latest, reason, flowId, recordEffect) {
+  if (config.holdMessage && (config.whitelist?.autoSend || []).includes(chat)) {
+    try {
+      const result = await sendMessage(config.holdMessage, config.port);
+      await logActivity({ kind: "send", flowId, chat, text: config.holdMessage, hold: true, result });
+      await recordEffect("hold_message", result === "sent" ? "ok" : "error", {
+        text: config.holdMessage,
+        result,
+      });
+    } catch (e) {
+      await recordEffect("hold_message", "error", { text: config.holdMessage, detail: e.message });
+      throw e;
     }
   }
-  await escalate({ chat, latest, reason });
+  await escalate({ chat, latest, reason, flowId });
+  await recordEffect("escalation_log", "ok", { reason });
 }

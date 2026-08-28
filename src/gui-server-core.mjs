@@ -151,7 +151,9 @@ async function apiOverview(config) {
 }
 
 async function apiActivity(limit) {
-  const lines = await tailLines(ACTIVITY_LOG);
+  // Brain prompts/raw output make flow records substantially larger than the old
+  // activity entries. Keep enough tail bytes for dozens of complete flows.
+  const lines = await tailLines(ACTIVITY_LOG, 2_097_152);
   const parsed = [];
   for (const line of lines) {
     try { parsed.push(JSON.parse(line)); } catch { /* skip */ }

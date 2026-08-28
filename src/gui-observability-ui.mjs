@@ -166,9 +166,9 @@ function obsRenderStage(e, index, startAt) {
   if (stage === "effect" || stage === "outcome") {
     const status = e.status || (e.outcome === "ignored" ? "ignored" : "ok");
     let detail = e.detail || e.reason || "";
-    if (e.results) detail += (detail ? "\n" : "") + obsJson(e.results);
-    if (e.result != null) detail += (detail ? "\n" : "") + obsJson(e.result);
-    if (e.text) detail += (detail ? "\n" : "") + e.text;
+    if (e.results) detail += (detail ? "\\n" : "") + obsJson(e.results);
+    if (e.result != null) detail += (detail ? "\\n" : "") + obsJson(e.result);
+    if (e.text) detail += (detail ? "\\n" : "") + e.text;
     return '<div class="flow-stage effect ' + (status === "error" ? "error" : status === "ignored" ? "ignored" : "ok") + '"><div class="stage-top"><span class="stage-name">5 · effect</span>' +
       obsBadge(status === "error" ? "error" : (e.effect || e.outcome || status)) + time + '</div>' +
       (detail ? '<div class="stage-body">' + obsEscape(detail) + '</div>' : '') + '</div>';

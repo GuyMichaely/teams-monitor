@@ -24,6 +24,12 @@
 
 import { listActions } from "./actions.mjs";
 
+async function emitTrace(trace, name, payload) {
+  const fn = trace?.[name];
+  if (typeof fn !== "function") return;
+  try { await fn(payload); } catch { /* observability must never change a brain decision */ }
+}
+
 export function createBrain(config) {
   const provider = config?.brain?.provider || "stub";
   switch (provider) {
@@ -45,12 +51,25 @@ const ESCALATE_PATTERNS = [
   /\bmeet(ing)?\b/i, /\burgent\b/i, /\basap\b/i, /right now/i, /\bemergency\b/i,
 ];
 
-async function stubDecide(input) {
+async function stubDecide(input, trace = {}) {
   const text = input.latest?.text || "";
+  await emitTrace(trace, "onInput", {
+    provider: "stub",
+    model: null,
+    mode: input.config?.automation?.mode || "respond",
+    input: {
+      chat: input.chat,
+      latest: input.latest,
+      history: input.history,
+      userProfile: input.userProfile,
+      whitelisted: input.whitelisted,
+    },
+  });
 
+  let decision;
   if (input.config?.automation?.mode === "alert-only") {
     const alarm = ESCALATE_PATTERNS.some((re) => re.test(text));
-    return {
+    decision = {
       action: alarm ? "alarm" : "ignore",
       reply: null,
       invokeActions: [],
@@ -58,33 +77,31 @@ async function stubDecide(input) {
         ? "stub: message matches an alarm pattern."
         : "stub: no alarm pattern matched.",
     };
-  }
-
-  if (ESCALATE_PATTERNS.some((re) => re.test(text))) {
-    return {
+  } else if (ESCALATE_PATTERNS.some((re) => re.test(text))) {
+    decision = {
       action: "escalate",
       reply: null,
       invokeActions: [],
       reason: "stub: message matches an escalation pattern (needs the human).",
     };
-  }
-
-  if (input.whitelisted) {
-    // Safe chat (e.g. your self-chat) — acknowledge so the loop is observable.
-    return {
+  } else if (input.whitelisted) {
+    decision = {
       action: "respond",
       reply: `(auto) Got it: "${text.slice(0, 80)}"`,
       invokeActions: [],
       reason: "stub: whitelisted chat, no escalation trigger — auto-acknowledged.",
     };
+  } else {
+    decision = {
+      action: "hold",
+      reply: null,
+      invokeActions: [],
+      reason: "stub: not whitelisted and nothing urgent — hold + escalate for review.",
+    };
   }
 
-  return {
-    action: "hold",
-    reply: null,
-    invokeActions: [],
-    reason: "stub: not whitelisted and nothing urgent — hold + escalate for review.",
-  };
+  await emitTrace(trace, "onDecision", { decision });
+  return decision;
 }
 
 // ---- gemini ----------------------------------------------------------------
@@ -94,15 +111,19 @@ function makeGeminiDecide(config) {
   const model = b.model || "gemini-2.5-flash";
   const apiKeyEnv = b.apiKeyEnv || "GEMINI_API_KEY";
   const apiKey = process.env[apiKeyEnv];
-  return async function geminiDecide(input) {
+  return async function geminiDecide(input, trace = {}) {
     if (!apiKey) {
       throw new Error(
         `Brain provider "gemini" needs an API key in env ${apiKeyEnv}.`
       );
     }
     const { system, user } = buildPrompt(input);
+    await emitTrace(trace, "onInput", { provider: "gemini", model, system, user });
     const raw = await callGemini({ model, apiKey, system, user });
-    return parseDecision(raw, input.config?.automation?.mode);
+    await emitTrace(trace, "onOutput", { provider: "gemini", model, raw });
+    const decision = parseDecision(raw, input.config?.automation?.mode);
+    await emitTrace(trace, "onDecision", { decision });
+    return decision;
   };
 }
 
@@ -238,9 +259,14 @@ export function buildPrompt(input) {
 }
 
 function makeLLMDecide(provider, config) {
-  return async function llmDecide(input) {
-    // eslint-disable-next-line no-unused-vars
+  return async function llmDecide(input, trace = {}) {
     const { system, user } = buildPrompt(input);
+    await emitTrace(trace, "onInput", {
+      provider,
+      model: config?.brain?.model || "",
+      system,
+      user,
+    });
     const apiKey = process.env[config?.brain?.apiKeyEnv || "ANTHROPIC_API_KEY"];
     if (!apiKey) {
       throw new Error(

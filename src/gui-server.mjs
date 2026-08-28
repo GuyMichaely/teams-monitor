@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
+import { injectObservability } from "./gui-observability-ui.mjs";
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
@@ -27,46 +28,6 @@ function diagnostics(limit) {
   };
 }
 
-const DIAGNOSTICS_HTML = `
-  <h2>Connection diagnostics</h2>
-  <div class="card">
-    <div class="row" style="margin-bottom:8px">
-      <button class="secondary" onclick="refreshDiagnostics()">Refresh</button>
-      <button class="secondary" onclick="copyDiagnostics()">Copy diagnostics</button>
-    </div>
-    <pre id="diagnosticsLog">(no diagnostics loaded)</pre>
-    <p style="color:var(--dim);font-size:12px;margin:8px 0 0">
-      Retry the phone connection, then copy this block. Auth-token values are never logged.
-    </p>
-  </div>
-`;
-
-const DIAGNOSTICS_SCRIPT = `<script>
-let latestDiagnostics = "";
-async function refreshDiagnostics() {
-  try {
-    const d = await tunnelApi("/api/diagnostics?limit=120");
-    latestDiagnostics = JSON.stringify(d, null, 2);
-    const pre = document.getElementById("diagnosticsLog");
-    if (pre) { pre.textContent = latestDiagnostics; pre.scrollTop = pre.scrollHeight; }
-  } catch (e) { toast(e.message); }
-}
-async function copyDiagnostics() {
-  if (!latestDiagnostics) await refreshDiagnostics();
-  try {
-    await navigator.clipboard.writeText(latestDiagnostics);
-    toast("Diagnostics copied");
-  } catch { toast("Clipboard unavailable — select the diagnostics text manually"); }
-}
-refreshDiagnostics();
-</script>`;
-
-function injectDiagnostics(page) {
-  if (page.includes('id="diagnosticsLog"')) return page;
-  return page
-    .replace("  <h2>Auto-send whitelist</h2>", DIAGNOSTICS_HTML + "\n  <h2>Auto-send whitelist</h2>")
-    .replace("</body>", DIAGNOSTICS_SCRIPT + "\n</body>");
-}
 
 export function startGui(config) {
   const result = startRuntimeGui(config);
@@ -142,8 +103,8 @@ export function startGui(config) {
       const runtimeEnd = res.end.bind(res);
       res.end = (chunk, encoding, callback) => {
         let body = chunk;
-        if (typeof chunk === "string") body = injectDiagnostics(chunk);
-        else if (Buffer.isBuffer(chunk)) body = Buffer.from(injectDiagnostics(chunk.toString("utf8")));
+        if (typeof chunk === "string") body = injectObservability(chunk);
+        else if (Buffer.isBuffer(chunk)) body = Buffer.from(injectObservability(chunk.toString("utf8")));
         return runtimeEnd(body, encoding, callback);
       };
     }
