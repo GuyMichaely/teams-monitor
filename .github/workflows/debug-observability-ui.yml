@@ -1,0 +1,20 @@
+name: Debug observability UI syntax
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/debug-observability-ui.yml"
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Compile injected observability script
+        run: |
+          bun -e 'import { injectObservability } from "./src/gui-observability-ui.mjs"; const p=injectObservability("<main><h2>Brain context (user-profile.md)</h2></main></body>"); const scripts=[...p.matchAll(/<script>([\s\S]*?)<\/script>/g)]; console.log("scripts", scripts.length); for (let i=0;i<scripts.length;i++){ require("node:fs").writeFileSync(`/tmp/script-${i}.js`,scripts[i][1]); console.log(`script ${i} lines`,scripts[i][1].split("\n").length); }'
+          for f in /tmp/script-*.js; do echo "--- $f"; nl -ba "$f" | tail -n 25; bun --check "$f"; done
