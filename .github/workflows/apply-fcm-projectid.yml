@@ -1,0 +1,250 @@
+name: Apply Firebase project ID resolver
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apply-fcm-projectid.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply Firebase project ID resolver
+        shell: python
+        run: |
+          from pathlib import Path
+
+          Path("src/fcm-config.mjs").write_text(r'''import { readFile } from "node:fs/promises";
+          import { dirname, isAbsolute, join } from "node:path";
+          import { fileURLToPath } from "node:url";
+
+          const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+          export const DEFAULT_FCM_SERVICE_ACCOUNT_FILE = "config/fcm-service-account.json";
+
+          export async function resolveFcmConfig(fcm = {}) {
+            const serviceAccountFile = String(
+              fcm.serviceAccountFile || DEFAULT_FCM_SERVICE_ACCOUNT_FILE
+            ).trim() || DEFAULT_FCM_SERVICE_ACCOUNT_FILE;
+            const serviceAccountPath = isAbsolute(serviceAccountFile)
+              ? serviceAccountFile
+              : join(ROOT, serviceAccountFile);
+
+            let serviceAccount = null;
+            let serviceAccountPresent = false;
+            let serviceAccountError = null;
+            try {
+              const raw = await readFile(serviceAccountPath, "utf8");
+              serviceAccountPresent = true;
+              serviceAccount = JSON.parse(raw);
+            } catch (error) {
+              serviceAccountPresent = error?.code !== "ENOENT";
+              serviceAccountError = error;
+            }
+
+            const projectIdOverride = String(fcm.projectId || "").trim();
+            const serviceAccountProjectId = String(serviceAccount?.project_id || "").trim();
+            const projectId = projectIdOverride || serviceAccountProjectId;
+            const projectIdSource = projectIdOverride
+              ? "override"
+              : serviceAccountProjectId
+                ? "service-account"
+                : "missing";
+
+            return {
+              projectId,
+              projectIdSource,
+              projectIdOverride,
+              serviceAccountProjectId,
+              serviceAccountFile,
+              serviceAccountPath,
+              serviceAccount,
+              serviceAccountPresent,
+              serviceAccountValid: !!serviceAccount,
+              serviceAccountError,
+            };
+          }
+          '''.replace("          ", ""))
+
+          alerts = Path("src/alerts.mjs")
+          text = alerts.read_text()
+          text = text.replace(
+              'import { DATA_DIR } from "./state.mjs";\n',
+              'import { DATA_DIR } from "./state.mjs";\nimport { resolveFcmConfig } from "./fcm-config.mjs";\n',
+              1,
+          )
+          old = '''async function sendViaFcm(body, fcm) {
+            if (!fcm?.projectId || !fcm?.serviceAccountFile) {
+              throw new Error("alerts.fcm not configured — need projectId and serviceAccountFile");
+            }
+            let deviceToken = "";
+            try { deviceToken = (await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* not registered yet */ }
+            if (!deviceToken) {
+              throw new Error("FCM device token not registered — open the Android app while the GUI/tunnel is reachable");
+            }
+            const saPath = join(ROOT, fcm.serviceAccountFile);
+            const sa = JSON.parse(await readFile(saPath, "utf8"));
+            const accessToken = await fcmAccessToken(sa);
+            const r = await fetch(`https://fcm.googleapis.com/v1/projects/${fcm.projectId}/messages:send`, {'''
+          new = '''async function sendViaFcm(body, fcm) {
+            const resolved = await resolveFcmConfig(fcm);
+            if (!resolved.serviceAccountValid) {
+              const detail = resolved.serviceAccountPresent ? "invalid service account JSON" : "service account file missing";
+              throw new Error(`alerts.fcm not configured — ${detail}: ${resolved.serviceAccountFile}`);
+            }
+            if (!resolved.projectId) {
+              throw new Error("alerts.fcm not configured — project ID missing from both config override and service account");
+            }
+            let deviceToken = "";
+            try { deviceToken = (await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* not registered yet */ }
+            if (!deviceToken) {
+              throw new Error("FCM device token not registered — open the Android app while the GUI/tunnel is reachable");
+            }
+            const sa = resolved.serviceAccount;
+            const accessToken = await fcmAccessToken(sa);
+            const r = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(resolved.projectId)}/messages:send`, {'''
+          if old not in text:
+              raise SystemExit("alerts sendViaFcm target not found")
+          alerts.write_text(text.replace(old, new, 1))
+
+          gui = Path("src/gui-server-runtime.mjs")
+          text = gui.read_text()
+          text = text.replace(
+              'import { DATA_DIR } from "./state.mjs";\n',
+              'import { DATA_DIR } from "./state.mjs";\nimport { DEFAULT_FCM_SERVICE_ACCOUNT_FILE, resolveFcmConfig } from "./fcm-config.mjs";\n',
+              1,
+          )
+          old = '''async function runtimeConfig() {
+            const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+            const fcm = cfg.alerts?.fcm || {};
+            let fcmTokenRegistered = false;
+            try { fcmTokenRegistered = !!(await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* no token */ }
+            const serviceAccountFile = fcm.serviceAccountFile || "config/fcm-service-account.json";
+            return {
+              pollIntervalMs: cfg.pollIntervalMs || 15000,
+              mode: cfg.automation?.mode || "respond",
+              alerts: {
+                transport: cfg.alerts?.transport || "websocket",
+                fcmProjectId: fcm.projectId || "",
+                fcmTokenRegistered,
+                fcmServiceAccountPresent: existsSync(join(ROOT, serviceAccountFile)),
+              },
+            };
+          }'''
+          new = '''async function runtimeConfig() {
+            const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+            const fcm = cfg.alerts?.fcm || {};
+            const resolvedFcm = await resolveFcmConfig(fcm);
+            let fcmTokenRegistered = false;
+            try { fcmTokenRegistered = !!(await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* no token */ }
+            return {
+              pollIntervalMs: cfg.pollIntervalMs || 15000,
+              mode: cfg.automation?.mode || "respond",
+              alerts: {
+                transport: cfg.alerts?.transport || "websocket",
+                fcmProjectId: resolvedFcm.projectId,
+                fcmProjectIdOverride: resolvedFcm.projectIdOverride,
+                fcmProjectIdSource: resolvedFcm.projectIdSource,
+                fcmTokenRegistered,
+                fcmServiceAccountPresent: resolvedFcm.serviceAccountPresent,
+                fcmServiceAccountValid: resolvedFcm.serviceAccountValid,
+              },
+            };
+          }'''
+          if old not in text:
+              raise SystemExit("runtimeConfig target not found")
+          text = text.replace(old, new, 1)
+
+          old = '''  if (transport === "fcm" && !projectId) {
+            throw Object.assign(new Error("Firebase project ID is required for FCM"), { httpCode: 400 });
+          }
+          const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+          cfg.alerts = cfg.alerts || {};
+          cfg.alerts.transport = transport;
+          cfg.alerts.fcm = {
+            ...(cfg.alerts.fcm || {}),
+            projectId,
+            serviceAccountFile: cfg.alerts.fcm?.serviceAccountFile || "config/fcm-service-account.json",
+          };'''
+          new = '''  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+          cfg.alerts = cfg.alerts || {};
+          const nextFcm = {
+            ...(cfg.alerts.fcm || {}),
+            projectId,
+            serviceAccountFile: cfg.alerts.fcm?.serviceAccountFile || DEFAULT_FCM_SERVICE_ACCOUNT_FILE,
+          };
+          const resolvedFcm = await resolveFcmConfig(nextFcm);
+          if (transport === "fcm" && !resolvedFcm.projectId) {
+            throw Object.assign(
+              new Error("Firebase project ID missing from both override and service account"),
+              { httpCode: 400 }
+            );
+          }
+          cfg.alerts.transport = transport;
+          cfg.alerts.fcm = nextFcm;'''
+          if old not in text:
+              raise SystemExit("saveAlertConfig target not found")
+          text = text.replace(old, new, 1)
+
+          text = text.replace(
+              'placeholder="Firebase project ID"',
+              'placeholder="Optional Firebase project ID override"',
+              1,
+          )
+
+          old = '''  const project = document.getElementById("fcmProjectId");
+            if (project && document.activeElement !== project) project.value = c.alerts?.fcmProjectId || "";
+            const status = document.getElementById("fcmStatus");
+            if (status) {
+              const parts = [
+                c.alerts?.fcmProjectId ? "project ID ✓" : "project ID missing",
+                c.alerts?.fcmServiceAccountPresent ? "service account ✓" : "service account missing",
+                c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
+              ];
+              status.textContent = parts.join(" · ");
+            }'''
+          new = '''  const project = document.getElementById("fcmProjectId");
+            if (project && document.activeElement !== project) {
+              project.value = c.alerts?.fcmProjectIdOverride || "";
+              project.placeholder = c.alerts?.fcmProjectIdSource === "service-account"
+                ? "Auto: " + c.alerts.fcmProjectId
+                : "Optional Firebase project ID override";
+            }
+            const status = document.getElementById("fcmStatus");
+            if (status) {
+              const projectStatus = !c.alerts?.fcmProjectId
+                ? "project ID missing"
+                : c.alerts?.fcmProjectIdSource === "override"
+                  ? "project ID ✓ (override)"
+                  : "project ID ✓ (service account)";
+              const serviceAccountStatus = c.alerts?.fcmServiceAccountValid
+                ? "service account ✓"
+                : c.alerts?.fcmServiceAccountPresent
+                  ? "service account invalid"
+                  : "service account missing";
+              const parts = [
+                projectStatus,
+                serviceAccountStatus,
+                c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
+              ];
+              status.textContent = parts.join(" · ");
+            }'''
+          if old not in text:
+              raise SystemExit("GUI status target not found")
+          gui.write_text(text.replace(old, new, 1))
+
+      - name: Commit change and remove one-shot workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-fcm-projectid.yml
+          git add src/fcm-config.mjs src/alerts.mjs src/gui-server-runtime.mjs
+          git commit -m "Derive Firebase project ID from service account"
+          git push origin HEAD:main
