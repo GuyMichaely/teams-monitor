@@ -1,61 +1,43 @@
 {
-  "//": "Copy to config/config.json and edit. Keep secrets out of this tracked file.",
-
+  "//": "Copied automatically to the gitignored config/config.json on first run. Keep secrets out of this file.",
   "pollIntervalMs": 15000,
-
   "whitelist": {
-    "//": "Chats where Claude may AUTO-SEND replies. Match on the chat's display name.",
-    "//2": "Everything not listed here defaults to hold + escalate.",
-    "autoSend": ["Guy Michaely (You)"]
+    "autoSend": []
   },
-
   "holdMessage": "Thanks — I've seen this and will get back to you shortly.",
-
   "brain": {
-    "//": "Which decision engine to use. 'stub' needs no API key; 'gemini' works with a free AI Studio key.",
-    "provider": "stub",
-    "//providers": "stub | gemini | anthropic | openai (anthropic/openai are seams, not implemented)",
-    "//model": "For gemini: a current flash-lite model, e.g. gemini-3.1-flash-lite. Check",
-    "//model2": "GET https://generativelanguage.googleapis.com/v1beta/models with your key if 404s.",
-    "model": "",
-    "//apiKeyEnv": "Gemini key must be supplied through this environment variable; never hardcode it here.",
+    "provider": "gemini",
+    "model": "gemini-3.1-flash-lite",
     "apiKeyEnv": "GEMINI_API_KEY"
   },
-
   "gui": {
-    "//": "Monitoring dashboard (node src/cli.mjs gui). Binds localhost; publish via a tunnel.",
-    "//auth": "Optional: if the env var below is set, /api/* requires it as a Bearer token.",
-    "//auth2": "Leave the env var unset to run open — then auth belongs to the tunnel (Cloudflare Access).",
     "port": 8090,
     "host": "127.0.0.1",
     "authTokenEnv": "GUI_TOKEN"
   },
-
   "alerts": {
-    "//": "Phone alerts via the alert_phone tool (transport in src/alerts.mjs).",
-    "//notifyAll": "When true, EVERY incoming message pushes an alert — no brain in the loop.",
     "notifyAll": false,
-    "//transport": "websocket = POST to the GUI server, which broadcasts to companion apps on",
-    "//transport2": "/ws/alerts. fcm = Firebase Cloud Messaging direct to the app.",
     "transport": "websocket",
-    "//websocketUrl": "Defaults to http://<gui.host>:<gui.port>/api/alerts when omitted.",
     "websocketUrl": "",
-    "//fcm": "Needs the service-account JSON (gitignored) and the app's registration token.",
     "fcm": {
-      "projectId": "",
-      "serviceAccountFile": "config/fcm-service-account.json",
-      "deviceToken": ""
+      "serviceAccountFile": "config/fcm-service-account.json"
     },
-    "//ignoreAuthors": "Messages whose latest author is listed here never alert (e.g. yourself).",
     "ignoreAuthors": [],
-    "//mentionNames": "Name forms used for the addressed-detection backstop: any word-boundary",
-    "//mentionNames2": "match fires a phone alert even if the brain didn't (brain is prompted to as well).",
     "mentionNames": []
   },
-
+  "integrations": {
+    "tfs": {
+      "enabled": false,
+      "serverPort": 8080,
+      "authTokenEnv": "TFS_AGENT_TOKEN",
+      "resultTimeoutMs": 120000,
+      "longPollMaxMs": 30000
+    }
+  },
   "debug": {
-    "//echoLoop": "When true, re-respond to whitelisted chats every tick regardless of",
-    "//echoLoop2": "read state. Lets a self-message loop forever to test the kill switches.",
     "echoLoop": false
+  },
+  "automation": {
+    "mode": "alert-only"
   }
 }
