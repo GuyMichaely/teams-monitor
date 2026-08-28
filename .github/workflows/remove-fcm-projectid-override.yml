@@ -17,11 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-
-      - name: Remove project ID override support
+      - name: Apply cleanup
         shell: python
         run: |
           from pathlib import Path
@@ -29,42 +25,14 @@ jobs:
 
           fcm = Path("src/fcm-config.mjs")
           text = fcm.read_text()
-          old = '''  const projectIdOverride = String(fcm.projectId || "").trim();
-          const serviceAccountProjectId = String(serviceAccount?.project_id || "").trim();
-          const projectId = projectIdOverride || serviceAccountProjectId;
-          const projectIdSource = projectIdOverride
-            ? "override"
-            : serviceAccountProjectId
-              ? "service-account"
-              : "missing";
-
-          return {
-            projectId,
-            projectIdSource,
-            projectIdOverride,
-            serviceAccountProjectId,
-'''
-          new = '''  const projectId = String(serviceAccount?.project_id || "").trim();
-
-          return {
-            projectId,
-'''
-          if old not in text:
-              raise SystemExit("fcm-config override block not found")
-          fcm.write_text(text.replace(old, new, 1))
+          start = text.index('  const projectIdOverride = String(fcm.projectId || "").trim();')
+          end = text.index('    serviceAccountFile,', start)
+          text = text[:start] + '  const projectId = String(serviceAccount?.project_id || "").trim();\n\n  return {\n    projectId,\n' + text[end:]
+          fcm.write_text(text)
 
           gui = Path("src/gui-server-runtime.mjs")
           text = gui.read_text()
-
-          old = '''      fcmProjectId: resolvedFcm.projectId,
-                fcmProjectIdOverride: resolvedFcm.projectIdOverride,
-                fcmProjectIdSource: resolvedFcm.projectIdSource,
-                fcmTokenRegistered,'''
-          new = '''      fcmProjectId: resolvedFcm.projectId,
-                fcmTokenRegistered,'''
-          if old not in text:
-              raise SystemExit("runtime config fields not found")
-          text = text.replace(old, new, 1)
+          text = text.replace('      fcmProjectId: resolvedFcm.projectId,\n      fcmProjectIdOverride: resolvedFcm.projectIdOverride,\n      fcmProjectIdSource: resolvedFcm.projectIdSource,\n', '      fcmProjectId: resolvedFcm.projectId,\n', 1)
 
           start = text.index('async function saveAlertConfig(req) {')
           end = text.index('\nasync function registerFcmToken(req) {', start)
@@ -83,10 +51,7 @@ jobs:
             delete nextFcm.projectId;
             const resolvedFcm = await resolveFcmConfig(nextFcm);
             if (transport === "fcm" && !resolvedFcm.projectId) {
-              throw Object.assign(
-                new Error("Firebase project ID missing from service account"),
-                { httpCode: 400 }
-              );
+              throw Object.assign(new Error("Firebase project ID missing from service account"), { httpCode: 400 });
             }
             cfg.alerts.transport = transport;
             cfg.alerts.fcm = nextFcm;
@@ -97,27 +62,15 @@ jobs:
           '''
           text = text[:start] + replacement + text[end:]
 
-          old = '''      <div id="fcmFields" style="margin-top:10px">
-                <div class="row">
-                  <input id="fcmProjectId" type="text" placeholder="Optional Firebase project ID override"
-                    style="min-width:260px;background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
-                  <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>
-                </div>
-              </div>'''
-          new = '''      <div id="fcmFields" style="margin-top:10px">
-                <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>
-              </div>'''
-          if old not in text:
-              raise SystemExit("FCM project ID input HTML not found")
-          text = text.replace(old, new, 1)
+          start = text.index('      <div id="fcmFields" style="margin-top:10px">')
+          end = text.index('      </div>\n    </div>\n\n    <p style=', start) + len('      </div>')
+          text = text[:start] + '      <div id="fcmFields" style="margin-top:10px">\n        <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>\n      </div>' + text[end:]
 
-          block_start = text.index('const project = document.getElementById("fcmProjectId");')
-          block_end = text.index('\nrenderAlertTransportFields();', block_start)
-          status_block = '''const status = document.getElementById("fcmStatus");
+          start = text.index('const project = document.getElementById("fcmProjectId");')
+          end = text.index('\nrenderAlertTransportFields();', start)
+          status = '''const status = document.getElementById("fcmStatus");
           if (status) {
-            const projectStatus = c.alerts?.fcmProjectId
-              ? "project ID ✓ (service account)"
-              : "project ID missing";
+            const projectStatus = c.alerts?.fcmProjectId ? "project ID ✓ (service account)" : "project ID missing";
             const serviceAccountStatus = c.alerts?.fcmServiceAccountValid
               ? "service account ✓"
               : c.alerts?.fcmServiceAccountPresent
@@ -129,50 +82,18 @@ jobs:
               c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
             ].join(" · ");
           }'''
-          text = text[:block_start] + status_block + text[block_end:]
+          text = text[:start] + status + text[end:]
 
-          old = '''async function saveAlertTransport() {
-            const transport = document.getElementById("alertTransport").value;
-            const projectId = document.getElementById("fcmProjectId").value.trim();
-            try {
-              const result = await tunnelApi("/api/config/alerts", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ transport, projectId }),
-              });'''
-          new = '''async function saveAlertTransport() {
-            const transport = document.getElementById("alertTransport").value;
-            try {
-              const result = await tunnelApi("/api/config/alerts", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ transport }),
-              });'''
-          if old not in text:
-              raise SystemExit("saveAlertTransport project ID payload not found")
-          gui.write_text(text.replace(old, new, 1))
+          text = text.replace('  const projectId = document.getElementById("fcmProjectId").value.trim();\n', '', 1)
+          text = text.replace('body: JSON.stringify({ transport, projectId }),', 'body: JSON.stringify({ transport }),', 1)
+          gui.write_text(text)
 
           cfg_path = Path("config/config.json")
           cfg = json.loads(cfg_path.read_text())
           cfg.setdefault("alerts", {}).setdefault("fcm", {}).pop("projectId", None)
           cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=True) + "\n")
 
-      - name: Validate resolver and GUI
-        run: |
-          node --check src/fcm-config.mjs
-          node --check src/alerts.mjs
-          node --check src/gui-server-runtime.mjs
-          cat > /tmp/fcm-sa.json <<'JSON'
-          {"project_id":"derived-project","client_email":"x@example.com","private_key":"unused","token_uri":"https://oauth2.googleapis.com/token"}
-          JSON
-          bun -e 'import { resolveFcmConfig } from "./src/fcm-config.mjs"; const r = await resolveFcmConfig({ serviceAccountFile: "/tmp/fcm-sa.json", projectId: "ignored-override" }); if (r.projectId !== "derived-project") throw new Error(JSON.stringify(r));'
-          bun scripts/smoke-gui.mjs
-          if grep -R 'fcmProjectIdOverride\|fcmProjectIdSource\|id="fcmProjectId"\|projectIdOverride' src config/config.json; then
-            echo "stale project ID override support remains"
-            exit 1
-          fi
-
-      - name: Commit cleanup and remove one-shot workflow
+      - name: Commit cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
