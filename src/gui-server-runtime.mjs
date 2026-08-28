@@ -95,8 +95,7 @@ async function saveAlertConfig(req) {
   cfg.alerts.transport = transport;
   cfg.alerts.fcm = nextFcm;
   delete cfg.alerts.fcm.deviceToken;
-  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "
-");
+  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
   return await runtimeConfig();
 }
 
