@@ -1,0 +1,40 @@
+name: Validate FCM cleanup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-fcm-cleanup.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Validate source
+        run: |
+          node --check src/fcm-config.mjs
+          node --check src/alerts.mjs
+          node --check src/gui-server-runtime.mjs
+          printf '%s\n' '{"project_id":"derived-project"}' > /tmp/fcm-sa.json
+          bun -e 'import { resolveFcmConfig } from "./src/fcm-config.mjs"; const r = await resolveFcmConfig({ serviceAccountFile: "/tmp/fcm-sa.json", projectId: "must-be-ignored" }); if (r.projectId !== "derived-project") throw new Error(JSON.stringify(r));'
+          bun scripts/smoke-gui.mjs
+          ! grep -R 'fcmProjectIdOverride\|fcmProjectIdSource\|id="fcmProjectId"\|projectIdOverride' src config/config.json
+
+      - name: Remove validation workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/validate-fcm-cleanup.yml
+          git commit -m "Remove temporary FCM cleanup validation"
+          git push origin HEAD:main
