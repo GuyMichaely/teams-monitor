@@ -28,6 +28,13 @@ GUI_TOKEN=...
 
 Bun loads it explicitly through the package scripts. Runtime state and logs stay under the gitignored `data/` directory.
 
+The live configuration and brain profile are also machine-local and gitignored:
+
+- `config/config.json` — runtime settings changed by the GUI, including polling interval and alert transport.
+- `context/user-profile.md` — freeform context/instructions supplied to the brain.
+
+On first run, missing local files are automatically copied from `config/config.example.json` and `context/user-profile.example.md`. Edit the live files, not the tracked examples, for machine-specific settings that should survive `git pull`.
+
 ## Normal startup
 
 From the repo root:
@@ -36,7 +43,7 @@ From the repo root:
 bun run gui
 ```
 
-This starts the management GUI on the port configured in `config/config.json` (currently 8090). From the dashboard you can start/stop the monitor and start/stop the existing `teams-gui` Cloudflare tunnel.
+This starts the management GUI on the port configured in the local `config/config.json` (8090 in the example). From the dashboard you can start/stop the monitor and start/stop the existing `teams-gui` Cloudflare tunnel.
 
 To run the monitor directly without the GUI:
 
@@ -103,21 +110,23 @@ The per-launch method is preferable because a persistent WebView2 debugging vari
 ## Architecture
 
 ```text
-src/teams.mjs            CDP/WebSocket core for Teams
-src/monitor.mjs          unread enumeration + chat reading
-src/brain.mjs            respond | hold | escalate decision layer
-src/orchestrator.mjs     poll → read → decide → act → log loop
-src/actions.mjs          action registry, including alert_phone
-src/alerts.mjs           phone-alert transports
-src/gui-server*.mjs      dashboard, API, WebSocket alert hub, diagnostics
-src/state.mjs            runtime state/activity under data/
-config/config.json       tracked non-secret configuration
-context/user-profile.md  context supplied to the brain
-android-app/             Android companion app
-tfs-agent/               separate TFS worker integration
+src/teams.mjs                  CDP/WebSocket core for Teams
+src/monitor.mjs                unread enumeration + chat reading
+src/brain.mjs                  decision layer
+src/orchestrator.mjs           poll → read → decide → act → log loop
+src/actions.mjs                action registry, including alert_phone
+src/alerts.mjs                 phone-alert transports
+src/gui-server*.mjs            dashboard, API, WebSocket alert hub, diagnostics
+src/state.mjs                  runtime state/activity under data/
+config/config.example.json     tracked configuration template
+config/config.json             gitignored live configuration
+context/user-profile.example.md tracked brain-profile template
+context/user-profile.md        gitignored live brain context
+android-app/                   Android companion app
+tfs-agent/                     separate TFS worker integration
 ```
 
-The GUI's `/ws/alerts` endpoint is the live alert channel used by the Android app. With the existing Cloudflare tunnel running, `https://gui.guymichaely.com` routes to the local GUI and WebSocket connections use the same hostname over WSS.
+The GUI's `/ws/alerts` endpoint is the live alert channel used when WebSocket transport is selected. FCM can instead deliver Android alarms through Firebase Cloud Messaging.
 
 ## GUI diagnostics
 
@@ -127,13 +136,7 @@ The dashboard has **Connection diagnostics** with Refresh/Copy controls. It reco
 
 See `android-app/README.md` for app behavior and local builds.
 
-The repository also has `.github/workflows/android-apk.yml`. After the one-time signing setup:
-
-```powershell
-.\scripts\setup-android-signing.ps1
-```
-
-Android changes automatically build a signed APK and publish it to the stable GitHub Release tag `android-latest`, while also retaining an Actions artifact. Keep the signing-key backup created under `%USERPROFILE%\.teams-monitor`; losing that key prevents future APKs from updating the installed app.
+The repository also has `.github/workflows/android-apk.yml`. Android changes automatically build a signed APK and publish it to the stable GitHub Release tag `android-latest`, while also retaining an Actions artifact when the signing secret is configured.
 
 ## Bun compatibility guard
 
@@ -141,8 +144,8 @@ Android changes automatically build a signed APK and publish it to the stable Gi
 
 ## Safety / operational notes
 
-- `config/config.json` is tracked; never put secrets in it.
-- `.env` and `data/` are ignored.
+- `config/config.json`, `context/user-profile.md`, `.env`, Firebase credentials, and `data/` are ignored local/runtime state.
+- Keep reusable non-secret defaults in the tracked `*.example.*` files.
 - The monitor can restart Teams to expose its debugging port.
 - The Cloudflare GUI uses `GUI_TOKEN`; stopping the tunnel while using `gui.guymichaely.com` disconnects that remote session.
 - Stop the orchestrator with the GUI Stop button or `bun src/cli.mjs stop`.
