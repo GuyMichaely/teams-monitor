@@ -21,6 +21,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR } from "./state.mjs";
+import { resolveFcmConfig } from "./fcm-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
@@ -100,24 +101,27 @@ async function fcmAccessToken(sa) {
 }
 
 async function sendViaFcm(body, fcm) {
-  if (!fcm?.projectId || !fcm?.serviceAccountFile) {
-    throw new Error("alerts.fcm not configured — need projectId and serviceAccountFile");
+  const resolved = await resolveFcmConfig(fcm);
+  if (!resolved.serviceAccountValid) {
+    const detail = resolved.serviceAccountPresent ? "invalid service account JSON" : "service account file missing";
+    throw new Error(`alerts.fcm not configured — ${detail}: ${resolved.serviceAccountFile}`);
+  }
+  if (!resolved.projectId) {
+    throw new Error("alerts.fcm not configured — project ID missing from both config override and service account");
   }
   let deviceToken = "";
   try { deviceToken = (await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* not registered yet */ }
   if (!deviceToken) {
     throw new Error("FCM device token not registered — open the Android app while the GUI/tunnel is reachable");
   }
-  const saPath = join(ROOT, fcm.serviceAccountFile);
-  const sa = JSON.parse(await readFile(saPath, "utf8"));
+  const sa = resolved.serviceAccount;
   const accessToken = await fcmAccessToken(sa);
-  const r = await fetch(`https://fcm.googleapis.com/v1/projects/${fcm.projectId}/messages:send`, {
+  const r = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(resolved.projectId)}/messages:send`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({
       message: {
         token: deviceToken,
-        // Data-only: the app renders/alarms itself. Values must all be strings.
         data: { chat: body.chat, author: body.author, text: body.text, time: body.time || "" },
         android: { priority: "HIGH" },
       },

@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startGui as startCoreGui } from "./gui-server-core.mjs";
 import { DATA_DIR } from "./state.mjs";
+import { DEFAULT_FCM_SERVICE_ACCOUNT_FILE, resolveFcmConfig } from "./fcm-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_FILE = join(ROOT, "config", "config.json");
@@ -49,17 +50,20 @@ async function readJsonBody(req, cap = 8192) {
 async function runtimeConfig() {
   const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
   const fcm = cfg.alerts?.fcm || {};
+  const resolvedFcm = await resolveFcmConfig(fcm);
   let fcmTokenRegistered = false;
   try { fcmTokenRegistered = !!(await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* no token */ }
-  const serviceAccountFile = fcm.serviceAccountFile || "config/fcm-service-account.json";
   return {
     pollIntervalMs: cfg.pollIntervalMs || 15000,
     mode: cfg.automation?.mode || "respond",
     alerts: {
       transport: cfg.alerts?.transport || "websocket",
-      fcmProjectId: fcm.projectId || "",
+      fcmProjectId: resolvedFcm.projectId,
+      fcmProjectIdOverride: resolvedFcm.projectIdOverride,
+      fcmProjectIdSource: resolvedFcm.projectIdSource,
       fcmTokenRegistered,
-      fcmServiceAccountPresent: existsSync(join(ROOT, serviceAccountFile)),
+      fcmServiceAccountPresent: resolvedFcm.serviceAccountPresent,
+      fcmServiceAccountValid: resolvedFcm.serviceAccountValid,
     },
   };
 }
@@ -74,19 +78,25 @@ async function saveAlertConfig(req) {
   if (projectId.length > 128) {
     throw Object.assign(new Error("Firebase project ID is too long"), { httpCode: 400 });
   }
-  if (transport === "fcm" && !projectId) {
-    throw Object.assign(new Error("Firebase project ID is required for FCM"), { httpCode: 400 });
-  }
   const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
   cfg.alerts = cfg.alerts || {};
-  cfg.alerts.transport = transport;
-  cfg.alerts.fcm = {
+  const nextFcm = {
     ...(cfg.alerts.fcm || {}),
     projectId,
-    serviceAccountFile: cfg.alerts.fcm?.serviceAccountFile || "config/fcm-service-account.json",
+    serviceAccountFile: cfg.alerts.fcm?.serviceAccountFile || DEFAULT_FCM_SERVICE_ACCOUNT_FILE,
   };
+  const resolvedFcm = await resolveFcmConfig(nextFcm);
+  if (transport === "fcm" && !resolvedFcm.projectId) {
+    throw Object.assign(
+      new Error("Firebase project ID missing from both override and service account"),
+      { httpCode: 400 }
+    );
+  }
+  cfg.alerts.transport = transport;
+  cfg.alerts.fcm = nextFcm;
   delete cfg.alerts.fcm.deviceToken;
-  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "
+");
   return await runtimeConfig();
 }
 
@@ -269,7 +279,7 @@ const TUNNEL_HTML = `
       </div>
       <div id="fcmFields" style="margin-top:10px">
         <div class="row">
-          <input id="fcmProjectId" type="text" placeholder="Firebase project ID"
+          <input id="fcmProjectId" type="text" placeholder="Optional Firebase project ID override"
             style="min-width:260px;background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
           <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>
         </div>
@@ -307,18 +317,34 @@ function applyRuntimeConfig(c) {
   const transport = c.alerts?.transport || "websocket";
   const transportSelect = document.getElementById("alertTransport");
   if (transportSelect && document.activeElement !== transportSelect) transportSelect.value = transport;
-  const project = document.getElementById("fcmProjectId");
-  if (project && document.activeElement !== project) project.value = c.alerts?.fcmProjectId || "";
-  const status = document.getElementById("fcmStatus");
-  if (status) {
-    const parts = [
-      c.alerts?.fcmProjectId ? "project ID ✓" : "project ID missing",
-      c.alerts?.fcmServiceAccountPresent ? "service account ✓" : "service account missing",
-      c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
-    ];
-    status.textContent = parts.join(" · ");
-  }
-  renderAlertTransportFields();
+
+const project = document.getElementById("fcmProjectId");
+if (project && document.activeElement !== project) {
+  project.value = c.alerts?.fcmProjectIdOverride || "";
+  project.placeholder = c.alerts?.fcmProjectIdSource === "service-account"
+    ? "Auto: " + c.alerts.fcmProjectId
+    : "Optional Firebase project ID override";
+}
+const status = document.getElementById("fcmStatus");
+if (status) {
+  const projectStatus = !c.alerts?.fcmProjectId
+    ? "project ID missing"
+    : c.alerts?.fcmProjectIdSource === "override"
+      ? "project ID ✓ (override)"
+      : "project ID ✓ (service account)";
+  const serviceAccountStatus = c.alerts?.fcmServiceAccountValid
+    ? "service account ✓"
+    : c.alerts?.fcmServiceAccountPresent
+      ? "service account invalid"
+      : "service account missing";
+  const parts = [
+    projectStatus,
+    serviceAccountStatus,
+    c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
+  ];
+  status.textContent = parts.join(" · ");
+}
+renderAlertTransportFields();
   const alertOnly = c.mode === "alert-only";
   const whitelistHeading = [...document.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Auto-send whitelist");
   if (whitelistHeading) {
