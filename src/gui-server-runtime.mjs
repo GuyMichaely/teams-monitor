@@ -312,6 +312,7 @@ function applyRuntimeConfig(c) {
   const status = document.getElementById("fcmStatus");
   if (status) {
     const parts = [
+      c.alerts?.fcmProjectId ? "project ID ✓" : "project ID missing",
       c.alerts?.fcmServiceAccountPresent ? "service account ✓" : "service account missing",
       c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
     ];
