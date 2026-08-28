@@ -1,0 +1,39 @@
+name: Fix FCM config newline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/fix-fcm-newline.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fix generated JavaScript newline literal
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("src/gui-server-runtime.mjs")
+          text = path.read_text()
+          broken = 'await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");'
+          fixed = r'await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");'
+          if broken not in text:
+              raise SystemExit("broken newline target not found")
+          path.write_text(text.replace(broken, fixed, 1))
+
+      - name: Commit fix and remove one-shot workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/fix-fcm-newline.yml
+          git add src/gui-server-runtime.mjs
+          git commit -m "Fix FCM config newline literal"
+          git push origin HEAD:main
