@@ -1,0 +1,42 @@
+name: Validate FCM resolver
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-fcm-resolver.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Test project ID derivation and override
+        shell: pwsh
+        run: |
+          $sa = Join-Path $env:RUNNER_TEMP "fcm-test-service-account.json"
+          '{"project_id":"derived-project","client_email":"x@example.com","private_key":"unused","token_uri":"https://oauth2.googleapis.com/token"}' | Set-Content -NoNewline $sa
+          $env:FCM_TEST_SA = $sa
+          bun -e 'import { resolveFcmConfig } from "./src/fcm-config.mjs"; const a = await resolveFcmConfig({ serviceAccountFile: process.env.FCM_TEST_SA }); if (a.projectId !== "derived-project" || a.projectIdSource !== "service-account" || !a.serviceAccountValid) throw new Error(JSON.stringify(a)); const b = await resolveFcmConfig({ projectId: "override-project", serviceAccountFile: process.env.FCM_TEST_SA }); if (b.projectId !== "override-project" || b.projectIdSource !== "override") throw new Error(JSON.stringify(b)); console.log("FCM resolver OK");'
+
+      - name: Test Bun child process and GUI WebSocket
+        run: bun scripts/smoke-gui.mjs
+
+      - name: Remove one-shot workflow
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/validate-fcm-resolver.yml
+          git commit -m "Remove FCM resolver validation workflow"
+          git push origin HEAD:main
