@@ -1,0 +1,31 @@
+# Compile the optional control Worker without deploying it.
+name: Cloudflare Worker smoke test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare-worker/**"
+      - ".github/workflows/cloudflare-worker-smoke.yml"
+  pull_request:
+    paths:
+      - "cloudflare-worker/**"
+      - ".github/workflows/cloudflare-worker-smoke.yml"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Compile Worker with Wrangler
+        run: >-
+          npx --yes wrangler@4.127.1 deploy
+          --dry-run
+          --config cloudflare-worker/wrangler.toml.example
+          --outdir .worker-dist
