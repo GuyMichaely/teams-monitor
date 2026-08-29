@@ -1,8 +1,12 @@
 // Optional Cloudflare Worker control-plane client. Direct PC/phone paths stay
 // primary; this module mirrors state and provides a rendezvous/watchdog path.
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { controlState, newerWorkerRegistration } from "./alert-runtime.mjs";
+import { DATA_DIR } from "./state.mjs";
 
+const ORCHESTRATOR_HEARTBEAT_FILE = join(DATA_DIR, "heartbeat.json");
 let lastHeartbeatAt = 0;
 let heartbeatInFlight = null;
 
@@ -15,6 +19,17 @@ function settings(config) {
     heartbeatIntervalMs: Math.max(Number(w.heartbeatIntervalMs) || 60_000, 10_000),
     heartbeatTimeoutMs: Math.max(Number(w.heartbeatTimeoutMs) || 180_000, 30_000),
   };
+}
+
+async function localOrchestratorHeartbeat(config) {
+  try {
+    const hb = JSON.parse(await readFile(ORCHESTRATOR_HEARTBEAT_FILE, "utf8"));
+    const ageMs = Date.now() - Date.parse(hb?.at || 0);
+    const maxAgeMs = Math.max(2 * (Number(config?.pollIntervalMs) || 15_000), 45_000);
+    return ageMs >= 0 && ageMs <= maxAgeMs ? { ...hb, ageMs } : null;
+  } catch {
+    return null;
+  }
 }
 
 async function callWorker(config, path, body) {
@@ -43,12 +58,18 @@ export async function syncWorkerHeartbeat(config, { force = false } = {}) {
   if (!force && now - lastHeartbeatAt < w.heartbeatIntervalMs) return null;
   if (heartbeatInFlight) return heartbeatInFlight;
 
+  // The Worker heartbeat represents a fresh orchestrator tick, not merely a
+  // living CLI process. If Teams polling is wedged, stop feeding the watchdog.
+  const localHeartbeat = await localOrchestratorHeartbeat(config);
+  if (!localHeartbeat) return null;
+
   lastHeartbeatAt = now;
   heartbeatInFlight = (async () => {
     try {
       const state = await controlState(config);
       return await callWorker(config, "/api/pc/sync", {
         at: new Date().toISOString(),
+        orchestratorHeartbeatAt: localHeartbeat.at,
         heartbeatTimeoutMs: w.heartbeatTimeoutMs,
         state,
       });
