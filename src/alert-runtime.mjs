@@ -83,16 +83,60 @@ async function withRuntimeLock(fn) {
   return await withFileLock(ALERT_RUNTIME_LOCK, "alert runtime", fn);
 }
 
-export async function readFcmRegistration() {
-  const current = await readJson(FCM_REGISTRATION_FILE);
-  if (current?.value && ["fid", "token"].includes(current.kind)) return current;
+function normalizeRegistration(current) {
+  if (!current?.value || !["fid", "token"].includes(current.kind)) return null;
+  return {
+    ...current,
+    generation: Number.isInteger(current.generation) && current.generation >= 0
+      ? current.generation
+      : 1,
+  };
+}
+
+async function readFcmRegistrationUnlocked() {
+  const current = normalizeRegistration(await readJson(FCM_REGISTRATION_FILE));
+  if (current) return current;
 
   // One-release migration path from the deprecated registration-token file.
   try {
     const token = (await readFile(LEGACY_FCM_TOKEN_FILE, "utf8")).trim();
-    if (token) return { kind: "token", value: token, observedAt: null, updatedAt: null, legacy: true };
+    if (token) {
+      return {
+        kind: "token",
+        value: token,
+        generation: 0,
+        observedAt: null,
+        updatedAt: null,
+        legacy: true,
+      };
+    }
   } catch { /* no legacy registration */ }
   return null;
+}
+
+export async function readFcmRegistration() {
+  return await readFcmRegistrationUnlocked();
+}
+
+async function mutateForFcmGeneration(primaryTransport, expectedGeneration, mutate) {
+  if (!Number.isInteger(expectedGeneration)) {
+    return await updateAlertRuntime(primaryTransport, mutate);
+  }
+
+  return await withFileLock(FCM_REGISTRATION_LOCK, "FCM registration", async () => {
+    const current = await readFcmRegistrationUnlocked();
+    if (!current || current.generation !== expectedGeneration) {
+      const runtime = await readAlertRuntime(primaryTransport);
+      return { ...runtime, ignoredStaleFcmResult: true };
+    }
+    return await updateAlertRuntime(primaryTransport, mutate);
+  });
+}
+
+export async function isCurrentFcmRegistrationGeneration(expectedGeneration) {
+  if (!Number.isInteger(expectedGeneration)) return true;
+  const current = await readFcmRegistration();
+  return !!current && current.generation === expectedGeneration;
 }
 
 export async function saveFcmRegistration({ fid, token, source = "phone", observedAt = null } = {}) {
@@ -104,11 +148,13 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
 
   const incomingObservedAt = observedAt || iso();
   let registration;
-  let accepted = false;
+  let registrationChanged = false;
 
   await withFileLock(FCM_REGISTRATION_LOCK, "FCM registration", async () => {
-    const current = await readJson(FCM_REGISTRATION_FILE);
-    if (current?.value && current.value !== value) {
+    const current = await readFcmRegistrationUnlocked();
+    const sameRegistration = current?.kind === kind && current.value === value;
+
+    if (current?.value && !sameRegistration) {
       const incomingAt = Date.parse(incomingObservedAt);
       const currentAt = Date.parse(current.observedAt || current.updatedAt || 0);
       // Network callbacks/WorkManager attempts can arrive out of order. Once we
@@ -120,11 +166,26 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
       }
     }
 
+    registrationChanged = !current || current.legacy || !sameRegistration;
+    const currentGeneration = Number.isInteger(current?.generation) ? current.generation : 0;
+    const generation = registrationChanged
+      ? currentGeneration + 1
+      : currentGeneration;
+
+    const currentObservedAt = Date.parse(current?.observedAt || current?.updatedAt || 0);
+    const incomingAt = Date.parse(incomingObservedAt);
+    const effectiveObservedAt =
+      !registrationChanged && Number.isFinite(currentObservedAt) &&
+      (!Number.isFinite(incomingAt) || incomingAt < currentObservedAt)
+        ? current.observedAt || current.updatedAt
+        : incomingObservedAt;
+
     registration = {
       kind,
       value,
+      generation,
       source,
-      observedAt: incomingObservedAt,
+      observedAt: effectiveObservedAt,
       updatedAt: iso(),
     };
     await atomicWriteJson(FCM_REGISTRATION_FILE, registration);
@@ -132,10 +193,12 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
     // Keep the old presence check/UI working during the FID migration. New sends
     // read FCM_REGISTRATION_FILE and know whether this value is a fid or token.
     await writeFile(LEGACY_FCM_TOKEN_FILE, value + "\n", { mode: 0o600 });
-    accepted = true;
   });
 
-  if (accepted) {
+  // A duplicate upload of the same registration must not clear a failure that
+  // was observed after that upload was queued. Only a genuinely new generation
+  // resets registration/backoff state; FCM acceptance later proves recovery.
+  if (registrationChanged && !registration?.ignoredStale) {
     await updateAlertRuntime(null, (runtime) => {
       runtime.fcm.registration = "synced";
       runtime.fcm.lastError = null;
@@ -182,8 +245,12 @@ export async function updateAlertRuntime(primaryTransport, mutate) {
   });
 }
 
-export async function recordTransportSuccess(transport, primaryTransport) {
-  return await updateAlertRuntime(primaryTransport, (runtime) => {
+export async function recordTransportSuccess(
+  transport,
+  primaryTransport,
+  { registrationGeneration = null } = {}
+) {
+  const mutate = (runtime) => {
     runtime.delivery.failures[transport] = 0;
     if (transport === primaryTransport) {
       runtime.delivery.state = "primary_working";
@@ -201,11 +268,25 @@ export async function recordTransportSuccess(transport, primaryTransport) {
       if (runtime.fcm.registration === "suspect") runtime.fcm.registration = "synced";
     }
     return runtime;
-  });
+  };
+
+  if (transport === "fcm") {
+    return await mutateForFcmGeneration(primaryTransport, registrationGeneration, mutate);
+  }
+  return await updateAlertRuntime(primaryTransport, mutate);
 }
 
-export async function recordTransportFailure(transport, primaryTransport, { error = null, nonRetryable = false, failureLimit = 3 } = {}) {
-  return await updateAlertRuntime(primaryTransport, (runtime) => {
+export async function recordTransportFailure(
+  transport,
+  primaryTransport,
+  {
+    error = null,
+    nonRetryable = false,
+    failureLimit = 3,
+    registrationGeneration = null,
+  } = {}
+) {
+  const mutate = (runtime) => {
     runtime.delivery.failures[transport] = (runtime.delivery.failures[transport] || 0) + 1;
     if (transport === "fcm") runtime.fcm.lastError = error || null;
 
@@ -217,12 +298,20 @@ export async function recordTransportFailure(transport, primaryTransport, { erro
       if (fallback && primaryTransport === "fcm") runtime.websocketWanted = true;
     }
     return runtime;
-  });
+  };
+
+  if (transport === "fcm") {
+    return await mutateForFcmGeneration(primaryTransport, registrationGeneration, mutate);
+  }
+  return await updateAlertRuntime(primaryTransport, mutate);
 }
 
-export async function recordFcmBackoff(primaryTransport, { error = null, delayMs = 0 } = {}) {
+export async function recordFcmBackoff(
+  primaryTransport,
+  { error = null, delayMs = 0, registrationGeneration = null } = {}
+) {
   const delay = Math.max(0, Number(delayMs) || 0);
-  return await updateAlertRuntime(primaryTransport, (runtime) => {
+  return await mutateForFcmGeneration(primaryTransport, registrationGeneration, (runtime) => {
     runtime.fcm.lastError = error || runtime.fcm.lastError || null;
     runtime.fcm.backoffMs = delay;
     runtime.fcm.nextAttemptAt = delay > 0 ? new Date(Date.now() + delay).toISOString() : null;
@@ -230,8 +319,12 @@ export async function recordFcmBackoff(primaryTransport, { error = null, delayMs
   });
 }
 
-export async function markFcmRegistrationSuspect(primaryTransport, reason = "unregistered") {
-  return await updateAlertRuntime(primaryTransport, (runtime) => {
+export async function markFcmRegistrationSuspect(
+  primaryTransport,
+  reason = "unregistered",
+  { registrationGeneration = null } = {}
+) {
+  return await mutateForFcmGeneration(primaryTransport, registrationGeneration, (runtime) => {
     runtime.fcm.registration = "suspect";
     runtime.fcm.lastError = reason;
     runtime.fcm.nextAttemptAt = null;
@@ -266,6 +359,7 @@ export async function controlState(config) {
       registrationStatus: runtime.fcm.registration,
       registrationPresent: !!registration,
       registrationKind: registration?.kind || null,
+      registrationGeneration: registration?.generation ?? null,
       registrationUpdatedAt: registration?.updatedAt || null,
       lastError: runtime.fcm.lastError,
       lastSuccessAt: runtime.fcm.lastSuccessAt,
@@ -289,7 +383,11 @@ export async function newerWorkerRegistration(phone) {
   if (local?.kind === "fid" && local.value === fid) return false;
   if (local && !Number.isFinite(remoteAt)) return false;
   if (Number.isFinite(remoteAt) && Number.isFinite(localAt) && remoteAt < localAt) return false;
-  const saved = await saveFcmRegistration({ fid, source: "worker", observedAt: phone.registrationUpdatedAt || phone.updatedAt || null });
+  const saved = await saveFcmRegistration({
+    fid,
+    source: "worker",
+    observedAt: phone.registrationUpdatedAt || phone.updatedAt || null,
+  });
   return !saved?.ignoredStale;
 }
 
