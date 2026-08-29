@@ -29,7 +29,6 @@ object AlertNotifier {
     const val CHANNEL_SERVICE = "service"
     const val SERVICE_NOTIFICATION_ID = 1
     const val OWNER_ALERT = "alert"
-    const val OWNER_WATCHDOG = "watchdog"
 
     private val nextId = AtomicInteger(100)
 
@@ -74,6 +73,18 @@ object AlertNotifier {
         durationMs: Long = 8000,
         owner: String = OWNER_ALERT
     ) {
+        // Teams alerts outrank health-watchdog audio. A health incident may not
+        // replace an already-playing Teams alert (or another health incident),
+        // while a real Teams alert is still allowed to replace watchdog audio.
+        if (owner != OWNER_ALERT && player != null && playerOwner != owner) {
+            AppLog.event(
+                context,
+                "alarm_suppressed",
+                "owner=$owner reason=active_higher_priority_owner:${playerOwner ?: "unknown"}"
+            )
+            return
+        }
+
         stopAlarm("replaced")
         val generation = ++playbackGeneration
         val systemRingtone = Prefs(context).useSystemRingtone
