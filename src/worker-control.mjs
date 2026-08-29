@@ -3,7 +3,11 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { controlState, newerWorkerRegistration } from "./alert-runtime.mjs";
+import {
+  ackFcmRecoveryProbe,
+  controlState,
+  newerWorkerRegistration,
+} from "./alert-runtime.mjs";
 import { DATA_DIR } from "./state.mjs";
 
 const ORCHESTRATOR_HEARTBEAT_FILE = join(DATA_DIR, "heartbeat.json");
@@ -48,7 +52,19 @@ async function callWorker(config, path, body) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`control worker rejected ${path}: ${r.status} ${j.error || ""}`.trim());
   if (j.phone) await newerWorkerRegistration(j.phone).catch(() => {});
-  return j;
+
+  let localProbeAcked = false;
+  const probeAckId = typeof j.phone?.fcmProbeAckId === "string"
+    ? j.phone.fcmProbeAckId.trim()
+    : "";
+  if (probeAckId) {
+    const ack = await ackFcmRecoveryProbe(
+      config?.alerts?.transport || "websocket",
+      probeAckId
+    ).catch(() => null);
+    localProbeAcked = !!ack?.probeAcked;
+  }
+  return { ...j, _localFcmProbeAcked: localProbeAcked };
 }
 
 export async function syncWorkerHeartbeat(config, { force = false } = {}) {
@@ -67,12 +83,27 @@ export async function syncWorkerHeartbeat(config, { force = false } = {}) {
   heartbeatInFlight = (async () => {
     try {
       const state = await controlState(config);
-      return await callWorker(config, "/api/pc/sync", {
+      const response = await callWorker(config, "/api/pc/sync", {
         at: new Date().toISOString(),
         orchestratorHeartbeatAt: localHeartbeat.at,
         heartbeatTimeoutMs: w.heartbeatTimeoutMs,
         state,
       });
+
+      // If direct phone→PC sync was unavailable, the Worker can carry the probe
+      // ACK back to the PC. Mirror the newly recovered state immediately and ask
+      // the Worker to push stop_ws so Android does not wait for its slow poll.
+      if (response?._localFcmProbeAcked) {
+        await callWorker(config, "/api/pc/event", {
+          at: new Date().toISOString(),
+          event: {
+            type: "fcm_recovery_ack",
+            actions: ["stop_ws"],
+          },
+          state: await controlState(config),
+        }).catch(() => {});
+      }
+      return response;
     } finally {
       heartbeatInFlight = null;
     }
