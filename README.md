@@ -118,6 +118,7 @@ src/actions.mjs                action registry, including alert_phone
 src/alerts.mjs                 primary/fallback phone-alert delivery
 src/alert-runtime.mjs          persisted delivery/FID/failure/backoff state
 src/worker-control.mjs         optional Cloudflare Worker control-plane client
+src/tunnel-health.mjs          public tunnel self-check when Worker is disabled
 src/gui-server*.mjs            dashboard, API, WebSocket alert hub, diagnostics
 src/state.mjs                  runtime state/activity under data/
 config/config.example.json     tracked configuration template
@@ -137,31 +138,34 @@ tfs-agent/                     separate TFS worker integration
 - **WebSocket** sends through the local GUI alert hub and, for a remote phone, the Cloudflare Tunnel.
 - Every alert has an `alertId`; the Android app deduplicates IDs so fallback/recovery attempts cannot ring twice.
 - A failed preferred attempt can use the alternate transport for that individual alert. Configurable consecutive preferred failures move the persisted delivery state into fallback mode.
-- One successful preferred-path recovery returns the system to its configured primary.
+- WebSocket primary recovers as soon as a connection/send succeeds. When FCM is recovering from degraded/fallback state, Firebase API acceptance alone is not enough: Android must receive and ACK a silent recovery probe before temporary WebSocket is released.
 - FCM retryable 429/5xx failures respect `Retry-After`/backoff state instead of repeatedly hitting FCM.
 - An invalid FCM registration is treated as a recovery event immediately rather than consuming the normal transient-failure budget.
 
-When FCM is primary, WebSocket can therefore remain cold during normal operation and run temporarily during recovery. A periodic silent FCM recovery check is controlled by `alerts.failover.recoveryCheckIntervalMs`.
+When FCM is primary, WebSocket can therefore remain cold during normal operation and run temporarily during recovery. Silent recovery probes are controlled by `alerts.failover.recoveryCheckIntervalMs`; `alerts.failover.probeAckTimeoutMs` controls how long the PC waits for the matching Android ACK before issuing another probe.
 
-FCM registration state lives in gitignored `data/fcm-registration.json`. The deprecated `data/fcm-device-token.txt` is retained only as a migration compatibility path.
+FCM registration state lives in gitignored `data/fcm-registration.json`. Each registration has a generation number so delayed results from an older FID cannot mutate health for a newer one. The deprecated `data/fcm-device-token.txt` is retained only as a migration compatibility path.
 
-### Optional control Worker
+### Optional control Worker and health monitoring
 
 `cloudflare-worker/` contains an optional Cloudflare Worker backed by a SQLite Durable Object. It is **disabled by default** and is not part of normal Teams-message delivery. Its purpose is an independent control/recovery plane:
 
 - mirror PC and phone control state;
-- mirror the phone's current FID;
+- mirror the phone's current FID and pending FCM recovery ACK;
 - receive an orchestrator heartbeat;
 - detect heartbeat loss independently of the home tunnel;
+- independently probe `controlWorker.publicHealthUrl` so “PC alive” and “public tunnel down” are distinct incidents;
 - issue high-priority FCM recovery/health control messages when useful.
 
-The Android app performs a roughly 15-minute WorkManager safety synchronization. It tries the direct PC endpoint first and uses the Worker when configured and necessary; direct success also mirrors state to the Worker so its shadow copy stays current.
+The Android app performs a roughly 15-minute WorkManager safety synchronization. It tries the direct PC endpoint first and uses the Worker when configured and necessary; direct success also mirrors state to the Worker so its shadow copy stays current. FCM recovery ACKs are synchronized immediately and get one short follow-up retry rather than waiting for that safety cadence.
+
+When the Worker is disabled, the PC still self-probes `controlWorker.publicHealthUrl` on the health cadence and sends tunnel failure/recovery transitions over FCM when possible. The Worker version is more independent because it can observe a tunnel failure from outside the home machine.
 
 See `cloudflare-worker/README.md` for deployment/secrets. `controlWorker.enabled` remains `false` until a Worker is actually deployed and its URL is configured.
 
 ## GUI diagnostics
 
-The dashboard has **Connection diagnostics** with Refresh/Copy controls plus a live pipeline timeline. It records WebSocket connection/rejection/disconnection events and includes redacted Cloudflare tunnel logs. `access_token`/`GUI_TOKEN` values are not intentionally exposed by the diagnostics API.
+The dashboard has **Connection diagnostics** with Refresh/Copy controls plus a live pipeline timeline. It records WebSocket connection/rejection/disconnection events and includes redacted Cloudflare tunnel logs. Alert diagnostics include preferred/active transport, fallback state, FCM registration state, failure counts, retry backoff and recovery-probe/ACK state. `access_token`/`GUI_TOKEN` values are not intentionally exposed by the diagnostics API.
 
 ## Android app
 
