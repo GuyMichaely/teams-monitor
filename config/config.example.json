@@ -39,7 +39,7 @@
   "controlWorker": {
     "enabled": false,
     "url": "",
-    "publicHealthUrl": "",
+    "publicHealthUrl": "https://gui.guymichaely.com/",
     "authTokenEnv": "GUI_TOKEN",
     "heartbeatIntervalMs": 60000,
     "heartbeatTimeoutMs": 180000
