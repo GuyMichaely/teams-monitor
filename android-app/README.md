@@ -32,9 +32,11 @@ FCM uses Firebase Installation IDs (FIDs), not the deprecated registration-token
 - the FID is uploaded to the PC and, when configured, mirrored to the optional control Worker;
 - failed phone→PC registration uploads are retried durably with WorkManager.
 
-The PC stores the current registration in gitignored `data/fcm-registration.json`. The old `data/fcm-device-token.txt` path exists only for migration compatibility.
+The PC stores the current registration in gitignored `data/fcm-registration.json`. Each registration has a generation number so a delayed success/failure from an obsolete FID cannot change the health of a newer registration. The old `data/fcm-device-token.txt` path exists only for migration compatibility.
 
 Normal FCM alert delivery goes directly from the orchestrator to Google FCM, so the GUI/tunnel do not need to be running once the PC has a usable FID.
+
+When FCM has entered degraded/fallback state, successful Firebase HTTP acceptance does not by itself end recovery. The PC sends a silent recovery probe; Android persists the probe ID on receipt and synchronizes an ACK back through the direct control path or optional Worker. Only the matching ACK for the current registration generation lets the PC restore FCM primary and release temporary WebSocket. Android performs the immediate ACK sync plus one short follow-up WorkManager retry so an ACK cannot be delayed to the normal 15-minute safety cadence by a narrow timing race.
 
 ### WebSocket fallback
 
@@ -51,7 +53,7 @@ Android background-start restrictions can prevent an immediate foreground-servic
 
 ### Duplicate protection
 
-Every server alert has an `alertId`. The app retains recent IDs and suppresses duplicate alarm/notification delivery across FCM and WebSocket. Transport-control metadata is still applied before duplicate suppression, which lets a duplicate FCM recovery copy shut temporary WebSocket down without ringing twice.
+Every server alert has an `alertId`. The app retains recent IDs and suppresses duplicate alarm/notification delivery across FCM and WebSocket. Transport-control metadata is still applied before duplicate suppression. A same-alert FCM copy can therefore serve as useful backend-acceptance evidence without ringing twice, but an FCM recovery state is not closed until the dedicated receipt probe is ACKed.
 
 ## Control synchronization and optional Worker
 
@@ -61,24 +63,26 @@ The phone periodically reconciles control state with WorkManager, approximately 
 2. if unavailable and the optional Worker is configured, use the Worker;
 3. when direct communication succeeds, also mirror current phone state to the Worker so its independent copy stays current.
 
-This is a safety/recovery channel, not the normal alert-delivery path.
+This is a safety/recovery channel, not the normal alert-delivery path. Pending FCM recovery ACKs are also included in this control state, but they are synchronized immediately on probe receipt rather than waiting for the periodic job.
 
-The optional Cloudflare Worker can tell the phone to re-register FCM or start/stop temporary WebSocket, and can independently report loss of the PC/orchestrator heartbeat. It is disabled by default in the server configuration.
+The optional Cloudflare Worker can tell the phone to re-register FCM or start/stop temporary WebSocket, can independently report loss of the PC/orchestrator heartbeat, and can probe the public GUI/tunnel URL from outside the home machine. It is disabled by default in the server configuration.
 
-## PC watchdog
+## Health watchdog
 
-Settings include a local policy for a missing PC/orchestrator heartbeat reported by the optional Worker:
+Settings include one local policy used for PC/orchestrator-heartbeat and public-tunnel incidents:
 
 - **Show notification** — default;
 - **Alarm immediately**;
 - **Alarm after delay** — delay is configurable in minutes;
 - **Ignore**.
 
-A recovery event clears the incident, cancels any pending delayed alarm, and stops a watchdog alarm that is currently playing. Heartbeat state can arrive either by high-priority FCM health push or through the periodic Worker safety synchronization; both use the same incident handler.
+Heartbeat and tunnel incidents are tracked separately. Recovery of one does not clear or silence the other. A recovery event clears that incident, cancels its pending delayed alarm, and stops only a health-watchdog alarm owned by that incident; it cannot stop a Teams alert alarm.
+
+With the optional Worker enabled, heartbeat state and tunnel state can arrive by high-priority FCM health push or through the periodic Worker safety synchronization. The Worker performs the tunnel probe independently of the PC. With the Worker disabled, the PC self-probes the public URL and sends tunnel transition events over FCM when possible.
 
 ## Diagnostics
 
-The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, WebSocket connection/reconnect/failure details, FID registration/synchronization, recovery/control activity, received alert metadata, heartbeat incidents, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
+The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, WebSocket connection/reconnect/failure details, FID registration/synchronization, recovery/control activity, pending/confirmed FCM probe ACK state, received alert metadata, heartbeat/tunnel incidents, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
 
 Tap **Copy diagnostics** on the main screen to copy a report containing the recent log plus app/device version, current network state, battery-optimization status, notification permission/state, DND access, and relevant alert settings. Paste that report into a bug report or debugging chat.
 
@@ -100,10 +104,10 @@ Alert settings:
 - Alarm volume
 - Alarm duration
 
-PC watchdog settings:
+Health-watchdog settings:
 
-- Heartbeat-loss policy
-- Delayed-alarm wait in minutes
+- health-incident policy
+- delayed-alarm wait in minutes
 
 The main screen's **Test alarm** button uses the current alarm settings and becomes **Stop alarm** while the sound is playing.
 
@@ -161,6 +165,8 @@ FCM testing requires both Firebase configuration files:
 - `config/fcm-service-account.json` — PC credential used to call the FCM HTTP v1 API.
 
 Both are intentionally untracked. GitHub Actions can embed `google-services.json` by restoring `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`. If that secret is absent, the APK still builds and the WebSocket path remains available, but Firebase initialization is unavailable in that APK.
+
+For a recovery test, force FCM into degraded/fallback state, confirm temporary WebSocket comes up, then restore FCM. Diagnostics should show a recovery probe received, a pending ACK, PC confirmation of that exact probe, and automatic WebSocket shutdown.
 
 ## Do Not Disturb / battery behavior
 
