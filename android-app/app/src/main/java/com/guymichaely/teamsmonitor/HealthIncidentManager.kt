@@ -55,8 +55,11 @@ object HealthIncidentManager {
         prefs.heartbeatIncidentAtMs = 0L
         WorkManager.getInstance(context).cancelUniqueWork(DELAYED_WORK_NAME)
         if (wasActive) {
-            AlertNotifier.stopAlarm("heartbeat_recovered")
-            AppLog.event(context, "heartbeat_recovered", "source=$source")
+            val stoppedWatchdog = AlertNotifier.stopAlarmIfOwner(
+                AlertNotifier.OWNER_WATCHDOG,
+                "heartbeat_recovered"
+            )
+            AppLog.event(context, "heartbeat_recovered", "source=$source stoppedWatchdogAlarm=$stoppedWatchdog")
         }
     }
 
@@ -81,7 +84,8 @@ object HealthIncidentManager {
         AlertNotifier.playAlarm(
             context,
             volume = prefs.alarmVolume / 100f,
-            durationMs = prefs.alarmDurationSec * 1000L
+            durationMs = prefs.alarmDurationSec * 1000L,
+            owner = AlertNotifier.OWNER_WATCHDOG
         )
     }
 
