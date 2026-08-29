@@ -3,6 +3,7 @@
 
 import { createSign, randomUUID } from "node:crypto";
 import {
+  isCurrentFcmRegistrationGeneration,
   markFcmRegistrationSuspect,
   readAlertRuntime,
   readFcmRegistration,
@@ -43,6 +44,14 @@ function fcmBackoffRemainingMs(runtime) {
   const at = Date.parse(runtime?.fcm?.nextAttemptAt || 0);
   if (!Number.isFinite(at)) return 0;
   return Math.max(0, at - Date.now());
+}
+
+function transportResultOptions(transport, resultOrError) {
+  if (transport !== "fcm") return {};
+  const generation = Number(resultOrError?.registrationGeneration);
+  return {
+    registrationGeneration: Number.isInteger(generation) ? generation : null,
+  };
 }
 
 /**
@@ -86,7 +95,7 @@ async function sendPrimaryFirst(body, config, primary, secondary) {
   const attempts = [];
   const primaryResult = await attempt(primary, body, config).catch((error) => ({ error }));
   if (!primaryResult.error) {
-    await recordTransportSuccess(primary, primary);
+    await recordTransportSuccess(primary, primary, transportResultOptions(primary, primaryResult));
     attempts.push({ transport: primary, ok: true, ...primaryResult });
     return { alertId: body.alertId, transport: primary, attempts };
   }
@@ -102,7 +111,7 @@ async function sendPrimaryFirst(body, config, primary, secondary) {
 
   const secondaryResult = await attemptFallbackTransport(secondary, body, config);
   if (!secondaryResult.error) {
-    await recordTransportSuccess(secondary, primary);
+    await recordTransportSuccess(secondary, primary, transportResultOptions(secondary, secondaryResult));
     attempts.push({ transport: secondary, ok: true, ...secondaryResult });
     return {
       alertId: body.alertId,
@@ -128,7 +137,7 @@ async function sendWhileFallback(body, config, primary, secondary) {
 
   const secondaryResult = await attemptFallbackTransport(secondary, body, config);
   if (!secondaryResult.error) {
-    await recordTransportSuccess(secondary, primary);
+    await recordTransportSuccess(secondary, primary, transportResultOptions(secondary, secondaryResult));
     attempts.push({ transport: secondary, ok: true, ...secondaryResult });
 
     // The alert has a working delivery path now. Try the preferred path with
@@ -136,32 +145,37 @@ async function sendWhileFallback(body, config, primary, secondary) {
     // duplicate payload while still applying its transport-control metadata.
     const recoveryResult = await attempt(primary, body, config).catch((error) => ({ error }));
     if (!recoveryResult.error) {
-      await recordTransportSuccess(primary, primary);
+      const recoveredState = await recordTransportSuccess(
+        primary,
+        primary,
+        transportResultOptions(primary, recoveryResult)
+      );
+      const primaryRecovered = !recoveredState.ignoredStaleFcmResult;
       attempts.push({ transport: primary, ok: true, recoveryTest: true, ...recoveryResult });
       return {
         alertId: body.alertId,
         transport: secondary,
         fallback: true,
-        primaryRecovered: true,
-        deliveryState: "primary_working",
+        primaryRecovered,
+        deliveryState: primaryRecovered ? "primary_working" : recoveredState.delivery.state,
         attempts,
       };
     }
 
     const classification = classifyFailure(primary, recoveryResult.error);
-    await recordPrimaryFailure(primary, recoveryResult.error, classification, config);
+    const failedState = await recordPrimaryFailure(primary, recoveryResult.error, classification, config);
     attempts.push({
       ...failedAttempt(primary, recoveryResult.error, classification),
       recoveryTest: true,
     });
-    if (primary === "fcm" && classification.registrationInvalid) {
+    if (primary === "fcm" && classification.registrationInvalid && !failedState.ignoredStaleFcmResult) {
       await prepareWebSocketFallback(config, classification, recoveryResult.error, "fcm_registration_invalid");
     }
     return {
       alertId: body.alertId,
       transport: secondary,
       fallback: true,
-      deliveryState: "fallback",
+      deliveryState: failedState.delivery.state,
       attempts,
     };
   }
@@ -174,29 +188,39 @@ async function sendWhileFallback(body, config, primary, secondary) {
 
   const primaryResult = await attempt(primary, body, config).catch((error) => ({ error }));
   if (!primaryResult.error) {
-    await recordTransportSuccess(primary, primary);
+    const recoveredState = await recordTransportSuccess(
+      primary,
+      primary,
+      transportResultOptions(primary, primaryResult)
+    );
+    const primaryRecovered = !recoveredState.ignoredStaleFcmResult;
     attempts.push({ transport: primary, ok: true, recoveryTest: true, ...primaryResult });
     return {
       alertId: body.alertId,
       transport: primary,
-      primaryRecovered: true,
-      deliveryState: "primary_working",
+      primaryRecovered,
+      deliveryState: primaryRecovered ? "primary_working" : recoveredState.delivery.state,
       attempts,
     };
   }
 
   const classification = classifyFailure(primary, primaryResult.error);
-  await recordPrimaryFailure(primary, primaryResult.error, classification, config);
+  const failedState = await recordPrimaryFailure(primary, primaryResult.error, classification, config);
   attempts.push({ ...failedAttempt(primary, primaryResult.error, classification), recoveryTest: true });
-  if (primary === "fcm" && classification.registrationInvalid) {
+  if (primary === "fcm" && classification.registrationInvalid && !failedState.ignoredStaleFcmResult) {
     await prepareWebSocketFallback(config, classification, primaryResult.error, "fcm_registration_invalid");
   }
   throw deliveryError(body.alertId, attempts);
 }
 
 async function recordPrimaryFailure(primary, error, classification, config) {
+  const generationOptions = transportResultOptions(primary, error);
   if (primary === "fcm" && classification.registrationInvalid) {
-    return await markFcmRegistrationSuspect(primary, classification.code || "fcm_registration_invalid");
+    return await markFcmRegistrationSuspect(
+      primary,
+      classification.code || "fcm_registration_invalid",
+      generationOptions
+    );
   }
   if (primary === "fcm" && classification.backoffActive) {
     return await readAlertRuntime(primary);
@@ -207,11 +231,13 @@ async function recordPrimaryFailure(primary, error, classification, config) {
     error: errorSummary(error),
     nonRetryable: classification.nonRetryable,
     failureLimit,
+    ...generationOptions,
   });
-  if (primary === "fcm" && classification.retryAfterMs > 0) {
+  if (primary === "fcm" && classification.retryAfterMs > 0 && !runtime.ignoredStaleFcmResult) {
     runtime = await recordFcmBackoff(primary, {
       error: errorSummary(error),
       delayMs: classification.retryAfterMs,
+      ...generationOptions,
     });
   }
   return runtime;
@@ -221,16 +247,19 @@ async function recordSecondaryFailure(secondary, primary, error, config) {
   const classification = classifyFailure(secondary, error);
   if (secondary === "fcm" && classification.backoffActive) return;
 
+  const generationOptions = transportResultOptions(secondary, error);
   const { failureLimit } = failoverSettings(config, secondary);
-  await recordTransportFailure(secondary, primary, {
+  const runtime = await recordTransportFailure(secondary, primary, {
     error: errorSummary(error),
     nonRetryable: classification.nonRetryable,
     failureLimit,
+    ...generationOptions,
   });
-  if (secondary === "fcm" && classification.retryAfterMs > 0) {
+  if (secondary === "fcm" && classification.retryAfterMs > 0 && !runtime.ignoredStaleFcmResult) {
     await recordFcmBackoff(primary, {
       error: errorSummary(error),
       delayMs: classification.retryAfterMs,
+      ...generationOptions,
     });
   }
 }
@@ -348,7 +377,7 @@ async function fcmAccessToken(sa) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      grant_type: "urn:ietf:params:oauth-type:jwt-bearer",
       assertion: jwt,
     }),
     signal: AbortSignal.timeout(10_000),
@@ -357,6 +386,47 @@ async function fcmAccessToken(sa) {
   const j = await r.json();
   cachedToken = { accessToken: j.access_token, expMs: Date.now() + j.expires_in * 1000 };
   return cachedToken.accessToken;
+}
+
+async function requestCurrentFcmRegistration(projectId, accessToken, buildMessage) {
+  let lastError = null;
+  for (let attemptNo = 0; attemptNo < 2; attemptNo++) {
+    const registration = await readFcmRegistration();
+    if (!registration) {
+      throw Object.assign(
+        new Error("FCM phone registration missing — open the Android app while a control path is reachable"),
+        { code: "FCM_REGISTRATION_MISSING", registrationInvalid: true }
+      );
+    }
+
+    const target = registration.kind === "fid"
+      ? { fid: registration.value }
+      : { token: registration.value };
+    try {
+      const response = await fcmRequest(projectId, accessToken, {
+        message: { ...target, ...buildMessage() },
+      });
+      return {
+        response,
+        registrationKind: registration.kind,
+        registrationGeneration: registration.generation,
+      };
+    } catch (error) {
+      error.registrationGeneration = registration.generation;
+      lastError = error;
+      // If the phone updated its registration while this request was in flight,
+      // retry once against the new generation instead of degrading health based
+      // on an obsolete target.
+      if (
+        attemptNo === 0 &&
+        !(await isCurrentFcmRegistrationGeneration(registration.generation))
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError || new Error("FCM send failed");
 }
 
 async function sendViaFcm(body, fcm) {
@@ -369,20 +439,8 @@ async function sendViaFcm(body, fcm) {
     throw Object.assign(new Error("alerts.fcm not configured — project ID missing from service account"), { code: "FCM_CONFIG" });
   }
 
-  const registration = await readFcmRegistration();
-  if (!registration) {
-    throw Object.assign(
-      new Error("FCM phone registration missing — open the Android app while a control path is reachable"),
-      { code: "FCM_REGISTRATION_MISSING", registrationInvalid: true }
-    );
-  }
-
   const sa = resolved.serviceAccount;
   const accessToken = await fcmAccessToken(sa);
-  const target = registration.kind === "fid"
-    ? { fid: registration.value }
-    : { token: registration.value };
-
   const data = {
     kind: "alert",
     alertId: String(body.alertId || ""),
@@ -395,10 +453,15 @@ async function sendViaFcm(body, fcm) {
     deliveryState: String(body.deliveryState || ""),
   };
 
-  const r = await fcmRequest(resolved.projectId, accessToken, {
-    message: { ...target, data, android: { priority: "HIGH" } },
-  });
-  return { messageId: r.name || null, registrationKind: registration.kind };
+  const sent = await requestCurrentFcmRegistration(resolved.projectId, accessToken, () => ({
+    data,
+    android: { priority: "HIGH" },
+  }));
+  return {
+    messageId: sent.response.name || null,
+    registrationKind: sent.registrationKind,
+    registrationGeneration: sent.registrationGeneration,
+  };
 }
 
 async function sendFcmControl(config, data) {
@@ -406,16 +469,16 @@ async function sendFcmControl(config, data) {
   if (!resolved.serviceAccountValid || !resolved.projectId) {
     throw Object.assign(new Error("FCM recovery control is not configured"), { code: "FCM_CONFIG" });
   }
-  const registration = await readFcmRegistration();
-  if (!registration) {
-    throw Object.assign(new Error("FCM phone registration missing"), { code: "FCM_REGISTRATION_MISSING", registrationInvalid: true });
-  }
   const accessToken = await fcmAccessToken(resolved.serviceAccount);
-  const target = registration.kind === "fid" ? { fid: registration.value } : { token: registration.value };
   const payload = Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v ?? "")]));
-  return await fcmRequest(resolved.projectId, accessToken, {
-    message: { ...target, data: payload, android: { priority: "HIGH" } },
-  });
+  const sent = await requestCurrentFcmRegistration(resolved.projectId, accessToken, () => ({
+    data: payload,
+    android: { priority: "HIGH" },
+  }));
+  return {
+    ...sent.response,
+    registrationGeneration: sent.registrationGeneration,
+  };
 }
 
 function retryAfterMs(header, httpStatus) {
@@ -500,21 +563,40 @@ export async function recoverAlertTransport(config) {
       primaryTransport: "fcm",
       websocketWanted: "false",
     });
-    await recordTransportSuccess("fcm", primary);
+    const recoveredState = await recordTransportSuccess(
+      "fcm",
+      primary,
+      transportResultOptions("fcm", result)
+    );
+    if (recoveredState.ignoredStaleFcmResult) {
+      return {
+        attempted: true,
+        recovered: false,
+        reason: "registration_changed_during_probe",
+      };
+    }
     return { attempted: true, recovered: true, messageId: result.name || null };
   } catch (error) {
     const classification = classifyFailure("fcm", error);
+    const generationOptions = transportResultOptions("fcm", error);
     if (classification.registrationInvalid) {
-      await markFcmRegistrationSuspect(primary, classification.code || "fcm_registration_invalid");
-      publishWorkerEvent(config, {
-        type: "fcm_registration_invalid",
-        actions: ["ensure_fcm_registration", "start_ws"],
-        error: errorSummary(error),
-      }).catch(() => {});
+      const failedState = await markFcmRegistrationSuspect(
+        primary,
+        classification.code || "fcm_registration_invalid",
+        generationOptions
+      );
+      if (!failedState.ignoredStaleFcmResult) {
+        publishWorkerEvent(config, {
+          type: "fcm_registration_invalid",
+          actions: ["ensure_fcm_registration", "start_ws"],
+          error: errorSummary(error),
+        }).catch(() => {});
+      }
     } else if (classification.retryAfterMs > 0) {
       await recordFcmBackoff(primary, {
         error: errorSummary(error),
         delayMs: classification.retryAfterMs,
+        ...generationOptions,
       });
     }
     return { attempted: true, recovered: false, error: errorSummary(error) };
