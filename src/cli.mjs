@@ -11,13 +11,26 @@ import { run, hardStop } from "./orchestrator.mjs";
 import { loadState } from "./state.mjs";
 import { loadConfig } from "./context.mjs";
 import { startGui } from "./gui-server.mjs";
+import { syncWorkerHeartbeat } from "./worker-control.mjs";
 
 const [, , cmd, arg] = process.argv;
 
 try {
   switch (cmd) {
     case "run": {
-      await run();
+      // Worker heartbeat is intentionally outside the Teams polling loop. The
+      // client itself rate-limits to the configured cadence and is a no-op when
+      // the optional Worker is disabled.
+      const workerHeartbeat = setInterval(async () => {
+        try { await syncWorkerHeartbeat(await loadConfig()); } catch { /* next heartbeat retries */ }
+      }, 10_000);
+      workerHeartbeat.unref();
+      try {
+        await syncWorkerHeartbeat(await loadConfig(), { force: true }).catch(() => {});
+        await run();
+      } finally {
+        clearInterval(workerHeartbeat);
+      }
       break;
     }
     case "stop": {
