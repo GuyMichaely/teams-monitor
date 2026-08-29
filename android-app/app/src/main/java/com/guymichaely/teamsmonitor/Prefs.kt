@@ -70,6 +70,14 @@ class Prefs(context: Context) {
         get() = sp.getLong(KEY_HEARTBEAT_INCIDENT_AT, 0L)
         set(value) = sp.edit().putLong(KEY_HEARTBEAT_INCIDENT_AT, value).apply()
 
+    var tunnelIncidentActive: Boolean
+        get() = sp.getBoolean(KEY_TUNNEL_INCIDENT_ACTIVE, false)
+        set(value) = sp.edit().putBoolean(KEY_TUNNEL_INCIDENT_ACTIVE, value).apply()
+
+    var tunnelIncidentAtMs: Long
+        get() = sp.getLong(KEY_TUNNEL_INCIDENT_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_TUNNEL_INCIDENT_AT, value).apply()
+
     /** False until the user has saved settings once. */
     val configured: Boolean
         get() = sp.contains(KEY_URL)
@@ -122,6 +130,8 @@ class Prefs(context: Context) {
         private const val KEY_HEARTBEAT_DELAY_MINUTES = "heartbeat_delay_minutes"
         private const val KEY_HEARTBEAT_INCIDENT_ACTIVE = "heartbeat_incident_active"
         private const val KEY_HEARTBEAT_INCIDENT_AT = "heartbeat_incident_at_ms"
+        private const val KEY_TUNNEL_INCIDENT_ACTIVE = "tunnel_incident_active"
+        private const val KEY_TUNNEL_INCIDENT_AT = "tunnel_incident_at_ms"
         private const val KEY_DND_PROMPT = "dnd_prompt_shown"
         private const val KEY_ALARM_ENABLED = "alarm_enabled"
         private const val KEY_NOTIF_ENABLED = "notif_enabled"
