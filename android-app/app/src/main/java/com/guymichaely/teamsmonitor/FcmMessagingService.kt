@@ -58,14 +58,13 @@ class FcmMessagingService : FirebaseMessagingService() {
                 "fcm_health_received",
                 "messageId=${message.messageId ?: ""} incident=$incident status=$status"
             )
-            if (incident == "pc_heartbeat") {
-                HealthIncidentManager.handleHeartbeat(
-                    this,
-                    status = status,
-                    at = data["at"],
-                    source = "fcm"
-                )
-            }
+            HealthIncidentManager.handleIncident(
+                this,
+                incident = incident,
+                status = status,
+                at = data["at"],
+                source = "fcm"
+            )
             return
         }
 
