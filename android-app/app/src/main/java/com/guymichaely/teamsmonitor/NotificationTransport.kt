@@ -27,7 +27,7 @@ object NotificationTransport {
         schedulePeriodic(app)
         val prefs = Prefs(app)
         if (prefs.serverUrl.isBlank()) {
-            RecoveryControl.applyWebSocketPolicy(app)
+            syncWorkerAsync(app, prefs)
             return
         }
 
@@ -51,6 +51,9 @@ object NotificationTransport {
                         return
                     }
                     applyControlResponse(app, body, "direct")
+                    // applyControlResponse may have just taught the phone the Worker
+                    // URL. Mirror to it even though the direct path succeeded.
+                    mirrorWorkerAsync(app, Prefs(app))
                 }
             }
         })
@@ -59,13 +62,14 @@ object NotificationTransport {
     /** Blocking form for WorkManager. Direct path first, Worker fallback second. */
     fun syncBlocking(context: Context): Boolean {
         val app = context.applicationContext
-        val prefs = Prefs(app)
-        if (prefs.serverUrl.isNotBlank()) {
+        val initial = Prefs(app)
+        if (initial.serverUrl.isNotBlank()) {
             try {
-                client.newCall(directRequest(prefs)).execute().use { response ->
+                client.newCall(directRequest(initial)).execute().use { response ->
                     if (response.isSuccessful) {
                         val body = JSONObject(response.body?.string().orEmpty())
                         applyControlResponse(app, body, "worker-direct")
+                        mirrorWorkerBlocking(app, Prefs(app))
                         return true
                     }
                     AppLog.event(app, "control_sync_failed", "path=worker-direct http=${response.code}")
@@ -75,6 +79,7 @@ object NotificationTransport {
             }
         }
 
+        val prefs = Prefs(app)
         if (!prefs.controlWorkerEnabled || prefs.controlWorkerUrl.isBlank()) return false
         return try {
             client.newCall(workerRequest(prefs)).execute().use { response ->
@@ -107,6 +112,7 @@ object NotificationTransport {
         )
     }
 
+    /** Worker is the fallback source of control state when direct sync failed. */
     private fun syncWorkerAsync(context: Context, prefs: Prefs) {
         if (!prefs.controlWorkerEnabled || prefs.controlWorkerUrl.isBlank()) {
             RecoveryControl.applyWebSocketPolicy(context)
@@ -130,6 +136,41 @@ object NotificationTransport {
                 }
             }
         })
+    }
+
+    /** Direct sync already won; this request only keeps the shadow state current. */
+    private fun mirrorWorkerAsync(context: Context, prefs: Prefs) {
+        if (!prefs.controlWorkerEnabled || prefs.controlWorkerUrl.isBlank()) return
+        client.newCall(workerRequest(prefs)).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                AppLog.event(context, "control_worker_mirror_failed", "error=${e.javaClass.simpleName}:${e.message ?: ""}")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    AppLog.event(
+                        context,
+                        if (it.isSuccessful) "control_worker_mirror_ok" else "control_worker_mirror_failed",
+                        "http=${it.code}"
+                    )
+                }
+            }
+        })
+    }
+
+    private fun mirrorWorkerBlocking(context: Context, prefs: Prefs) {
+        if (!prefs.controlWorkerEnabled || prefs.controlWorkerUrl.isBlank()) return
+        runCatching {
+            client.newCall(workerRequest(prefs)).execute().use { response ->
+                AppLog.event(
+                    context,
+                    if (response.isSuccessful) "control_worker_mirror_ok" else "control_worker_mirror_failed",
+                    "http=${response.code}"
+                )
+            }
+        }.onFailure {
+            AppLog.event(context, "control_worker_mirror_failed", "error=${it.javaClass.simpleName}:${it.message ?: ""}")
+        }
     }
 
     private fun directRequest(prefs: Prefs): Request {
@@ -169,7 +210,9 @@ object NotificationTransport {
         } else {
             primary == "websocket"
         }
-        val fcmStatus = state.optJSONObject("fcm")?.optString("registrationStatus", null)
+        val fcmStatus = state.optJSONObject("fcm")?.let { fcm ->
+            if (fcm.has("registrationStatus")) fcm.optString("registrationStatus") else null
+        }
         val worker = state.optJSONObject("controlWorker")
         val workerEnabled = worker?.optBoolean("enabled")
         val workerUrl = worker?.optString("url")
