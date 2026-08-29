@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
+const HEALTH_RETRY_MS = 60_000;
 let oauthCache = null;
 
 function json(data, status = 200) {
@@ -70,13 +71,8 @@ export class ControlState extends DurableObject {
         status: "recovered",
         at: state.updatedAt,
       };
-      await this.sendPhoneData(state, {
-        kind: "health",
-        incident: "pc_heartbeat",
-        status: "recovered",
-        at: state.incidents.heartbeat.at,
-      });
     }
+    await this.retryHealthPushIfNeeded(state, "pc_heartbeat", state.incidents?.heartbeat);
 
     await this.refreshTunnelHealth(state, body.publicHealthUrl);
     await this.ctx.storage.put("state", state);
@@ -144,6 +140,32 @@ export class ControlState extends DurableObject {
     return json({ ok: true, ...state });
   }
 
+  async retryHealthPushIfNeeded(state, incident, incidentState) {
+    const status = String(incidentState?.status || "");
+    if (status !== "missing" && status !== "recovered") return { attempted: false, ok: true };
+
+    state.healthPushes ||= {};
+    const previous = state.healthPushes[incident];
+    if (previous?.status === status && previous?.ok === true) {
+      return { attempted: false, ok: true };
+    }
+
+    const at = incidentState.at || new Date().toISOString();
+    const push = await this.sendPhoneData(state, {
+      kind: "health",
+      incident,
+      status,
+      at,
+    });
+    state.healthPushes[incident] = {
+      status,
+      at: new Date().toISOString(),
+      ok: push.ok,
+      error: push.error || null,
+    };
+    return { attempted: true, ...push };
+  }
+
   async refreshTunnelHealth(state, rawUrl) {
     const publicHealthUrl = typeof rawUrl === "string" ? rawUrl.trim() : "";
     const checkedAt = new Date().toISOString();
@@ -162,13 +184,8 @@ export class ControlState extends DurableObject {
           at: checkedAt,
           reason: "probe_disabled",
         };
-        await this.sendPhoneData(state, {
-          kind: "health",
-          incident: "public_tunnel",
-          status: "recovered",
-          at: checkedAt,
-        });
       }
+      await this.retryHealthPushIfNeeded(state, "public_tunnel", state.incidents?.tunnel);
       return;
     }
 
@@ -202,24 +219,13 @@ export class ControlState extends DurableObject {
         status: "missing",
         at: checkedAt,
       };
-      await this.sendPhoneData(state, {
-        kind: "health",
-        incident: "public_tunnel",
-        status: "missing",
-        at: checkedAt,
-      });
     } else if (reachable && previousMissing) {
       state.incidents.tunnel = {
         status: "recovered",
         at: checkedAt,
       };
-      await this.sendPhoneData(state, {
-        kind: "health",
-        incident: "public_tunnel",
-        status: "recovered",
-        at: checkedAt,
-      });
     }
+    await this.retryHealthPushIfNeeded(state, "public_tunnel", state.incidents?.tunnel);
   }
 
   async alarm() {
@@ -233,25 +239,26 @@ export class ControlState extends DurableObject {
       return;
     }
 
-    if (state.incidents?.heartbeat?.status !== "missing") {
-      state.incidents ||= {};
+    state.incidents ||= {};
+    if (state.incidents.heartbeat?.status !== "missing") {
       state.incidents.heartbeat = {
         status: "missing",
         at: new Date().toISOString(),
       };
-      const push = await this.sendPhoneData(state, {
-        kind: "health",
-        incident: "pc_heartbeat",
-        status: "missing",
-        at: state.incidents.heartbeat.at,
-      });
-      state.lastHealthPush = {
-        at: new Date().toISOString(),
-        ok: push.ok,
-        error: push.error || null,
-      };
-      state.updatedAt = new Date().toISOString();
-      await this.ctx.storage.put("state", state);
+    }
+
+    const push = await this.retryHealthPushIfNeeded(
+      state,
+      "pc_heartbeat",
+      state.incidents.heartbeat
+    );
+    state.updatedAt = new Date().toISOString();
+    await this.ctx.storage.put("state", state);
+
+    // If the high-priority push failed, retry independently even though no PC
+    // heartbeat is arriving. A successful push is one-shot until state changes.
+    if (push.attempted && !push.ok) {
+      await this.ctx.storage.setAlarm(Date.now() + HEALTH_RETRY_MS);
     }
   }
 
