@@ -3,7 +3,9 @@ package com.guymichaely.teamsmonitor
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import okhttp3.Call
@@ -110,6 +112,28 @@ object NotificationTransport {
             ExistingPeriodicWorkPolicy.UPDATE,
             work
         )
+    }
+
+    /**
+     * A recovery probe can reach Android before the PC has finished persisting the
+     * matching pending-probe record. The immediate sync still runs first; this
+     * one-shot follow-up closes that small race without waiting for the 15-minute
+     * safety poll. The ACK itself remains persisted until the PC confirms it.
+     */
+    fun scheduleProbeAckRetry(context: Context) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val work = OneTimeWorkRequestBuilder<ControlSyncWorker>()
+            .setInitialDelay(2, TimeUnit.SECONDS)
+            .setConstraints(constraints)
+            .build()
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            PROBE_ACK_RETRY_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            work
+        )
+        AppLog.event(context, "fcm_probe_ack_retry_scheduled", "delaySeconds=2")
     }
 
     /** Worker is the fallback source of control state when direct sync failed. */
@@ -262,6 +286,7 @@ object NotificationTransport {
         val confirmed = state.optJSONObject("fcm")?.optString("lastAckProbeId").orEmpty()
         if (confirmed == pending) {
             prefs.fcmProbeAckId = ""
+            WorkManager.getInstance(context.applicationContext).cancelUniqueWork(PROBE_ACK_RETRY_WORK_NAME)
             AppLog.event(context, "fcm_probe_ack_confirmed", "source=$source")
         }
     }
@@ -286,4 +311,5 @@ object NotificationTransport {
     }
 
     private const val PERIODIC_WORK_NAME = "control-state-sync"
+    private const val PROBE_ACK_RETRY_WORK_NAME = "fcm-probe-ack-retry"
 }
