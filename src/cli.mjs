@@ -13,7 +13,7 @@ import { loadConfig } from "./context.mjs";
 import { startGui } from "./gui-server.mjs";
 import { syncWorkerHeartbeat, workerEnabled } from "./worker-control.mjs";
 import { recoverAlertTransport } from "./alerts.mjs";
-import { checkPublicTunnel } from "./tunnel-health.mjs";
+import { checkPublicTunnel, markPublicTunnelReported } from "./tunnel-health.mjs";
 import { sendPhoneHealth } from "./phone-health.mjs";
 
 const [, , cmd, arg] = process.argv;
@@ -22,17 +22,20 @@ async function syncHealthControl(config, { force = false } = {}) {
   const hasWorker = workerEnabled(config);
   await syncWorkerHeartbeat(config, { force }).catch(() => {});
 
-  // With no Worker, the PC still checks its own public tunnel route. This is
-  // less independent than the Worker probe but preserves tunnel failure/recovery
-  // visibility and can notify the phone over FCM when the public GUI path is down.
+  // With no Worker, the PC still checks its own public tunnel route. Observation
+  // and report state are separate: if an FCM health push fails, later ticks retry
+  // it until successful instead of losing the transition.
   if (!hasWorker) {
     const tunnel = await checkPublicTunnel(config, { force }).catch(() => null);
-    if (tunnel?.changed && tunnel.status) {
-      await sendPhoneHealth(config, {
-        incident: "public_tunnel",
-        status: tunnel.status,
-        at: tunnel.checkedAt,
-      }).catch(() => {});
+    if (tunnel?.needsReport && tunnel.status) {
+      try {
+        await sendPhoneHealth(config, {
+          incident: "public_tunnel",
+          status: tunnel.status,
+          at: tunnel.checkedAt,
+        });
+        await markPublicTunnelReported(tunnel.status);
+      } catch { /* leave report pending for the next health tick */ }
     }
   }
 }
