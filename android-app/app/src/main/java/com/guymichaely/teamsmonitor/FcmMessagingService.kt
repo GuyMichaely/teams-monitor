@@ -37,6 +37,16 @@ class FcmMessagingService : FirebaseMessagingService() {
                 )
             }
             RecoveryControl.handleControlMessage(this, actions)
+
+            // A probe is successful only when Android has actually received it.
+            // Persist the ACK before network I/O so WorkManager/Worker fallback can
+            // retry it if the direct control path is unavailable right now.
+            val probeId = data["probeId"].orEmpty().trim()
+            if (probeId.isNotBlank()) {
+                Prefs(this).fcmProbeAckId = probeId
+                AppLog.event(this, "fcm_probe_received", "probeIdLength=${probeId.length}")
+                NotificationTransport.sync(this)
+            }
             return
         }
 
@@ -66,7 +76,7 @@ class FcmMessagingService : FirebaseMessagingService() {
 
         // Apply transport metadata even if this alertId is a duplicate. During
         // fallback the alternate may alarm first and the duplicate FCM copy can
-        // be the successful primary recovery test that tells us to stop WS.
+        // still carry current transport-control metadata.
         val primary = data["primaryTransport"].orEmpty()
         val websocketWanted = data["websocketWanted"]?.toBooleanStrictOrNull()
         if ((primary == "fcm" || primary == "websocket") && websocketWanted != null) {
