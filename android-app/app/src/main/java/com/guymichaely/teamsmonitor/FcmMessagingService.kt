@@ -46,6 +46,7 @@ class FcmMessagingService : FirebaseMessagingService() {
                 Prefs(this).fcmProbeAckId = probeId
                 AppLog.event(this, "fcm_probe_received", "probeIdLength=${probeId.length}")
                 NotificationTransport.sync(this)
+                NotificationTransport.scheduleProbeAckRetry(this)
             }
             return
         }
