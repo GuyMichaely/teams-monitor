@@ -5,9 +5,11 @@ This Worker is optional. FCM and WebSocket delivery continue to work without it.
 It provides:
 
 - PC/orchestrator heartbeat expiry through a Durable Object alarm;
+- independent probing of the configured public GUI/tunnel URL;
 - mirrored PC/phone recovery state;
 - a rendezvous path when the home tunnel/direct control path is unavailable;
-- high-priority FCM recovery/control pushes when the Worker has a usable phone FID.
+- retention of a phone FCM recovery-probe ACK until the PC consumes it;
+- high-priority FCM recovery/control/health pushes when the Worker has a usable phone FID.
 
 ## Deploy
 
@@ -25,6 +27,7 @@ It provides:
   "controlWorker": {
     "enabled": true,
     "url": "https://<worker-hostname>",
+    "publicHealthUrl": "https://gui.guymichaely.com/",
     "authTokenEnv": "GUI_TOKEN",
     "heartbeatIntervalMs": 60000,
     "heartbeatTimeoutMs": 180000
@@ -32,13 +35,21 @@ It provides:
 }
 ```
 
+`publicHealthUrl` should be the public GUI URL reached through the home Cloudflare Tunnel. The Worker probes it from outside the home network, letting it distinguish “PC/orchestrator alive” from “public tunnel unavailable.”
+
 After the phone next reaches the PC directly, `/api/control/sync` gives it the Worker URL. The phone then keeps that URL locally for fallback control/safety synchronization.
 
 ## Endpoints
 
-- `GET /health` — unauthenticated deployment health check.
-- `POST /api/pc/sync` — PC heartbeat + mirrored control state.
+- `GET /health` — unauthenticated Worker deployment health check.
+- `POST /api/pc/sync` — PC heartbeat + mirrored control state; consumes a matching retained phone FCM-probe ACK when present.
 - `POST /api/pc/event` — immediate recovery event; may trigger a high-priority FCM control push.
-- `POST /api/phone/sync` — phone FID/control state + returns the latest PC state.
+- `POST /api/phone/sync` — phone FID/WS state/pending FCM probe ACK + returns the latest mirrored PC/health state.
 
 The POST endpoints require `Authorization: Bearer <CONTROL_TOKEN>`.
+
+## Recovery ACK behavior
+
+When FCM is recovering, Firebase HTTP acceptance alone does not end recovery. The PC sends a silent probe with a unique ID. Android persists that ID after actually receiving the message and mirrors it through `/api/phone/sync`. If direct PC sync is unavailable, the Durable Object retains the ACK. A later `/api/pc/sync` returns the retained ACK to the PC; the PC accepts it only if it matches the currently pending probe and current FID generation, then mirrors `lastAckProbeId` back so Android can clear its local pending ACK.
+
+The Worker never needs Teams message contents for this flow.
