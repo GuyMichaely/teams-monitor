@@ -2,7 +2,6 @@
 // the other transport is available as fallback.
 
 import { createSign, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import {
   markFcmRegistrationSuspect,
   readAlertRuntime,
@@ -40,9 +39,15 @@ function errorSummary(error) {
 }
 
 /**
- * Send one alert. Each alert gets one primary attempt; if it fails, the
- * alternate transport is attempted for that alert. Consecutive primary
- * failures separately decide when the delivery state enters fallback.
+ * Send one alert.
+ *
+ * While the preferred transport is healthy/retrying, it gets the first attempt
+ * and the alternate gets one per-alert fallback attempt on failure.
+ *
+ * Once the persisted delivery state is FALLBACK, the alternate gets the first
+ * attempt. The preferred transport is then tried with the same alertId as a
+ * recovery test; phone-side dedupe prevents a second alarm. One preferred-path
+ * success returns the delivery state to PRIMARY_WORKING.
  */
 export async function sendAlert(payload, config) {
   const a = config?.alerts || {};
@@ -62,90 +67,191 @@ export async function sendAlert(payload, config) {
     time: payload.time || null,
     primaryTransport: primary,
   };
-  const attempts = [];
 
+  const runtime = await readAlertRuntime(primary);
+  if (runtime.delivery.state === "fallback") {
+    return await sendWhileFallback(body, config, primary, secondary);
+  }
+  return await sendPrimaryFirst(body, config, primary, secondary);
+}
+
+async function sendPrimaryFirst(body, config, primary, secondary) {
+  const attempts = [];
   const primaryResult = await attempt(primary, body, config).catch((error) => ({ error }));
   if (!primaryResult.error) {
     await recordTransportSuccess(primary, primary);
     attempts.push({ transport: primary, ok: true, ...primaryResult });
-    return { alertId, transport: primary, attempts };
+    return { alertId: body.alertId, transport: primary, attempts };
   }
 
   const primaryError = primaryResult.error;
-  const classification = classifyFailure(primary, primaryError);
-  const { failureLimit, wsActivationDelayMs } = failoverSettings(config, primary);
-  let runtime;
+  const primaryClassification = classifyFailure(primary, primaryError);
+  const runtime = await recordPrimaryFailure(primary, primaryError, primaryClassification, config);
+  attempts.push(failedAttempt(primary, primaryError, primaryClassification));
 
-  if (primary === "fcm" && classification.registrationInvalid) {
-    runtime = await markFcmRegistrationSuspect(primary, classification.code || "fcm_registration_invalid");
-  } else {
-    runtime = await recordTransportFailure(primary, primary, {
-      error: errorSummary(primaryError),
-      nonRetryable: classification.nonRetryable,
-      failureLimit,
-    });
-  }
-  attempts.push({
-    transport: primary,
-    ok: false,
-    error: errorSummary(primaryError),
-    code: classification.code || null,
-  });
-
-  // WebSocket is cold standby when FCM is primary. Request it even before the
-  // global failure limit so this specific alert can try the alternate path.
-  if (primary === "fcm") {
-    await requestWebSocket(primary, classification.registrationInvalid ? "fcm_registration_invalid" : "fcm_alert_failed");
-    publishWorkerEvent(config, {
-      type: classification.registrationInvalid ? "fcm_registration_invalid" : "fcm_delivery_failed",
-      actions: classification.registrationInvalid
-        ? ["ensure_fcm_registration", "start_ws"]
-        : ["start_ws"],
-      error: errorSummary(primaryError),
-    }).catch(() => {});
+  if (secondary === "websocket") {
+    await prepareWebSocketFallback(config, primaryClassification, primaryError);
   }
 
-  let secondaryResult = await attempt(secondary, body, config).catch((error) => ({ error }));
-
-  // If the Worker just asked the phone to start cold-standby WS, give it one
-  // short chance to connect before declaring this alert undeliverable.
-  if (
-    secondary === "websocket" &&
-    secondaryResult.error?.code === "NO_WS_CLIENTS" &&
-    workerEnabled(config) &&
-    wsActivationDelayMs > 0
-  ) {
-    await sleep(wsActivationDelayMs);
-    secondaryResult = await attempt(secondary, body, config).catch((error) => ({ error }));
-  }
-
+  const secondaryResult = await attemptFallbackTransport(secondary, body, config);
   if (!secondaryResult.error) {
     await recordTransportSuccess(secondary, primary);
     attempts.push({ transport: secondary, ok: true, ...secondaryResult });
     return {
-      alertId,
+      alertId: body.alertId,
       transport: secondary,
       fallback: true,
-      deliveryState: runtime?.delivery?.state || "primary_retrying",
+      deliveryState: runtime.delivery.state,
       attempts,
     };
   }
 
   const secondaryError = secondaryResult.error;
-  const secondarySettings = failoverSettings(config, secondary);
-  await recordTransportFailure(secondary, primary, {
-    error: errorSummary(secondaryError),
-    nonRetryable: classifyFailure(secondary, secondaryError).nonRetryable,
-    failureLimit: secondarySettings.failureLimit,
-  });
-  attempts.push({ transport: secondary, ok: false, error: errorSummary(secondaryError) });
+  await recordSecondaryFailure(secondary, primary, secondaryError, config);
+  attempts.push(failedAttempt(secondary, secondaryError, classifyFailure(secondary, secondaryError)));
+  throw deliveryError(body.alertId, attempts);
+}
 
-  const error = new Error(
-    `alert delivery failed on ${primary} (${errorSummary(primaryError)}) and ${secondary} (${errorSummary(secondaryError)})`
-  );
+async function sendWhileFallback(body, config, primary, secondary) {
+  const attempts = [];
+
+  if (secondary === "websocket") {
+    await prepareWebSocketFallback(config, { registrationInvalid: false }, null, "fallback_active");
+  }
+
+  const secondaryResult = await attemptFallbackTransport(secondary, body, config);
+  if (!secondaryResult.error) {
+    await recordTransportSuccess(secondary, primary);
+    attempts.push({ transport: secondary, ok: true, ...secondaryResult });
+
+    // The alert has a working delivery path now. Try the preferred path with
+    // the same alertId as a recovery test. If it succeeds, the phone dedupes the
+    // duplicate payload while still applying its transport-control metadata.
+    const recoveryResult = await attempt(primary, body, config).catch((error) => ({ error }));
+    if (!recoveryResult.error) {
+      await recordTransportSuccess(primary, primary);
+      attempts.push({ transport: primary, ok: true, recoveryTest: true, ...recoveryResult });
+      return {
+        alertId: body.alertId,
+        transport: secondary,
+        fallback: true,
+        primaryRecovered: true,
+        deliveryState: "primary_working",
+        attempts,
+      };
+    }
+
+    const classification = classifyFailure(primary, recoveryResult.error);
+    await recordPrimaryFailure(primary, recoveryResult.error, classification, config);
+    attempts.push({
+      ...failedAttempt(primary, recoveryResult.error, classification),
+      recoveryTest: true,
+    });
+    if (primary === "fcm" && classification.registrationInvalid) {
+      await prepareWebSocketFallback(config, classification, recoveryResult.error, "fcm_registration_invalid");
+    }
+    return {
+      alertId: body.alertId,
+      transport: secondary,
+      fallback: true,
+      deliveryState: "fallback",
+      attempts,
+    };
+  }
+
+  // The fallback path failed. Give the configured primary an immediate chance;
+  // if it works, it both delivers this alert and recovers the delivery state.
+  const secondaryError = secondaryResult.error;
+  await recordSecondaryFailure(secondary, primary, secondaryError, config);
+  attempts.push(failedAttempt(secondary, secondaryError, classifyFailure(secondary, secondaryError)));
+
+  const primaryResult = await attempt(primary, body, config).catch((error) => ({ error }));
+  if (!primaryResult.error) {
+    await recordTransportSuccess(primary, primary);
+    attempts.push({ transport: primary, ok: true, recoveryTest: true, ...primaryResult });
+    return {
+      alertId: body.alertId,
+      transport: primary,
+      primaryRecovered: true,
+      deliveryState: "primary_working",
+      attempts,
+    };
+  }
+
+  const classification = classifyFailure(primary, primaryResult.error);
+  await recordPrimaryFailure(primary, primaryResult.error, classification, config);
+  attempts.push({ ...failedAttempt(primary, primaryResult.error, classification), recoveryTest: true });
+  if (primary === "fcm" && classification.registrationInvalid) {
+    await prepareWebSocketFallback(config, classification, primaryResult.error, "fcm_registration_invalid");
+  }
+  throw deliveryError(body.alertId, attempts);
+}
+
+async function recordPrimaryFailure(primary, error, classification, config) {
+  const { failureLimit } = failoverSettings(config, primary);
+  if (primary === "fcm" && classification.registrationInvalid) {
+    return await markFcmRegistrationSuspect(primary, classification.code || "fcm_registration_invalid");
+  }
+  return await recordTransportFailure(primary, primary, {
+    error: errorSummary(error),
+    nonRetryable: classification.nonRetryable,
+    failureLimit,
+  });
+}
+
+async function recordSecondaryFailure(secondary, primary, error, config) {
+  const { failureLimit } = failoverSettings(config, secondary);
+  await recordTransportFailure(secondary, primary, {
+    error: errorSummary(error),
+    nonRetryable: classifyFailure(secondary, error).nonRetryable,
+    failureLimit,
+  });
+}
+
+async function prepareWebSocketFallback(config, classification, error, reason = null) {
+  const primary = config?.alerts?.transport || "websocket";
+  const recoveryReason = reason || (classification.registrationInvalid ? "fcm_registration_invalid" : "fcm_alert_failed");
+  await requestWebSocket(primary, recoveryReason);
+  publishWorkerEvent(config, {
+    type: recoveryReason,
+    actions: classification.registrationInvalid
+      ? ["ensure_fcm_registration", "start_ws"]
+      : ["start_ws"],
+    ...(error ? { error: errorSummary(error) } : {}),
+  }).catch(() => {});
+}
+
+async function attemptFallbackTransport(transport, body, config) {
+  let result = await attempt(transport, body, config).catch((error) => ({ error }));
+  if (transport !== "websocket" || result.error?.code !== "NO_WS_CLIENTS") return result;
+
+  const { wsActivationDelayMs } = failoverSettings(config, config?.alerts?.transport || "fcm");
+  if (!workerEnabled(config) || wsActivationDelayMs <= 0) return result;
+
+  // A Worker control push may have just asked Android to start cold-standby WS.
+  await sleep(wsActivationDelayMs);
+  result = await attempt(transport, body, config).catch((error) => ({ error }));
+  return result;
+}
+
+function failedAttempt(transport, error, classification = {}) {
+  return {
+    transport,
+    ok: false,
+    error: errorSummary(error),
+    code: classification.code || null,
+  };
+}
+
+function deliveryError(alertId, attempts) {
+  const summary = attempts
+    .filter((a) => !a.ok)
+    .map((a) => `${a.transport} (${a.error})`)
+    .join(" and ");
+  const error = new Error(`alert delivery failed on ${summary}`);
   error.attempts = attempts;
   error.alertId = alertId;
-  throw error;
+  return error;
 }
 
 async function attempt(transport, body, config) {
@@ -153,9 +259,12 @@ async function attempt(transport, body, config) {
   const runtime = await readAlertRuntime(a.transport || "websocket");
   if (transport === "websocket") return await sendViaGuiHub(body, a, config);
   if (transport === "fcm") {
+    // A successful FCM message can carry the phone's desired WS policy. For FCM
+    // primary this is false; for WS primary it is true. The phone applies this
+    // metadata even when alertId dedupe suppresses the duplicate alarm.
     return await sendViaFcm({
       ...body,
-      websocketWanted: String((a.transport || "websocket") === "websocket" ? true : false),
+      websocketWanted: String((a.transport || "websocket") === "websocket"),
       deliveryState: runtime.delivery.state,
     }, a.fcm || {});
   }
@@ -251,10 +360,34 @@ async function sendViaFcm(body, fcm) {
     deliveryState: String(body.deliveryState || ""),
   };
 
-  const r = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(resolved.projectId)}/messages:send`, {
+  const r = await fcmRequest(resolved.projectId, accessToken, {
+    message: { ...target, data, android: { priority: "HIGH" } },
+  });
+  return { messageId: r.name || null, registrationKind: registration.kind };
+}
+
+async function sendFcmControl(config, data) {
+  const resolved = await resolveFcmConfig(config?.alerts?.fcm || {});
+  if (!resolved.serviceAccountValid || !resolved.projectId) {
+    throw Object.assign(new Error("FCM recovery control is not configured"), { code: "FCM_CONFIG" });
+  }
+  const registration = await readFcmRegistration();
+  if (!registration) {
+    throw Object.assign(new Error("FCM phone registration missing"), { code: "FCM_REGISTRATION_MISSING", registrationInvalid: true });
+  }
+  const accessToken = await fcmAccessToken(resolved.serviceAccount);
+  const target = registration.kind === "fid" ? { fid: registration.value } : { token: registration.value };
+  const payload = Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v ?? "")]));
+  return await fcmRequest(resolved.projectId, accessToken, {
+    message: { ...target, data: payload, android: { priority: "HIGH" } },
+  });
+}
+
+async function fcmRequest(projectId, accessToken, body) {
+  const r = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-    body: JSON.stringify({ message: { ...target, data, android: { priority: "HIGH" } } }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   });
   const j = await r.json().catch(() => ({}));
@@ -267,7 +400,46 @@ async function sendViaFcm(body, fcm) {
     if (status === "UNREGISTERED" || r.status === 404) e.registrationInvalid = true;
     throw e;
   }
-  return { messageId: j.name || null, registrationKind: registration.kind };
+  return j;
+}
+
+/**
+ * Periodic recovery check for an FCM primary that is retrying/fallen back.
+ * Successful Firebase acceptance is the current recovery criterion; the control
+ * message also tells Android to stop temporary WS. This runs only while FCM is
+ * the configured primary and not PRIMARY_WORKING.
+ */
+export async function recoverAlertTransport(config) {
+  const primary = config?.alerts?.transport || "websocket";
+  if (primary !== "fcm") return { attempted: false, reason: "primary_not_fcm" };
+
+  const runtime = await readAlertRuntime(primary);
+  if (runtime.delivery.state === "primary_working") {
+    return { attempted: false, reason: "already_working" };
+  }
+
+  try {
+    const result = await sendFcmControl(config, {
+      kind: "control",
+      actions: "stop_ws",
+      reason: "fcm_recovery_check",
+      primaryTransport: "fcm",
+      websocketWanted: "false",
+    });
+    await recordTransportSuccess("fcm", primary);
+    return { attempted: true, recovered: true, messageId: result.name || null };
+  } catch (error) {
+    const classification = classifyFailure("fcm", error);
+    if (classification.registrationInvalid) {
+      await markFcmRegistrationSuspect(primary, classification.code || "fcm_registration_invalid");
+      publishWorkerEvent(config, {
+        type: "fcm_registration_invalid",
+        actions: ["ensure_fcm_registration", "start_ws"],
+        error: errorSummary(error),
+      }).catch(() => {});
+    }
+    return { attempted: true, recovered: false, error: errorSummary(error) };
+  }
 }
 
 function classifyFailure(transport, error) {
