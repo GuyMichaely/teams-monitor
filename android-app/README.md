@@ -36,7 +36,7 @@ The PC stores the current registration in gitignored `data/fcm-registration.json
 
 Normal FCM alert delivery goes directly from the orchestrator to Google FCM, so the GUI/tunnel do not need to be running once the PC has a usable FID.
 
-When FCM has entered degraded/fallback state, successful Firebase HTTP acceptance does not by itself end recovery. The PC sends a silent recovery probe; Android persists the probe ID on receipt and synchronizes an ACK back through the direct control path or optional Worker. Only the matching ACK for the current registration generation lets the PC restore FCM primary and release temporary WebSocket. Android performs the immediate ACK sync plus one short follow-up WorkManager retry so an ACK cannot be delayed to the normal 15-minute safety cadence by a narrow timing race.
+When FCM is degraded or in fallback, the PC periodically sends a silent recovery control message. One successful send against the current registration generation restores FCM primary and releases temporary WebSocket. If an older FID's in-flight result arrives after a new FID has been stored, that result is ignored.
 
 ### WebSocket fallback
 
@@ -53,7 +53,7 @@ Android background-start restrictions can prevent an immediate foreground-servic
 
 ### Duplicate protection
 
-Every server alert has an `alertId`. The app retains recent IDs and suppresses duplicate alarm/notification delivery across FCM and WebSocket. Transport-control metadata is still applied before duplicate suppression. A same-alert FCM copy can therefore serve as useful backend-acceptance evidence without ringing twice, but an FCM recovery state is not closed until the dedicated receipt probe is ACKed.
+Every server alert has an `alertId`. The app retains recent IDs and suppresses duplicate alarm/notification delivery across FCM and WebSocket. Transport-control metadata is applied before duplicate suppression, so a successful FCM recovery copy can tell Android to stop temporary WebSocket without ringing twice.
 
 ## Control synchronization and optional Worker
 
@@ -63,7 +63,7 @@ The phone periodically reconciles control state with WorkManager, approximately 
 2. if unavailable and the optional Worker is configured, use the Worker;
 3. when direct communication succeeds, also mirror current phone state to the Worker so its independent copy stays current.
 
-This is a safety/recovery channel, not the normal alert-delivery path. Pending FCM recovery ACKs are also included in this control state, but they are synchronized immediately on probe receipt rather than waiting for the periodic job.
+This is a safety/recovery channel, not the normal alert-delivery path.
 
 The optional Cloudflare Worker can tell the phone to re-register FCM or start/stop temporary WebSocket, can independently report loss of the PC/orchestrator heartbeat, and can probe the public GUI/tunnel URL from outside the home machine. It is disabled by default in the server configuration.
 
@@ -82,7 +82,7 @@ With the optional Worker enabled, heartbeat state and tunnel state can arrive by
 
 ## Diagnostics
 
-The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, WebSocket connection/reconnect/failure details, FID registration/synchronization, recovery/control activity, pending/confirmed FCM probe ACK state, received alert metadata, heartbeat/tunnel incidents, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
+The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, WebSocket connection/reconnect/failure details, FID registration/synchronization, recovery/control activity, received alert metadata, heartbeat/tunnel incidents, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
 
 Tap **Copy diagnostics** on the main screen to copy a report containing the recent log plus app/device version, current network state, battery-optimization status, notification permission/state, DND access, and relevant alert settings. Paste that report into a bug report or debugging chat.
 
@@ -166,7 +166,7 @@ FCM testing requires both Firebase configuration files:
 
 Both are intentionally untracked. GitHub Actions can embed `google-services.json` by restoring `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`. If that secret is absent, the APK still builds and the WebSocket path remains available, but Firebase initialization is unavailable in that APK.
 
-For a recovery test, force FCM into degraded/fallback state, confirm temporary WebSocket comes up, then restore FCM. Diagnostics should show a recovery probe received, a pending ACK, PC confirmation of that exact probe, and automatic WebSocket shutdown.
+For a recovery test, force FCM into degraded/fallback state, confirm temporary WebSocket comes up, then restore FCM. One successful current-generation FCM recovery send should return the PC state to `primary_working`, and the recovery control/metadata tells Android to stop temporary WS if it receives that message.
 
 ## Do Not Disturb / battery behavior
 
