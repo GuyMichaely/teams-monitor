@@ -32,11 +32,6 @@ class Prefs(context: Context) {
         get() = sp.getLong(KEY_FCM_UPDATED_AT, 0L)
         set(value) = sp.edit().putLong(KEY_FCM_UPDATED_AT, value).apply()
 
-    /** Probe received over FCM but not yet confirmed as consumed by the PC. */
-    var fcmProbeAckId: String
-        get() = sp.getString(KEY_FCM_PROBE_ACK_ID, "") ?: ""
-        set(value) = sp.edit().putString(KEY_FCM_PROBE_ACK_ID, value).apply()
-
     var websocketRecoveryRequested: Boolean
         get() = sp.getBoolean(KEY_WS_RECOVERY_REQUESTED, false)
         set(value) = sp.edit().putBoolean(KEY_WS_RECOVERY_REQUESTED, value).apply()
@@ -121,7 +116,6 @@ class Prefs(context: Context) {
         private const val KEY_FCM_FID = "fcm_fid"
         private const val KEY_FCM_SYNC_PENDING = "fcm_sync_pending"
         private const val KEY_FCM_UPDATED_AT = "fcm_registration_updated_at_ms"
-        private const val KEY_FCM_PROBE_ACK_ID = "fcm_probe_ack_id"
         private const val KEY_WS_RECOVERY_REQUESTED = "websocket_recovery_requested"
         private const val KEY_WORKER_ENABLED = "control_worker_enabled"
         private const val KEY_WORKER_URL = "control_worker_url"
