@@ -9,7 +9,10 @@ class HeartbeatAlarmWorker(
     params: WorkerParameters
 ) : Worker(appContext, params) {
     override fun doWork(): Result {
-        HealthIncidentManager.fireDelayedAlarm(applicationContext)
+        val incident = HealthIncidentManager.incidentFromWorkerInput(
+            inputData.getString(HealthIncidentManager.KEY_INCIDENT)
+        )
+        HealthIncidentManager.fireDelayedAlarm(applicationContext, incident)
         return Result.success()
     }
 }
