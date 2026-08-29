@@ -70,7 +70,7 @@ const DIAGNOSTICS_HTML = `
 <h2>Connection diagnostics <span id="diagnosticsLiveBadge" class="obs-live">LIVE · 2s</span></h2>
 <div class="card">
   <div class="obs-toolbar">
-    <div class="obs-subtle">Phone/tunnel connection events; this is now a live tail.</div>
+    <div class="obs-subtle">Alert transport health plus phone/tunnel connection events; live tail.</div>
     <div class="row">
       <button id="diagnosticsLiveButton" class="secondary" onclick="obsToggleDiagnosticsLive()">Pause</button>
       <button class="secondary" onclick="obsRefreshDiagnostics(true)">Refresh</button>
@@ -270,6 +270,10 @@ function obsRenderDiagnostics(d) {
   const events = Array.isArray(d.events) ? d.events : [];
   const latestWs = [...events].reverse().find(function(e) { return /^ws_/.test(e.kind || ""); });
   const latestFcm = [...events].reverse().find(function(e) { return e.kind === "fcm_register_http"; });
+  const delivery = d.alertDelivery || {};
+  const state = delivery.delivery || {};
+  const fcm = delivery.fcm || {};
+  const worker = delivery.controlWorker || {};
   const summary = document.getElementById("diagnosticsSummary");
   if (summary) {
     let wsText = "WebSocket: no events";
@@ -281,9 +285,32 @@ function obsRenderDiagnostics(d) {
       else { wsText = "WebSocket: " + latestWs.kind.replace(/^ws_/, ""); }
     }
     const fcmOk = latestFcm && Number(latestFcm.statusCode) >= 200 && Number(latestFcm.statusCode) < 300;
-    const fcmText = latestFcm ? "FCM registration: " + (fcmOk ? "OK" : "HTTP " + latestFcm.statusCode) : "FCM registration: no event";
-    summary.innerHTML = '<span class="diag-pill ' + wsClass + '">' + obsEscape(wsText) + '</span>' +
-      '<span class="diag-pill ' + (latestFcm ? (fcmOk ? "ok" : "bad") : "") + '">' + obsEscape(fcmText) + '</span>' +
+    const fcmEventText = latestFcm ? "FCM registration HTTP: " + (fcmOk ? "OK" : latestFcm.statusCode) : "FCM registration HTTP: no event";
+    const deliveryOk = state.state === "primary_working";
+    const deliveryText = state.primaryTransport
+      ? "Delivery: " + state.primaryTransport + " → " + (state.activeTransport || "?") + " · " + (state.state || "?")
+      : "Delivery: unavailable";
+    const registrationGood = fcm.registrationStatus === "synced";
+    const registrationBad = fcm.registrationStatus === "suspect";
+    const fidText = "FCM: " + (fcm.registrationKind || "none") + " · " + (fcm.registrationStatus || "unknown");
+    const failures = state.failures || {};
+    const failureText = "Failures: fcm " + (failures.fcm || 0) + " · ws " + (failures.websocket || 0);
+    let backoffText = "FCM backoff: none";
+    let backoffClass = "ok";
+    const backoffAt = Date.parse(fcm.nextAttemptAt || 0);
+    if (Number.isFinite(backoffAt) && backoffAt > Date.now()) {
+      backoffText = "FCM backoff: " + Math.ceil((backoffAt - Date.now()) / 1000) + "s";
+      backoffClass = "bad";
+    }
+    const workerText = "Worker: " + (worker.enabled ? "enabled" : "disabled");
+    summary.innerHTML =
+      '<span class="diag-pill ' + (deliveryOk ? "ok" : state.state ? "bad" : "") + '">' + obsEscape(deliveryText) + '</span>' +
+      '<span class="diag-pill ' + (registrationGood ? "ok" : registrationBad ? "bad" : "") + '">' + obsEscape(fidText) + '</span>' +
+      '<span class="diag-pill">' + obsEscape(failureText) + '</span>' +
+      '<span class="diag-pill ' + backoffClass + '">' + obsEscape(backoffText) + '</span>' +
+      '<span class="diag-pill">' + obsEscape(workerText) + '</span>' +
+      '<span class="diag-pill ' + wsClass + '">' + obsEscape(wsText) + '</span>' +
+      '<span class="diag-pill ' + (latestFcm ? (fcmOk ? "ok" : "bad") : "") + '">' + obsEscape(fcmEventText) + '</span>' +
       '<span class="diag-pill">server pid ' + obsEscape(d.serverPid || "?") + '</span>' +
       '<span class="diag-pill">updated ' + obsEscape(obsClock(d.generatedAt)) + '</span>';
   }
