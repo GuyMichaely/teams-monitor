@@ -118,6 +118,11 @@ export async function readFcmRegistration() {
   return await readFcmRegistrationUnlocked();
 }
 
+function generationMatches(current, expectedGeneration) {
+  if (expectedGeneration === -1) return !current;
+  return !!current && current.generation === expectedGeneration;
+}
+
 async function mutateForFcmGeneration(primaryTransport, expectedGeneration, mutate) {
   if (!Number.isInteger(expectedGeneration)) {
     return await updateAlertRuntime(primaryTransport, mutate);
@@ -125,7 +130,7 @@ async function mutateForFcmGeneration(primaryTransport, expectedGeneration, muta
 
   return await withFileLock(FCM_REGISTRATION_LOCK, "FCM registration", async () => {
     const current = await readFcmRegistrationUnlocked();
-    if (!current || current.generation !== expectedGeneration) {
+    if (!generationMatches(current, expectedGeneration)) {
       const runtime = await readAlertRuntime(primaryTransport);
       return { ...runtime, ignoredStaleFcmResult: true };
     }
@@ -136,7 +141,7 @@ async function mutateForFcmGeneration(primaryTransport, expectedGeneration, muta
 export async function isCurrentFcmRegistrationGeneration(expectedGeneration) {
   if (!Number.isInteger(expectedGeneration)) return true;
   const current = await readFcmRegistration();
-  return !!current && current.generation === expectedGeneration;
+  return generationMatches(current, expectedGeneration);
 }
 
 export async function saveFcmRegistration({ fid, token, source = "phone", observedAt = null } = {}) {
