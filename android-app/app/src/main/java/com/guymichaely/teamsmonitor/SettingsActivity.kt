@@ -1,9 +1,11 @@
 package com.guymichaely.teamsmonitor
 
 import android.os.Bundle
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
@@ -27,6 +29,9 @@ class SettingsActivity : AppCompatActivity() {
         val volume = findViewById<SeekBar>(R.id.alarm_volume)
         val volumeValue = findViewById<TextView>(R.id.volume_value)
         val duration = findViewById<EditText>(R.id.alarm_duration)
+        val heartbeatPolicy = findViewById<Spinner>(R.id.heartbeat_policy)
+        val heartbeatDelay = findViewById<EditText>(R.id.heartbeat_delay)
+        val heartbeatPolicyValues = resources.getStringArray(R.array.heartbeat_policy_values)
 
         urlField.setText(prefs.serverUrl)
         tokenField.setText(prefs.token)
@@ -37,6 +42,19 @@ class SettingsActivity : AppCompatActivity() {
         volume.progress = prefs.alarmVolume
         volumeValue.text = prefs.alarmVolume.toString()
         duration.setText(prefs.alarmDurationSec.toString())
+        heartbeatDelay.setText(prefs.heartbeatDelayMinutes.toString())
+
+        ArrayAdapter.createFromResource(
+            this,
+            R.array.heartbeat_policy_labels,
+            android.R.layout.simple_spinner_item
+        ).also { adapter ->
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            heartbeatPolicy.adapter = adapter
+        }
+        heartbeatPolicy.setSelection(
+            heartbeatPolicyValues.indexOf(prefs.heartbeatPolicy).takeIf { it >= 0 } ?: 0
+        )
 
         volume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -56,10 +74,14 @@ class SettingsActivity : AppCompatActivity() {
             prefs.useSystemRingtone = useSystemRingtone.isChecked
             prefs.alarmVolume = volume.progress
             prefs.alarmDurationSec = duration.text.toString().toIntOrNull() ?: 8
+            prefs.heartbeatPolicy = heartbeatPolicyValues.getOrElse(heartbeatPolicy.selectedItemPosition) {
+                HealthIncidentManager.POLICY_NOTIFY
+            }
+            prefs.heartbeatDelayMinutes = heartbeatDelay.text.toString().toIntOrNull() ?: 15
             AppLog.event(
                 this,
                 "settings_saved",
-                "server=${prefs.serverUrl} tokenConfigured=${prefs.token.isNotBlank()} alarmEnabled=${prefs.alarmEnabled} notifEnabled=${prefs.notifEnabled} alarmWhenScreenOn=${prefs.alarmWhenScreenOn} useSystemRingtone=${prefs.useSystemRingtone} alarmVolume=${prefs.alarmVolume} alarmDurationSec=${prefs.alarmDurationSec}"
+                "server=${prefs.serverUrl} tokenConfigured=${prefs.token.isNotBlank()} alarmEnabled=${prefs.alarmEnabled} notifEnabled=${prefs.notifEnabled} alarmWhenScreenOn=${prefs.alarmWhenScreenOn} useSystemRingtone=${prefs.useSystemRingtone} alarmVolume=${prefs.alarmVolume} alarmDurationSec=${prefs.alarmDurationSec} heartbeatPolicy=${prefs.heartbeatPolicy} heartbeatDelayMinutes=${prefs.heartbeatDelayMinutes}"
             )
             NotificationTransport.sync(this)
             setResult(RESULT_OK)
