@@ -19,6 +19,7 @@ function settings(config) {
   return {
     enabled: !!w.enabled && !!String(w.url || "").trim(),
     url: String(w.url || "").trim().replace(/\/+$/, ""),
+    publicHealthUrl: String(w.publicHealthUrl || "").trim(),
     authTokenEnv: w.authTokenEnv || config?.gui?.authTokenEnv || "GUI_TOKEN",
     heartbeatIntervalMs: Math.max(Number(w.heartbeatIntervalMs) || 60_000, 10_000),
     heartbeatTimeoutMs: Math.max(Number(w.heartbeatTimeoutMs) || 180_000, 30_000),
@@ -87,6 +88,7 @@ export async function syncWorkerHeartbeat(config, { force = false } = {}) {
         at: new Date().toISOString(),
         orchestratorHeartbeatAt: localHeartbeat.at,
         heartbeatTimeoutMs: w.heartbeatTimeoutMs,
+        publicHealthUrl: w.publicHealthUrl || null,
         state,
       });
 
