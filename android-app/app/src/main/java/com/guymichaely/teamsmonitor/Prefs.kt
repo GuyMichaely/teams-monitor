@@ -48,6 +48,23 @@ class Prefs(context: Context) {
         get() = sp.getLong(KEY_CONTROL_SYNC_AT, 0L)
         set(value) = sp.edit().putLong(KEY_CONTROL_SYNC_AT, value).apply()
 
+    /** notify | alarm_now | alarm_after_delay | ignore */
+    var heartbeatPolicy: String
+        get() = sp.getString(KEY_HEARTBEAT_POLICY, "notify") ?: "notify"
+        set(value) = sp.edit().putString(KEY_HEARTBEAT_POLICY, value).apply()
+
+    var heartbeatDelayMinutes: Int
+        get() = sp.getInt(KEY_HEARTBEAT_DELAY_MINUTES, 15)
+        set(value) = sp.edit().putInt(KEY_HEARTBEAT_DELAY_MINUTES, value.coerceIn(1, 1440)).apply()
+
+    var heartbeatIncidentActive: Boolean
+        get() = sp.getBoolean(KEY_HEARTBEAT_INCIDENT_ACTIVE, false)
+        set(value) = sp.edit().putBoolean(KEY_HEARTBEAT_INCIDENT_ACTIVE, value).apply()
+
+    var heartbeatIncidentAtMs: Long
+        get() = sp.getLong(KEY_HEARTBEAT_INCIDENT_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_HEARTBEAT_INCIDENT_AT, value).apply()
+
     /** False until the user has saved settings once. */
     val configured: Boolean
         get() = sp.contains(KEY_URL)
@@ -95,6 +112,10 @@ class Prefs(context: Context) {
         private const val KEY_WORKER_ENABLED = "control_worker_enabled"
         private const val KEY_WORKER_URL = "control_worker_url"
         private const val KEY_CONTROL_SYNC_AT = "last_control_sync_at_ms"
+        private const val KEY_HEARTBEAT_POLICY = "heartbeat_policy"
+        private const val KEY_HEARTBEAT_DELAY_MINUTES = "heartbeat_delay_minutes"
+        private const val KEY_HEARTBEAT_INCIDENT_ACTIVE = "heartbeat_incident_active"
+        private const val KEY_HEARTBEAT_INCIDENT_AT = "heartbeat_incident_at_ms"
         private const val KEY_DND_PROMPT = "dnd_prompt_shown"
         private const val KEY_ALARM_ENABLED = "alarm_enabled"
         private const val KEY_NOTIF_ENABLED = "notif_enabled"
