@@ -1,3 +1,5 @@
+import { DurableObject } from "cloudflare:workers";
+
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 let oauthCache = null;
 
@@ -32,8 +34,9 @@ export default {
   },
 };
 
-export class ControlState {
+export class ControlState extends DurableObject {
   constructor(ctx, env) {
+    super(ctx, env);
     this.ctx = ctx;
     this.env = env;
   }
