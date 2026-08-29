@@ -27,6 +27,8 @@ function freshRuntime(primaryTransport = "fcm") {
       registration: "unknown",
       lastError: null,
       lastSuccessAt: null,
+      nextAttemptAt: null,
+      backoffMs: 0,
     },
     websocketWanted: primaryTransport === "websocket",
     recoveryReason: null,
@@ -108,6 +110,8 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
   await updateAlertRuntime(null, (runtime) => {
     runtime.fcm.registration = "synced";
     runtime.fcm.lastError = null;
+    runtime.fcm.nextAttemptAt = null;
+    runtime.fcm.backoffMs = 0;
     return runtime;
   });
   return registration;
@@ -118,6 +122,8 @@ function normalizeRuntime(stored, primaryTransport) {
   runtime.delivery ||= freshRuntime(primaryTransport).delivery;
   runtime.delivery.failures ||= { fcm: 0, websocket: 0 };
   runtime.fcm ||= freshRuntime(primaryTransport).fcm;
+  runtime.fcm.nextAttemptAt ??= null;
+  runtime.fcm.backoffMs = Math.max(0, Number(runtime.fcm.backoffMs) || 0);
 
   if (runtime.delivery.primaryTransport !== primaryTransport) {
     runtime.delivery.primaryTransport = primaryTransport;
@@ -160,6 +166,8 @@ export async function recordTransportSuccess(transport, primaryTransport) {
     if (transport === "fcm") {
       runtime.fcm.lastSuccessAt = iso();
       runtime.fcm.lastError = null;
+      runtime.fcm.nextAttemptAt = null;
+      runtime.fcm.backoffMs = 0;
       if (runtime.fcm.registration === "suspect") runtime.fcm.registration = "synced";
     }
     return runtime;
@@ -182,10 +190,22 @@ export async function recordTransportFailure(transport, primaryTransport, { erro
   });
 }
 
+export async function recordFcmBackoff(primaryTransport, { error = null, delayMs = 0 } = {}) {
+  const delay = Math.max(0, Number(delayMs) || 0);
+  return await updateAlertRuntime(primaryTransport, (runtime) => {
+    runtime.fcm.lastError = error || runtime.fcm.lastError || null;
+    runtime.fcm.backoffMs = delay;
+    runtime.fcm.nextAttemptAt = delay > 0 ? new Date(Date.now() + delay).toISOString() : null;
+    return runtime;
+  });
+}
+
 export async function markFcmRegistrationSuspect(primaryTransport, reason = "unregistered") {
   return await updateAlertRuntime(primaryTransport, (runtime) => {
     runtime.fcm.registration = "suspect";
     runtime.fcm.lastError = reason;
+    runtime.fcm.nextAttemptAt = null;
+    runtime.fcm.backoffMs = 0;
     if (primaryTransport === "fcm") {
       runtime.delivery.state = "fallback";
       runtime.delivery.activeTransport = "websocket";
@@ -219,6 +239,8 @@ export async function controlState(config) {
       registrationUpdatedAt: registration?.updatedAt || null,
       lastError: runtime.fcm.lastError,
       lastSuccessAt: runtime.fcm.lastSuccessAt,
+      nextAttemptAt: runtime.fcm.nextAttemptAt,
+      backoffMs: runtime.fcm.backoffMs,
     },
     controlWorker: {
       enabled: !!config?.controlWorker?.enabled,
