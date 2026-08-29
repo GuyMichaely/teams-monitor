@@ -60,6 +60,19 @@ object AppLog {
             appendLine("connection=${AlertState.connection}")
             appendLine("server=${prefs.serverUrl.ifBlank { "(not set)" }}")
             appendLine("tokenConfigured=${prefs.token.isNotBlank()}")
+            appendLine("preferredTransport=${prefs.alertTransport}")
+            appendLine("websocketRecoveryRequested=${prefs.websocketRecoveryRequested}")
+            appendLine("fcmFidPresent=${prefs.fcmFid.isNotBlank()}")
+            appendLine("fcmFidLength=${prefs.fcmFid.length}")
+            appendLine("fcmSyncPending=${prefs.fcmSyncPending}")
+            appendLine("fcmRegistrationUpdatedAt=${instantOrNever(prefs.fcmRegistrationUpdatedAtMs)}")
+            appendLine("controlWorkerEnabled=${prefs.controlWorkerEnabled}")
+            appendLine("controlWorkerConfigured=${prefs.controlWorkerUrl.isNotBlank()}")
+            appendLine("lastControlSyncAt=${instantOrNever(prefs.lastControlSyncAtMs)}")
+            appendLine("heartbeatPolicy=${prefs.heartbeatPolicy}")
+            appendLine("heartbeatDelayMinutes=${prefs.heartbeatDelayMinutes}")
+            appendLine("heartbeatIncidentActive=${prefs.heartbeatIncidentActive}")
+            appendLine("heartbeatIncidentAt=${instantOrNever(prefs.heartbeatIncidentAtMs)}")
             appendLine("network=${networkSummary(app)}")
             appendLine("batteryOptimizationIgnored=${pm?.isIgnoringBatteryOptimizations(app.packageName) == true}")
             appendLine("notificationPermission=$notificationsPermission")
@@ -86,6 +99,9 @@ object AppLog {
         return "${transports.ifEmpty { listOf("other") }.joinToString("+")}," +
             "validated=${caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}"
     }
+
+    private fun instantOrNever(valueMs: Long): String =
+        if (valueMs > 0L) Instant.ofEpochMilli(valueMs).toString() else "never"
 
     private fun read(context: Context): String = synchronized(lock) {
         val file = File(context.applicationContext.filesDir, FILE_NAME)
