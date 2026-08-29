@@ -196,10 +196,27 @@ class AlertService : Service() {
                 return
             }
             val kind = msg.optString("kind")
+            if (kind == "control") {
+                val actions = msg.optJSONArray("actions")?.let { array ->
+                    buildList {
+                        for (i in 0 until array.length()) add(array.optString(i))
+                    }
+                } ?: msg.optString("actions").split(',')
+                AppLog.event(this@AlertService, "ws_control_received", "actions=${actions.joinToString("|")}")
+                RecoveryControl.handleControlMessage(this@AlertService, actions)
+                return
+            }
             if (kind != "alert") {
                 AppLog.event(this@AlertService, "ws_message_ignored", "kind=$kind length=${text.length}")
                 return
             }
+
+            val alertId = msg.optString("alertId")
+            if (!AlertDeduper.shouldHandle(this@AlertService, alertId)) {
+                AppLog.event(this@AlertService, "alert_duplicate_ignored", "transport=websocket alertId=$alertId")
+                return
+            }
+
             val chat = msg.optString("chat")
             val author = msg.optString("author")
             val alertText = msg.optString("text")
@@ -207,7 +224,7 @@ class AlertService : Service() {
             AppLog.event(
                 this@AlertService,
                 "alert_received",
-                "chat=$chat author=$author serverTime=$alertTime textLength=${alertText.length}"
+                "alertId=$alertId chat=$chat author=$author serverTime=$alertTime textLength=${alertText.length}"
             )
             AlertState.onAlert(this@AlertService, chat, author, alertText, alertTime)
             AlertNotifier.alert(this@AlertService, chat, author, alertText)
@@ -248,14 +265,26 @@ class AlertService : Service() {
         private const val HEARTBEAT_MINUTES = 15L
         private const val ACTION_RECONNECT = "com.guymichaely.teamsmonitor.RECONNECT"
 
-        fun start(context: Context) {
-            AppLog.event(context, "service_start_requested")
-            val i = Intent(context, AlertService::class.java)
-            ContextCompat.startForegroundService(context, i)
+        fun start(context: Context, reason: String = "requested"): Boolean {
+            AppLog.event(context, "service_start_requested", "reason=$reason")
+            return try {
+                val i = Intent(context, AlertService::class.java)
+                ContextCompat.startForegroundService(context, i)
+                true
+            } catch (e: Exception) {
+                // Background FGS starts are restricted on modern Android. FCM/FID
+                // repair and control synchronization continue without depending on WS.
+                AppLog.event(
+                    context,
+                    "service_start_failed",
+                    "reason=$reason error=${e.javaClass.simpleName}:${e.message ?: ""}"
+                )
+                false
+            }
         }
 
-        fun stop(context: Context) {
-            AppLog.event(context, "service_stop_requested", "reason=transport_fcm")
+        fun stop(context: Context, reason: String = "not_wanted") {
+            AppLog.event(context, "service_stop_requested", "reason=$reason")
             context.stopService(Intent(context, AlertService::class.java))
             AlertState.onConnection(context, AlertState.Connection.DISCONNECTED)
         }
@@ -264,7 +293,11 @@ class AlertService : Service() {
         fun reconnect(context: Context) {
             AppLog.event(context, "service_reconnect_requested")
             val i = Intent(context, AlertService::class.java).setAction(ACTION_RECONNECT)
-            ContextCompat.startForegroundService(context, i)
+            try {
+                ContextCompat.startForegroundService(context, i)
+            } catch (e: Exception) {
+                AppLog.event(context, "service_reconnect_failed", "error=${e.javaClass.simpleName}:${e.message ?: ""}")
+            }
         }
     }
 }
