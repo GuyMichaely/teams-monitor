@@ -5,19 +5,18 @@
 
 import { timingSafeEqual } from "node:crypto";
 import { closeSync, existsSync, openSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startGui as startCoreGui } from "./gui-server-core.mjs";
 import { DATA_DIR } from "./state.mjs";
+import { registrationFileExists, saveFcmRegistration } from "./alert-runtime.mjs";
 import { DEFAULT_FCM_SERVICE_ACCOUNT_FILE, resolveFcmConfig } from "./fcm-config.mjs";
+import { TUNNEL_HOST, TUNNEL_NAME } from "./tunnel-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_FILE = join(ROOT, "config", "config.json");
-const FCM_DEVICE_TOKEN_FILE = join(DATA_DIR, "fcm-device-token.txt");
-const TUNNEL_NAME = "teams-gui";
-const TUNNEL_HOST = "gui.guymichaely.com";
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
 
@@ -33,7 +32,6 @@ function authOk(header, token) {
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
 }
-
 
 async function readJsonBody(req, cap = 8192) {
   let body = "";
@@ -51,15 +49,13 @@ async function runtimeConfig() {
   const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
   const fcm = cfg.alerts?.fcm || {};
   const resolvedFcm = await resolveFcmConfig(fcm);
-  let fcmTokenRegistered = false;
-  try { fcmTokenRegistered = !!(await readFile(FCM_DEVICE_TOKEN_FILE, "utf8")).trim(); } catch { /* no token */ }
   return {
     pollIntervalMs: cfg.pollIntervalMs || 15000,
     mode: cfg.automation?.mode || "respond",
     alerts: {
       transport: cfg.alerts?.transport || "websocket",
       fcmProjectId: resolvedFcm.projectId,
-      fcmTokenRegistered,
+      fcmRegistrationPresent: registrationFileExists(),
       fcmServiceAccountPresent: resolvedFcm.serviceAccountPresent,
       fcmServiceAccountValid: resolvedFcm.serviceAccountValid,
     },
@@ -90,15 +86,20 @@ async function saveAlertConfig(req) {
   return await runtimeConfig();
 }
 
-async function registerFcmToken(req) {
+async function registerFcmRegistration(req) {
   const body = await readJsonBody(req);
-  const deviceToken = typeof body.token === "string" ? body.token.trim() : "";
-  if (deviceToken.length < 20 || deviceToken.length > 4096) {
-    throw Object.assign(new Error("invalid FCM registration token"), { httpCode: 400 });
-  }
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(FCM_DEVICE_TOKEN_FILE, deviceToken + "\n", { mode: 0o600 });
-  return { registered: true };
+  const registration = await saveFcmRegistration({
+    fid: body.fid,
+    token: body.token,
+    source: "phone-runtime",
+    observedAt: body.observedAt,
+  });
+  return {
+    registered: true,
+    kind: registration.kind,
+    generation: registration.generation,
+    updatedAt: registration.updatedAt,
+  };
 }
 
 async function savePollInterval(req) {
@@ -117,7 +118,7 @@ function tunnelProcesses() {
   if (process.platform !== "win32") return [];
   const command =
     "$p = Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | " +
-    "Where-Object { $_.CommandLine -match '(?i)tunnel\\s+run' -and $_.CommandLine -match '(?i)teams-gui' } | " +
+    `Where-Object { $_.CommandLine -match '(?i)tunnel\\s+run' -and $_.CommandLine -match '(?i)${TUNNEL_NAME}' } | ` +
     "Select-Object ProcessId,CommandLine; if ($p) { $p | ConvertTo-Json -Compress }";
   try {
     const out = execFileSync(
@@ -255,8 +256,8 @@ const TUNNEL_HTML = `
     <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
       <div class="row" style="justify-content:space-between">
         <div>
-          <strong>Phone notification transport</strong>
-          <div style="color:var(--dim);font-size:12px">Exactly one transport sends each alarm.</div>
+          <strong>Preferred phone notification transport</strong>
+          <div style="color:var(--dim);font-size:12px">The other transport remains available for fallback and recovery.</div>
         </div>
         <div class="row">
           <select id="alertTransport" onchange="renderAlertTransportFields()"
@@ -273,7 +274,7 @@ const TUNNEL_HTML = `
     </div>
 
     <p style="color:var(--dim);font-size:12px;margin:10px 0 0">
-      The tunnel exposes gui.guymichaely.com to this GUI and the phone app. Stopping it remotely disconnects both.
+      The tunnel exposes ${TUNNEL_HOST} to this GUI and the phone app. Stopping it remotely disconnects both.
     </p>
   </div>
 `;
@@ -304,21 +305,21 @@ function applyRuntimeConfig(c) {
   const transportSelect = document.getElementById("alertTransport");
   if (transportSelect && document.activeElement !== transportSelect) transportSelect.value = transport;
 
-const status = document.getElementById("fcmStatus");
-if (status) {
-  const projectStatus = c.alerts?.fcmProjectId ? "project ID ✓ (service account)" : "project ID missing";
-  const serviceAccountStatus = c.alerts?.fcmServiceAccountValid
-    ? "service account ✓"
-    : c.alerts?.fcmServiceAccountPresent
-      ? "service account invalid"
-      : "service account missing";
-  status.textContent = [
-    projectStatus,
-    serviceAccountStatus,
-    c.alerts?.fcmTokenRegistered ? "phone token ✓" : "phone token missing",
-  ].join(" · ");
-}
-renderAlertTransportFields();
+  const status = document.getElementById("fcmStatus");
+  if (status) {
+    const projectStatus = c.alerts?.fcmProjectId ? "project ID ✓ (service account)" : "project ID missing";
+    const serviceAccountStatus = c.alerts?.fcmServiceAccountValid
+      ? "service account ✓"
+      : c.alerts?.fcmServiceAccountPresent
+        ? "service account invalid"
+        : "service account missing";
+    status.textContent = [
+      projectStatus,
+      serviceAccountStatus,
+      c.alerts?.fcmRegistrationPresent ? "phone registration ✓" : "phone registration missing",
+    ].join(" · ");
+  }
+  renderAlertTransportFields();
   const alertOnly = c.mode === "alert-only";
   const whitelistHeading = [...document.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Auto-send whitelist");
   if (whitelistHeading) {
@@ -378,7 +379,7 @@ async function startCloudflareTunnel() {
   setTimeout(refreshRuntimeStatus, 1200);
 }
 async function stopCloudflareTunnel() {
-  const remote = location.hostname === "gui.guymichaely.com";
+  const remote = location.hostname === "${TUNNEL_HOST}";
   if (remote && !confirm("Stop the Cloudflare tunnel? This page will disconnect, and you cannot restart the tunnel from this remote URL until it is reachable again locally.")) return;
   try {
     const r = await tunnelApi("/api/tunnel/stop", { method:"POST" });
@@ -437,7 +438,7 @@ export function startGui(config) {
           return sendJson(res, 200, await saveAlertConfig(req));
         }
         if (req.method === "POST" && url.pathname === "/api/fcm/register") {
-          return sendJson(res, 200, { ok: true, ...(await registerFcmToken(req)) });
+          return sendJson(res, 200, { ok: true, ...(await registerFcmRegistration(req)) });
         }
         if (req.method === "GET" && url.pathname === "/api/tunnel/status") {
           return sendJson(res, 200, tunnelStatus());
