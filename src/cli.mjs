@@ -11,22 +11,42 @@ import { run, hardStop } from "./orchestrator.mjs";
 import { loadState } from "./state.mjs";
 import { loadConfig } from "./context.mjs";
 import { startGui } from "./gui-server.mjs";
-import { syncWorkerHeartbeat } from "./worker-control.mjs";
+import { syncWorkerHeartbeat, workerEnabled } from "./worker-control.mjs";
 import { recoverAlertTransport } from "./alerts.mjs";
+import { checkPublicTunnel } from "./tunnel-health.mjs";
+import { sendPhoneHealth } from "./phone-health.mjs";
 
 const [, , cmd, arg] = process.argv;
+
+async function syncHealthControl(config, { force = false } = {}) {
+  const hasWorker = workerEnabled(config);
+  await syncWorkerHeartbeat(config, { force }).catch(() => {});
+
+  // With no Worker, the PC still checks its own public tunnel route. This is
+  // less independent than the Worker probe but preserves tunnel failure/recovery
+  // visibility and can notify the phone over FCM when the public GUI path is down.
+  if (!hasWorker) {
+    const tunnel = await checkPublicTunnel(config, { force }).catch(() => null);
+    if (tunnel?.changed && tunnel.status) {
+      await sendPhoneHealth(config, {
+        incident: "public_tunnel",
+        status: tunnel.status,
+        at: tunnel.checkedAt,
+      }).catch(() => {});
+    }
+  }
+}
 
 try {
   switch (cmd) {
     case "run": {
-      // Worker heartbeat and alert-transport recovery are intentionally outside
-      // the Teams polling loop. The heartbeat client is itself rate-limited;
-      // FCM recovery checks use their own configurable cadence.
+      // Health/control work is intentionally outside the Teams polling loop.
+      // Worker/tunnel clients rate-limit themselves; FCM recovery has its own cadence.
       let lastAlertRecoveryAt = 0;
       const healthTimer = setInterval(async () => {
         try {
           const config = await loadConfig();
-          await syncWorkerHeartbeat(config).catch(() => {});
+          await syncHealthControl(config);
 
           const recoveryIntervalMs = Math.max(
             Number(config?.alerts?.failover?.recoveryCheckIntervalMs) || 30_000,
@@ -41,7 +61,7 @@ try {
       healthTimer.unref();
       try {
         const config = await loadConfig();
-        await syncWorkerHeartbeat(config, { force: true }).catch(() => {});
+        await syncHealthControl(config, { force: true });
         await recoverAlertTransport(config).catch(() => {});
         lastAlertRecoveryAt = Date.now();
         await run();
