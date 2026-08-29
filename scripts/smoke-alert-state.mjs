@@ -6,6 +6,7 @@ import {
   markFcmRegistrationSuspect,
   readAlertRuntime,
   readFcmRegistration,
+  recordFcmBackoff,
   recordTransportFailure,
   recordTransportSuccess,
   saveFcmRegistration,
@@ -52,6 +53,14 @@ try {
   state = await recordTransportSuccess("fcm", "fcm");
   assert(state.delivery.state === "primary_working", "one primary success recovers");
   assert(state.websocketWanted === false, "FCM recovery releases temporary WS");
+
+  state = await recordFcmBackoff("fcm", { error: "quota", delayMs: 60_000 });
+  assert(state.fcm.backoffMs === 60_000, "FCM backoff duration is persisted");
+  assert(Date.parse(state.fcm.nextAttemptAt) > Date.now(), "FCM next-attempt timestamp is in the future");
+
+  state = await recordTransportSuccess("fcm", "fcm");
+  assert(state.fcm.backoffMs === 0, "FCM success clears retry backoff");
+  assert(state.fcm.nextAttemptAt === null, "FCM success clears next-attempt timestamp");
 
   state = await markFcmRegistrationSuspect("fcm", "UNREGISTERED");
   assert(state.delivery.state === "fallback", "invalid FCM registration skips retry threshold");
