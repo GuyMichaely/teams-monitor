@@ -41,13 +41,21 @@ class FcmMessagingService : FirebaseMessagingService() {
         }
 
         if (kind == "health") {
+            val incident = data["incident"].orEmpty()
+            val status = data["status"].orEmpty()
             AppLog.event(
                 this,
                 "fcm_health_received",
-                "messageId=${message.messageId ?: ""} incident=${data["incident"].orEmpty()} status=${data["status"].orEmpty()}"
+                "messageId=${message.messageId ?: ""} incident=$incident status=$status"
             )
-            // User-facing heartbeat-loss behavior is configurable policy; until
-            // that UI is chosen, persist/log the event through the control poll.
+            if (incident == "pc_heartbeat") {
+                HealthIncidentManager.handleHeartbeat(
+                    this,
+                    status = status,
+                    at = data["at"],
+                    source = "fcm"
+                )
+            }
             return
         }
 
