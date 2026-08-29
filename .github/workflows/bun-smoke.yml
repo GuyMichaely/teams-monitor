@@ -8,6 +8,7 @@ on:
       - "src/**"
       - "scripts/smoke-gui.mjs"
       - "scripts/smoke-alert-state.mjs"
+      - "scripts/smoke-health.mjs"
       - "scripts/start-stack.ps1"
       - "package.json"
       - ".github/workflows/bun-smoke.yml"
@@ -16,6 +17,7 @@ on:
       - "src/**"
       - "scripts/smoke-gui.mjs"
       - "scripts/smoke-alert-state.mjs"
+      - "scripts/smoke-health.mjs"
       - "scripts/start-stack.ps1"
       - "package.json"
       - ".github/workflows/bun-smoke.yml"
@@ -36,6 +38,9 @@ jobs:
 
       - name: Test alert delivery state machine
         run: bun scripts/smoke-alert-state.mjs
+
+      - name: Test health monitoring transitions
+        run: bun scripts/smoke-health.mjs
 
       - name: Test Bun child process and GUI WebSocket
         run: bun scripts/smoke-gui.mjs
