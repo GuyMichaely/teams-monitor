@@ -157,6 +157,7 @@ object NotificationTransport {
                     if (it.isSuccessful) {
                         runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
                             applyHeartbeatIncident(context, body, "worker-mirror")
+                            clearConfirmedProbeAck(context, controlState(body), "worker-mirror")
                         }
                     }
                 }
@@ -177,6 +178,7 @@ object NotificationTransport {
                 if (response.isSuccessful) {
                     runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
                         applyHeartbeatIncident(context, body, "worker-mirror")
+                        clearConfirmedProbeAck(context, controlState(body), "worker-mirror")
                     }
                 }
             }
@@ -204,6 +206,7 @@ object NotificationTransport {
     private fun phoneState(prefs: Prefs): JSONObject = JSONObject()
         .put("at", Instant.now().toString())
         .put("fid", prefs.fcmFid)
+        .put("fcmProbeAckId", prefs.fcmProbeAckId)
         .put(
             "registrationUpdatedAt",
             if (prefs.fcmRegistrationUpdatedAtMs > 0)
@@ -212,25 +215,31 @@ object NotificationTransport {
         )
         .put("websocketState", AlertState.connection.name.lowercase())
 
+    private fun controlState(raw: JSONObject): JSONObject =
+        raw.optJSONObject("pc")?.optJSONObject("state") ?: raw
+
     private fun applyControlResponse(context: Context, raw: JSONObject, source: String) {
         applyHeartbeatIncident(context, raw, source)
 
         // Direct server responses expose state at the root. Worker responses
         // return the latest PC sync under pc.state.
-        val state = raw.optJSONObject("pc")?.optJSONObject("state") ?: raw
-        val primary = state.optString("primaryTransport", Prefs(context).alertTransport)
+        val state = controlState(raw)
+        val prefs = Prefs(context)
+        val primary = state.optString("primaryTransport", prefs.alertTransport)
         val websocketWanted = if (state.has("websocketWanted")) {
             state.optBoolean("websocketWanted")
         } else {
             primary == "websocket"
         }
-        val fcmStatus = state.optJSONObject("fcm")?.let { fcm ->
-            if (fcm.has("registrationStatus")) fcm.optString("registrationStatus") else null
+        val fcm = state.optJSONObject("fcm")
+        val fcmStatus = fcm?.let {
+            if (it.has("registrationStatus")) it.optString("registrationStatus") else null
         }
         val worker = state.optJSONObject("controlWorker")
         val workerEnabled = worker?.optBoolean("enabled")
         val workerUrl = worker?.optString("url")
 
+        clearConfirmedProbeAck(context, state, source)
         RecoveryControl.applyServerState(
             context,
             primaryTransport = primary,
@@ -244,6 +253,17 @@ object NotificationTransport {
             "control_synced",
             "source=$source primary=$primary websocketWanted=$websocketWanted fcmRegistration=${fcmStatus ?: "unknown"}"
         )
+    }
+
+    private fun clearConfirmedProbeAck(context: Context, state: JSONObject, source: String) {
+        val prefs = Prefs(context)
+        val pending = prefs.fcmProbeAckId
+        if (pending.isBlank()) return
+        val confirmed = state.optJSONObject("fcm")?.optString("lastAckProbeId").orEmpty()
+        if (confirmed == pending) {
+            prefs.fcmProbeAckId = ""
+            AppLog.event(context, "fcm_probe_ack_confirmed", "source=$source")
+        }
     }
 
     private fun applyHeartbeatIncident(context: Context, raw: JSONObject, source: String) {
