@@ -3,6 +3,8 @@
 
 import { createSign, randomUUID } from "node:crypto";
 import {
+  beginFcmRecoveryProbe,
+  cancelFcmRecoveryProbe,
   isCurrentFcmRegistrationGeneration,
   markFcmRegistrationSuspect,
   readAlertRuntime,
@@ -32,6 +34,13 @@ function failoverSettings(config, transport) {
   };
 }
 
+function recoveryProbeTimeoutMs(config) {
+  return Math.max(
+    10_000,
+    Number(config?.alerts?.failover?.probeAckTimeoutMs) || 60_000
+  );
+}
+
 function otherTransport(transport) {
   return transport === "fcm" ? "websocket" : "fcm";
 }
@@ -54,6 +63,10 @@ function transportResultOptions(transport, resultOrError) {
   };
 }
 
+function fcmRecovered(runtime) {
+  return runtime?.delivery?.state === "primary_working" && !runtime?.websocketWanted;
+}
+
 /**
  * Send one alert.
  *
@@ -61,9 +74,9 @@ function transportResultOptions(transport, resultOrError) {
  * and the alternate gets one per-alert fallback attempt on failure.
  *
  * Once the persisted delivery state is FALLBACK, the alternate gets the first
- * attempt. The preferred transport is then tried with the same alertId as a
- * recovery test; phone-side dedupe prevents a second alarm. One preferred-path
- * success returns the delivery state to PRIMARY_WORKING.
+ * attempt. The preferred transport is then tried with the same alertId as an
+ * acceptance test; phone-side dedupe prevents a second alarm. FCM is not marked
+ * recovered until a separate receipt probe is ACKed by Android.
  */
 export async function sendAlert(payload, config) {
   const a = config?.alerts || {};
@@ -140,9 +153,9 @@ async function sendWhileFallback(body, config, primary, secondary) {
     await recordTransportSuccess(secondary, primary, transportResultOptions(secondary, secondaryResult));
     attempts.push({ transport: secondary, ok: true, ...secondaryResult });
 
-    // The alert has a working delivery path now. Try the preferred path with
-    // the same alertId as a recovery test. If it succeeds, the phone dedupes the
-    // duplicate payload while still applying its transport-control metadata.
+    // The alert has a working delivery path now. Give the preferred path a
+    // same-alert acceptance test. For FCM this does not release WS; the periodic
+    // receipt probe below is what proves Android actually received FCM again.
     const recoveryResult = await attempt(primary, body, config).catch((error) => ({ error }));
     if (!recoveryResult.error) {
       const recoveredState = await recordTransportSuccess(
@@ -150,14 +163,14 @@ async function sendWhileFallback(body, config, primary, secondary) {
         primary,
         transportResultOptions(primary, recoveryResult)
       );
-      const primaryRecovered = !recoveredState.ignoredStaleFcmResult;
+      const primaryRecovered = fcmRecovered(recoveredState) || primary !== "fcm";
       attempts.push({ transport: primary, ok: true, recoveryTest: true, ...recoveryResult });
       return {
         alertId: body.alertId,
         transport: secondary,
         fallback: true,
         primaryRecovered,
-        deliveryState: primaryRecovered ? "primary_working" : recoveredState.delivery.state,
+        deliveryState: recoveredState.delivery.state,
         attempts,
       };
     }
@@ -180,8 +193,7 @@ async function sendWhileFallback(body, config, primary, secondary) {
     };
   }
 
-  // The fallback path failed. Give the configured primary an immediate chance;
-  // if it works, it both delivers this alert and recovers the delivery state.
+  // The fallback path failed. Give the configured primary an immediate chance.
   const secondaryError = secondaryResult.error;
   await recordSecondaryFailure(secondary, primary, secondaryError, config);
   attempts.push(failedAttempt(secondary, secondaryError, classifyFailure(secondary, secondaryError)));
@@ -193,13 +205,13 @@ async function sendWhileFallback(body, config, primary, secondary) {
       primary,
       transportResultOptions(primary, primaryResult)
     );
-    const primaryRecovered = !recoveredState.ignoredStaleFcmResult;
+    const primaryRecovered = fcmRecovered(recoveredState) || primary !== "fcm";
     attempts.push({ transport: primary, ok: true, recoveryTest: true, ...primaryResult });
     return {
       alertId: body.alertId,
       transport: primary,
       primaryRecovered,
-      deliveryState: primaryRecovered ? "primary_working" : recoveredState.delivery.state,
+      deliveryState: recoveredState.delivery.state,
       attempts,
     };
   }
@@ -324,11 +336,13 @@ async function attempt(transport, body, config) {
     }
 
     // A successful FCM message can carry the phone's desired WS policy. For FCM
-    // primary this is false; for WS primary it is true. The phone applies this
-    // metadata even when alertId dedupe suppresses the duplicate alarm.
+    // primary this is false only while fully healthy; recovery keeps WS wanted
+    // until a receipt probe is ACKed.
     return await sendViaFcm({
       ...body,
-      websocketWanted: String((a.transport || "websocket") === "websocket"),
+      websocketWanted: String(
+        (a.transport || "websocket") === "websocket" || !!runtime.websocketWanted
+      ),
       deliveryState: runtime.delivery.state,
     }, a.fcm || {});
   }
@@ -542,16 +556,15 @@ async function fcmRequest(projectId, accessToken, body) {
 
 /**
  * Periodic recovery check for an FCM primary that is retrying/fallen back.
- * Successful Firebase acceptance is the current recovery criterion; the control
- * message also tells Android to stop temporary WS. This runs only while FCM is
- * the configured primary and not PRIMARY_WORKING.
+ * Firebase acceptance starts a receipt probe; only a matching phone ACK marks
+ * FCM healthy and releases temporary WebSocket.
  */
 export async function recoverAlertTransport(config) {
   const primary = config?.alerts?.transport || "websocket";
   if (primary !== "fcm") return { attempted: false, reason: "primary_not_fcm" };
 
-  const runtime = await readAlertRuntime(primary);
-  if (runtime.delivery.state === "primary_working") {
+  let runtime = await readAlertRuntime(primary);
+  if (runtime.delivery.state === "primary_working" && !runtime.websocketWanted) {
     return { attempted: false, reason: "already_working" };
   }
   const backoffMs = fcmBackoffRemainingMs(runtime);
@@ -559,27 +572,55 @@ export async function recoverAlertTransport(config) {
     return { attempted: false, reason: "fcm_backoff", retryInMs: backoffMs };
   }
 
+  const pending = runtime.fcm.pendingProbe;
+  if (pending) {
+    const sentAt = Date.parse(pending.sentAt || 0);
+    const ageMs = Date.now() - sentAt;
+    if (Number.isFinite(sentAt) && ageMs >= 0 && ageMs < recoveryProbeTimeoutMs(config)) {
+      return {
+        attempted: false,
+        reason: "awaiting_phone_ack",
+        probeId: pending.id,
+        ageMs,
+      };
+    }
+    await cancelFcmRecoveryProbe(primary, {
+      probeId: pending.id,
+      registrationGeneration: pending.registrationGeneration,
+    });
+    runtime = await readAlertRuntime(primary);
+  }
+
+  const probeId = randomUUID();
   try {
     const result = await sendFcmControl(config, {
       kind: "control",
-      actions: "stop_ws",
-      reason: "fcm_recovery_check",
+      actions: "",
+      reason: "fcm_recovery_probe",
+      probeId,
       primaryTransport: "fcm",
-      websocketWanted: "false",
+      websocketWanted: "true",
     });
-    const recoveredState = await recordTransportSuccess(
-      "fcm",
-      primary,
-      transportResultOptions("fcm", result)
-    );
-    if (recoveredState.ignoredStaleFcmResult) {
+    const generationOptions = transportResultOptions("fcm", result);
+    const probeState = await beginFcmRecoveryProbe(primary, {
+      probeId,
+      registrationGeneration: generationOptions.registrationGeneration,
+    });
+    if (probeState.ignoredStaleFcmResult) {
       return {
         attempted: true,
         recovered: false,
         reason: "registration_changed_during_probe",
       };
     }
-    return { attempted: true, recovered: true, messageId: result.name || null };
+    await recordTransportSuccess("fcm", primary, generationOptions);
+    return {
+      attempted: true,
+      recovered: false,
+      awaitingAck: true,
+      probeId,
+      messageId: result.name || null,
+    };
   } catch (error) {
     const classification = classifyFailure("fcm", error);
     const generationOptions = transportResultOptions("fcm", error);
