@@ -377,7 +377,7 @@ async function fcmAccessToken(sa) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth-type:jwt-bearer",
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion: jwt,
     }),
     signal: AbortSignal.timeout(10_000),
@@ -395,7 +395,11 @@ async function requestCurrentFcmRegistration(projectId, accessToken, buildMessag
     if (!registration) {
       throw Object.assign(
         new Error("FCM phone registration missing — open the Android app while a control path is reachable"),
-        { code: "FCM_REGISTRATION_MISSING", registrationInvalid: true }
+        {
+          code: "FCM_REGISTRATION_MISSING",
+          registrationInvalid: true,
+          registrationGeneration: -1,
+        }
       );
     }
 
