@@ -20,6 +20,34 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_ALERT_TRANSPORT, "websocket") ?: "websocket"
         set(value) = sp.edit().putString(KEY_ALERT_TRANSPORT, value).apply()
 
+    var fcmFid: String
+        get() = sp.getString(KEY_FCM_FID, "") ?: ""
+        set(value) = sp.edit().putString(KEY_FCM_FID, value).apply()
+
+    var fcmSyncPending: Boolean
+        get() = sp.getBoolean(KEY_FCM_SYNC_PENDING, false)
+        set(value) = sp.edit().putBoolean(KEY_FCM_SYNC_PENDING, value).apply()
+
+    var fcmRegistrationUpdatedAtMs: Long
+        get() = sp.getLong(KEY_FCM_UPDATED_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_FCM_UPDATED_AT, value).apply()
+
+    var websocketRecoveryRequested: Boolean
+        get() = sp.getBoolean(KEY_WS_RECOVERY_REQUESTED, false)
+        set(value) = sp.edit().putBoolean(KEY_WS_RECOVERY_REQUESTED, value).apply()
+
+    var controlWorkerEnabled: Boolean
+        get() = sp.getBoolean(KEY_WORKER_ENABLED, false)
+        set(value) = sp.edit().putBoolean(KEY_WORKER_ENABLED, value).apply()
+
+    var controlWorkerUrl: String
+        get() = sp.getString(KEY_WORKER_URL, "") ?: ""
+        set(value) = sp.edit().putString(KEY_WORKER_URL, value).apply()
+
+    var lastControlSyncAtMs: Long
+        get() = sp.getLong(KEY_CONTROL_SYNC_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_CONTROL_SYNC_AT, value).apply()
+
     /** False until the user has saved settings once. */
     val configured: Boolean
         get() = sp.contains(KEY_URL)
@@ -60,6 +88,13 @@ class Prefs(context: Context) {
         private const val KEY_URL = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_ALERT_TRANSPORT = "alert_transport"
+        private const val KEY_FCM_FID = "fcm_fid"
+        private const val KEY_FCM_SYNC_PENDING = "fcm_sync_pending"
+        private const val KEY_FCM_UPDATED_AT = "fcm_registration_updated_at_ms"
+        private const val KEY_WS_RECOVERY_REQUESTED = "websocket_recovery_requested"
+        private const val KEY_WORKER_ENABLED = "control_worker_enabled"
+        private const val KEY_WORKER_URL = "control_worker_url"
+        private const val KEY_CONTROL_SYNC_AT = "last_control_sync_at_ms"
         private const val KEY_DND_PROMPT = "dnd_prompt_shown"
         private const val KEY_ALARM_ENABLED = "alarm_enabled"
         private const val KEY_NOTIF_ENABLED = "notif_enabled"
