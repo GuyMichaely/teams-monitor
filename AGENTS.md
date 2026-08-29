@@ -29,28 +29,31 @@ src/
   actions.mjs       Action registry. alert_phone is registered here.
   alerts.mjs        Preferred/fallback phone delivery over FCM and WebSocket. Assigns
                     alertId, performs per-alert fallback, persisted failover/recovery,
-                    FCM error classification and Retry-After/backoff handling.
+                    FCM error classification, receipt probes and Retry-After/backoff.
   alert-runtime.mjs Shared gitignored delivery state: active/preferred transport,
-                    failure counts, FCM registration/FID health, retry backoff and
-                    websocketWanted. Cross-process file lock + atomic writes.
+                    failure counts, FCM registration/FID generation, retry backoff,
+                    receipt-probe/ACK state and websocketWanted. Cross-process lock +
+                    atomic writes.
   worker-control.mjs Optional Cloudflare Worker control-plane client. Mirrors PC state,
-                    heartbeat and phone registration when enabled.
+                    heartbeat and phone registration/ACK state when enabled.
+  tunnel-health.mjs Public tunnel self-check used when Worker is disabled.
+  phone-health.mjs  High-priority direct FCM health transition sender.
   gui-server*.mjs   Dashboard SPA + JSON API + WebSocket hub (/ws/alerts) + APK download
                     + diagnostics + profile editor.
   state.mjs         state.json + activity.jsonl audit under gitignored data/.
   context.mjs       Loads gitignored config/config.json + context/user-profile.md,
                     bootstrapping them from tracked examples when missing.
   cli.mjs           run / stop / gui / catchup / chats / unread / readchat / read / send /
-                    watch. run also schedules Worker heartbeat and transport recovery.
+                    watch. run also schedules health monitoring and transport recovery.
 android-app/        Kotlin companion. FID registration, FCM, WS fallback, WorkManager
-                    control sync, alertId dedupe, watchdog policy, diagnostics.
+                    control sync, alertId dedupe, health policy, diagnostics.
 cloudflare-worker/  Optional independent control/recovery plane using a SQLite Durable
                     Object. Disabled by default and not part of normal Teams alert data.
 tfs-agent/          VM-side TFS worker; code-complete but not live-tested/deployed.
 scripts/
   start-stack.ps1   Canonical all-in-one startup for GUI/orchestrator/cloudflared.
   smoke-gui.mjs     Real Bun GUI/WebSocket runtime smoke.
-  smoke-alert-state.mjs Persisted delivery/failover/backoff/concurrency smoke.
+  smoke-alert-state.mjs Persisted delivery/failover/backoff/generation/ACK smoke.
 config/
   config.example.json  Tracked defaults copied to ignored config/config.json.
 context/
@@ -76,7 +79,9 @@ Both FCM and WebSocket are delivery capabilities.
   `FirebaseMessaging.register()` is a recovery operation only.
 - The phone persists the FID before network sync, uploads it to the PC and durably
   retries failed direct uploads with WorkManager.
-- PC stores current registration in `data/fcm-registration.json`.
+- PC stores current registration in `data/fcm-registration.json` with a monotonic
+  generation. In-flight FCM results are tagged with the generation they used so stale
+  success/failure cannot mutate a newer registration.
 - `data/fcm-device-token.txt` remains only as a one-release/deprecated-token migration
   path. Do not build new logic around it.
 - PC sends directly to Firebase HTTP v1 with `message.fid` for FIDs.
@@ -98,17 +103,24 @@ Both FCM and WebSocket are delivery capabilities.
 - In healthy/retrying state, preferred transport is tried first. On failure the
   alternate can carry that individual alert immediately.
 - Configurable consecutive preferred failures enter persisted `fallback` state.
-- In fallback, alternate transport is tried first; preferred is then tested with the
-  same alertId, so a recovery copy cannot double-ring.
-- One preferred-path success restores `primary_working`.
+- In fallback, alternate transport is tried first; preferred may then be tested with
+  the same alertId, so a recovery copy cannot double-ring.
+- WebSocket primary returns to `primary_working` as soon as a usable connection/send is
+  established.
+- FCM is stricter once it is degraded/fallen back: a successful HTTP-v1 send proves
+  backend acceptance but does **not** release temporary WS. A periodic silent FCM
+  receipt probe is sent instead. Android persists the probe ID on receipt and returns
+  it in control state. Only a matching ACK for the currently pending probe and current
+  registration generation restores FCM `primary_working` and turns temporary WS off.
+- Android sends the ACK immediately and schedules one short network-constrained retry;
+  the ACK remains persisted until PC state confirms that exact probe was consumed.
+- `alerts.failover.recoveryCheckIntervalMs` controls probe cadence and
+  `alerts.failover.probeAckTimeoutMs` controls how long a pending probe is awaited before
+  replacement.
 - Definitive FCM registration errors bypass the transient failure budget.
 - FCM 429/5xx failures persist retry/backoff state and honor `Retry-After` where
   available. Alerts during backoff use alternate delivery without manufacturing extra
   FCM failure counts.
-- A periodic silent FCM recovery control send runs while FCM is configured primary and
-  degraded (`alerts.failover.recoveryCheckIntervalMs`, 30s in the example). Firebase
-  acceptance is the current recovery criterion; successful recovery tells Android to
-  stop temporary WS.
 
 Important FCM error rule: **do not equate arbitrary HTTP 404 with an invalid phone
 registration**. Inspect FCM-specific error details. `UNREGISTERED` is the definitive
@@ -123,9 +135,12 @@ It is a control/recovery/watchdog plane, not the normal Teams-message alert path
 When enabled:
 
 - PC mirrors alert/control state and its real orchestrator heartbeat.
-- phone mirrors current FID and WS state even when direct PC sync succeeds;
-- Worker Durable Object tracks PC/phone state and heartbeat incidents;
+- phone mirrors current FID, WS state and pending FCM probe ACK even when direct PC sync
+  succeeds;
+- Worker Durable Object tracks PC/phone state, retained ACK and health incidents;
 - Worker alarm detects a stale PC heartbeat independently of the home tunnel;
+- Worker independently probes `controlWorker.publicHealthUrl` so a live PC with a dead
+  tunnel is distinguishable from a dead/wedged orchestrator;
 - Worker can send high-priority FCM `control`/`health` messages to the phone;
 - phone still has a ~15-minute WorkManager safety reconciliation that tries direct PC
   first, then Worker when necessary.
@@ -133,6 +148,10 @@ When enabled:
 Heartbeat semantics matter: Worker heartbeat is gated by freshness of the actual
 `data/heartbeat.json` written by orchestrator ticks. A live but wedged CLI process must
 not make the Worker think automation is healthy.
+
+If Worker is disabled, `src/tunnel-health.mjs` self-probes `publicHealthUrl` from the PC
+and sends transition-only tunnel health messages by FCM when possible. This keeps
+basic tunnel diagnosis but is not as independent as an outside Worker probe.
 
 Worker storage/config:
 
@@ -143,19 +162,24 @@ Worker storage/config:
   `FIREBASE_PRIVATE_KEY`.
 - CI only runs `wrangler deploy --dry-run`; it never deploys.
 
-## Android control/watchdog behavior
+## Android control/health behavior
 
 - `NotificationTransport` runs a roughly 15-minute WorkManager safety sync.
 - direct `/api/control/sync` wins; Worker is fallback. Direct success also mirrors to
   Worker so the independent shadow remains current.
 - FCM control pushes and Worker-poll state share the same recovery handlers.
-- PC heartbeat incident policy is local Android state:
+- A received FCM recovery probe persists `fcmProbeAckId`, triggers immediate control
+  sync and schedules one short follow-up sync. Do not clear it merely because a POST
+  succeeded; clear only when returned PC state contains matching `lastAckProbeId`.
+- PC-heartbeat and public-tunnel incidents are separate Android state machines using
+  the same local policy:
   - `notify` (default)
   - `alarm_now`
   - `alarm_after_delay`
   - `ignore`
-- heartbeat recovery clears incident state, cancels delayed work and stops a watchdog
-  alarm if one is currently playing.
+- recovery clears only the matching incident, cancels only its delayed work and stops
+  only health-watchdog audio owned by that incident. It must never silence a Teams
+  alert alarm or another still-active health incident.
 
 ## Running state & operations
 
@@ -213,7 +237,7 @@ the same debug signing key as local builds via `ANDROID_DEBUG_KEYSTORE_BASE64`.
     access tokens.
 16. **Android signing key must stay stable** or updates cannot replace installed APK.
 17. **Android alert reliability is auditable.** Rolling AppLog, WS lifecycle logs,
-    FID/control/recovery/watchdog events and diagnostics report exist.
+    FID/control/recovery/health events and diagnostics report exist.
 18. **Alert IDs are a correctness primitive.** Do not remove cross-transport dedupe if
     changing failover behavior.
 19. **FID is the current registration architecture.** Do not add new dependencies on
@@ -224,6 +248,10 @@ the same debug signing key as local builds via `ANDROID_DEBUG_KEYSTORE_BASE64`.
     `controlWorker.enabled=false`.
 22. **Worker never gets Teams message contents in normal operation.** Keep it a small
     control/recovery plane unless the user explicitly chooses otherwise.
+23. **Firebase acceptance is not FCM recovery proof once fallback is active.** Preserve
+    receipt-probe ACK semantics and registration-generation matching.
+24. **Health incidents are independent.** Do not let tunnel recovery clear heartbeat
+    state, or heartbeat recovery clear tunnel state.
 
 ## Secrets inventory
 
@@ -251,9 +279,12 @@ the same debug signing key as local builds via `ANDROID_DEBUG_KEYSTORE_BASE64`.
 ## Where things stand
 
 - Alert-only automation is the active mode; whitelist is empty.
-- FID + hybrid FCM/WS fallback/recovery is implemented.
+- FID + hybrid FCM/WS fallback/recovery, registration-generation isolation and
+  receipt-ACK recovery are implemented.
+- PC heartbeat and public tunnel are separate health signals. Worker-enabled mode probes
+  externally; Worker-disabled mode retains a PC-side tunnel self-check.
 - Optional Cloudflare Worker source/config and dry-run CI are implemented but live
   deployment/secrets remain an operational step; default config keeps it disabled.
-- A real-phone end-to-end FID/failover test is still required after pulling/restarting
-  the PC and installing the latest Android APK.
+- A real-phone end-to-end FID/failover/receipt-ACK test is still required after
+  pulling/restarting the PC and installing the latest Android APK.
 - TFS integration remains disabled/un-deployed.
