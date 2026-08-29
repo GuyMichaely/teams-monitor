@@ -2,7 +2,7 @@
 // can coordinate without making either process the source of truth for the other.
 
 import { existsSync } from "node:fs";
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 
@@ -50,29 +50,32 @@ async function atomicWriteJson(path, value) {
 
 async function withFileLock(lockPath, label, fn) {
   await mkdir(DATA_DIR, { recursive: true });
-  let handle = null;
+  let acquired = false;
   for (let attempt = 0; attempt < 80; attempt++) {
     try {
-      handle = await open(lockPath, "wx", 0o600);
+      // A directory creation is a single atomic operation on Windows and avoids
+      // the close→unlink race that file-handle locks have there.
+      await mkdir(lockPath);
+      acquired = true;
       break;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
-      // A hard-killed process can leave the lock file behind.
       if (attempt % 20 === 19) {
         try {
           const s = await stat(lockPath);
-          if (Date.now() - s.mtimeMs > 10_000) await unlink(lockPath);
+          if (Date.now() - s.mtimeMs > 10_000) {
+            await rm(lockPath, { recursive: true, force: true });
+          }
         } catch { /* another process released it */ }
       }
       await sleep(25);
     }
   }
-  if (!handle) throw new Error(`timed out acquiring ${label} lock`);
+  if (!acquired) throw new Error(`timed out acquiring ${label} lock`);
   try {
     return await fn();
   } finally {
-    await handle.close().catch(() => {});
-    await unlink(lockPath).catch(() => {});
+    await rm(lockPath, { recursive: true, force: true }).catch(() => {});
   }
 }
 
