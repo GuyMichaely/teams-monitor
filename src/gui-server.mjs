@@ -6,6 +6,8 @@ import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 import { injectObservability } from "./gui-observability-ui.mjs";
+import { controlState, saveFcmRegistration } from "./alert-runtime.mjs";
+import { loadConfig } from "./context.mjs";
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
@@ -13,6 +15,18 @@ const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
 function sendJson(res, status, obj) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
+}
+
+async function readJsonBody(req, cap = 16_384) {
+  let text = "";
+  for await (const chunk of req) {
+    text += chunk.toString("utf8");
+    if (Buffer.byteLength(text) > cap) {
+      throw Object.assign(new Error("payload too large"), { httpCode: 400 });
+    }
+  }
+  try { return JSON.parse(text || "{}"); }
+  catch { throw Object.assign(new Error("invalid JSON"), { httpCode: 400 }); }
 }
 
 function diagnostics(limit) {
@@ -27,7 +41,6 @@ function diagnostics(limit) {
     tunnelOutLog: tailLines(TUNNEL_OUT_LOG, limit).map(redactSecrets),
   };
 }
-
 
 export function startGui(config) {
   const result = startRuntimeGui(config);
@@ -86,17 +99,70 @@ export function startGui(config) {
       return sendJson(res, 200, diagnostics(limit));
     }
 
-    if (url.pathname === "/api/alerts" || url.pathname === "/api/fcm/register" || url.pathname === "/api/tunnel/start" || url.pathname === "/api/tunnel/stop") {
+    if (url.pathname === "/api/alerts" || url.pathname === "/api/fcm/register" || url.pathname === "/api/control/sync" || url.pathname === "/api/tunnel/start" || url.pathname === "/api/tunnel/stop") {
       const meta = requestMeta(req);
       const startedAt = Date.now();
       res.once("finish", () => {
-        const kind = url.pathname === "/api/alerts" ? "alert_http" : url.pathname === "/api/fcm/register" ? "fcm_register_http" : "tunnel_control_http";
+        const kind = url.pathname === "/api/alerts"
+          ? "alert_http"
+          : url.pathname === "/api/fcm/register"
+            ? "fcm_register_http"
+            : url.pathname === "/api/control/sync"
+              ? "control_sync_http"
+              : "tunnel_control_http";
         logDiagnostic(kind, {
           ...meta,
           statusCode: res.statusCode,
           durationMs: Date.now() - startedAt,
         });
       });
+    }
+
+    // New FID-aware registration endpoint. Intercept it before the legacy
+    // runtime layer, which still accepts registration tokens during migration.
+    if (req.method === "POST" && url.pathname === "/api/fcm/register") {
+      try {
+        if (token && !authOk(req.headers.authorization, token)) {
+          return sendJson(res, 401, { ok: false, error: "unauthorized" });
+        }
+        const body = await readJsonBody(req);
+        const registration = await saveFcmRegistration({
+          fid: body.fid,
+          token: body.token,
+          source: "phone-direct",
+          observedAt: body.observedAt,
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          registered: true,
+          kind: registration.kind,
+          updatedAt: registration.updatedAt,
+        });
+      } catch (e) {
+        return sendJson(res, e.httpCode || 500, { ok: false, error: e.message });
+      }
+    }
+
+    // Phone control/safety synchronization. The phone may include its current
+    // FID so this route also repairs a missed registration upload.
+    if (req.method === "POST" && url.pathname === "/api/control/sync") {
+      try {
+        if (token && !authOk(req.headers.authorization, token)) {
+          return sendJson(res, 401, { ok: false, error: "unauthorized" });
+        }
+        const body = await readJsonBody(req);
+        if (typeof body.fid === "string" && body.fid.trim()) {
+          await saveFcmRegistration({
+            fid: body.fid,
+            source: "phone-control-sync",
+            observedAt: body.registrationUpdatedAt,
+          });
+        }
+        const liveConfig = await loadConfig();
+        return sendJson(res, 200, { ok: true, ...(await controlState(liveConfig)) });
+      } catch (e) {
+        return sendJson(res, e.httpCode || 500, { ok: false, error: e.message });
+      }
     }
 
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
