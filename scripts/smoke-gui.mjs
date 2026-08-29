@@ -80,6 +80,20 @@ try {
     new Function(match[1]);
   }
 
+  const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/api/diagnostics?limit=5`, {
+    headers: { Authorization: "Bearer runtime-smoke-token" },
+  });
+  if (!diagnosticsResponse.ok) {
+    throw new Error(`diagnostics endpoint failed: ${diagnosticsResponse.status}`);
+  }
+  const diagnostics = await diagnosticsResponse.json();
+  if (!diagnostics.alertDelivery?.delivery?.primaryTransport) {
+    throw new Error("diagnostics alert delivery state missing");
+  }
+  if (!diagnostics.alertDelivery?.fcm || diagnostics.alertDelivery.fcm.backoffMs == null) {
+    throw new Error("diagnostics FCM health/backoff state missing");
+  }
+
   ws = new WebSocket(`ws://127.0.0.1:${port}/ws/alerts?access_token=runtime-smoke-token`);
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("WebSocket smoke test timed out")), 5000);
@@ -93,7 +107,7 @@ try {
     }, { once: true });
   });
 
-  console.log("Bun child_process + brain trace + observability UI + GUI WebSocket smoke tests passed.");
+  console.log("Bun child_process + brain trace + alert diagnostics + observability UI + GUI WebSocket smoke tests passed.");
 } finally {
   if (ws?.readyState === WebSocket.OPEN) {
     await new Promise((resolve) => {
