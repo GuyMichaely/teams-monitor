@@ -2,15 +2,17 @@
 // can coordinate without making either process the source of truth for the other.
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 
 export const FCM_REGISTRATION_FILE = join(DATA_DIR, "fcm-registration.json");
 export const LEGACY_FCM_TOKEN_FILE = join(DATA_DIR, "fcm-device-token.txt");
 export const ALERT_RUNTIME_FILE = join(DATA_DIR, "alert-runtime.json");
+const ALERT_RUNTIME_LOCK = join(DATA_DIR, "alert-runtime.lock");
 
 const iso = () => new Date().toISOString();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function freshRuntime(primaryTransport = "fcm") {
   return {
@@ -43,6 +45,34 @@ async function atomicWriteJson(path, value) {
   await rename(tmp, path);
 }
 
+async function withRuntimeLock(fn) {
+  await mkdir(DATA_DIR, { recursive: true });
+  let handle = null;
+  for (let attempt = 0; attempt < 80; attempt++) {
+    try {
+      handle = await open(ALERT_RUNTIME_LOCK, "wx", 0o600);
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      // A hard-killed process can leave the lock file behind.
+      if (attempt % 20 === 19) {
+        try {
+          const s = await stat(ALERT_RUNTIME_LOCK);
+          if (Date.now() - s.mtimeMs > 10_000) await unlink(ALERT_RUNTIME_LOCK);
+        } catch { /* another process released it */ }
+      }
+      await sleep(25);
+    }
+  }
+  if (!handle) throw new Error("timed out acquiring alert runtime lock");
+  try {
+    return await fn();
+  } finally {
+    await handle.close().catch(() => {});
+    await unlink(ALERT_RUNTIME_LOCK).catch(() => {});
+  }
+}
+
 export async function readFcmRegistration() {
   const current = await readJson(FCM_REGISTRATION_FILE);
   if (current?.value && ["fid", "token"].includes(current.kind)) return current;
@@ -50,7 +80,7 @@ export async function readFcmRegistration() {
   // One-release migration path from the deprecated registration-token file.
   try {
     const token = (await readFile(LEGACY_FCM_TOKEN_FILE, "utf8")).trim();
-    if (token) return { kind: "token", value: token, updatedAt: null, legacy: true };
+    if (token) return { kind: "token", value: token, observedAt: null, updatedAt: null, legacy: true };
   } catch { /* no legacy registration */ }
   return null;
 }
@@ -83,8 +113,7 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
   return registration;
 }
 
-export async function readAlertRuntime(primaryTransport = "fcm") {
-  const stored = await readJson(ALERT_RUNTIME_FILE);
+function normalizeRuntime(stored, primaryTransport) {
   const runtime = stored || freshRuntime(primaryTransport);
   runtime.delivery ||= freshRuntime(primaryTransport).delivery;
   runtime.delivery.failures ||= { fcm: 0, websocket: 0 };
@@ -101,13 +130,20 @@ export async function readAlertRuntime(primaryTransport = "fcm") {
   return runtime;
 }
 
+export async function readAlertRuntime(primaryTransport = "fcm") {
+  return normalizeRuntime(await readJson(ALERT_RUNTIME_FILE), primaryTransport);
+}
+
 export async function updateAlertRuntime(primaryTransport, mutate) {
-  const primary = primaryTransport || (await readJson(ALERT_RUNTIME_FILE))?.delivery?.primaryTransport || "fcm";
-  const runtime = await readAlertRuntime(primary);
-  const next = (await mutate(runtime)) || runtime;
-  next.updatedAt = iso();
-  await atomicWriteJson(ALERT_RUNTIME_FILE, next);
-  return next;
+  return await withRuntimeLock(async () => {
+    const stored = await readJson(ALERT_RUNTIME_FILE);
+    const primary = primaryTransport || stored?.delivery?.primaryTransport || "fcm";
+    const runtime = normalizeRuntime(stored, primary);
+    const next = (await mutate(runtime)) || runtime;
+    next.updatedAt = iso();
+    await atomicWriteJson(ALERT_RUNTIME_FILE, next);
+    return next;
+  });
 }
 
 export async function recordTransportSuccess(transport, primaryTransport) {
@@ -197,7 +233,7 @@ export async function newerWorkerRegistration(phone) {
   if (!fid) return false;
   const remoteAt = Date.parse(phone.registrationUpdatedAt || phone.updatedAt || 0);
   const local = await readFcmRegistration();
-  const localAt = Date.parse(local?.updatedAt || 0);
+  const localAt = Date.parse(local?.observedAt || local?.updatedAt || 0);
   if (local?.kind === "fid" && local.value === fid) return false;
   if (Number.isFinite(remoteAt) && Number.isFinite(localAt) && remoteAt < localAt) return false;
   await saveFcmRegistration({ fid, source: "worker", observedAt: phone.registrationUpdatedAt || null });
