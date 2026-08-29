@@ -65,7 +65,6 @@ object AppLog {
             appendLine("fcmFidPresent=${prefs.fcmFid.isNotBlank()}")
             appendLine("fcmFidLength=${prefs.fcmFid.length}")
             appendLine("fcmSyncPending=${prefs.fcmSyncPending}")
-            appendLine("fcmProbeAckPending=${prefs.fcmProbeAckId.isNotBlank()}")
             appendLine("fcmRegistrationUpdatedAt=${instantOrNever(prefs.fcmRegistrationUpdatedAtMs)}")
             appendLine("controlWorkerEnabled=${prefs.controlWorkerEnabled}")
             appendLine("controlWorkerConfigured=${prefs.controlWorkerUrl.isNotBlank()}")
