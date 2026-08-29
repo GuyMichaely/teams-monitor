@@ -18,8 +18,8 @@
     <string name="save">Save</string>
     <string name="section_connection">Connection</string>
     <string name="section_alerts">Alerts</string>
-    <string name="section_watchdog">PC watchdog</string>
-    <string name="heartbeat_policy_label">If the PC/orchestrator heartbeat disappears</string>
+    <string name="section_watchdog">Health watchdog</string>
+    <string name="heartbeat_policy_label">If the PC heartbeat or public tunnel fails</string>
     <string name="heartbeat_delay_label">Delayed alarm wait (minutes)</string>
     <string name="alarm_enabled">Play alarm sound</string>
     <string name="notif_enabled">Show notification</string>
