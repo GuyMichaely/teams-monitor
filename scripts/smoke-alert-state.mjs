@@ -3,8 +3,6 @@ import {
   ALERT_RUNTIME_FILE,
   FCM_REGISTRATION_FILE,
   LEGACY_FCM_TOKEN_FILE,
-  ackFcmRecoveryProbe,
-  beginFcmRecoveryProbe,
   markFcmRegistrationSuspect,
   readAlertRuntime,
   readFcmRegistration,
@@ -54,24 +52,21 @@ try {
   state = await recordTransportSuccess("websocket", "fcm");
   assert(state.delivery.state === "fallback", "secondary success does not recover primary");
 
+  // Explicit recovery policy: one successful primary send is enough.
   state = await recordTransportSuccess("fcm", "fcm");
-  assert(state.delivery.state === "fallback", "FCM backend acceptance alone does not recover");
-  assert(state.websocketWanted === true, "FCM acceptance alone keeps recovery WS requested");
-
-  state = await recordTransportSuccess("fcm", "fcm", { receiptConfirmed: true });
-  assert(state.delivery.state === "primary_working", "receipt-confirmed FCM success recovers");
-  assert(state.websocketWanted === false, "receipt-confirmed FCM recovery releases WS");
+  assert(state.delivery.state === "primary_working", "one FCM success recovers primary");
+  assert(state.websocketWanted === false, "one FCM success releases recovery WS");
 
   state = await recordFcmBackoff("fcm", { error: "quota", delayMs: 60_000 });
   assert(state.fcm.backoffMs === 60_000, "FCM backoff duration is persisted");
   assert(Date.parse(state.fcm.nextAttemptAt) > Date.now(), "FCM next-attempt timestamp is in the future");
 
   state = await recordTransportSuccess("fcm", "fcm");
-  assert(state.fcm.backoffMs === 0, "FCM acceptance clears retry backoff evidence");
-  assert(state.fcm.nextAttemptAt === null, "FCM acceptance clears next-attempt timestamp");
+  assert(state.fcm.backoffMs === 0, "FCM success clears retry backoff");
+  assert(state.fcm.nextAttemptAt === null, "FCM success clears next-attempt timestamp");
 
   // No registration at send time is itself a generation (-1). If a registration
-  // appears before the failure is recorded, that obsolete failure must be ignored.
+  // appears before that result is recorded, the obsolete result must be ignored.
   state = await markFcmRegistrationSuspect("fcm", "missing", { registrationGeneration: -1 });
   assert(state.delivery.state === "fallback", "missing registration enters fallback while still missing");
 
@@ -88,9 +83,9 @@ try {
 
   state = await recordTransportSuccess("fcm", "fcm", {
     registrationGeneration: generation1,
-    receiptConfirmed: true,
   });
-  assert(state.delivery.state === "primary_working", "current generation can recover FCM with receipt proof");
+  assert(state.delivery.state === "primary_working", "current generation can recover FCM");
+  assert(state.websocketWanted === false, "current-generation recovery releases WS");
 
   // A queued duplicate upload of the same FID must not clear a later
   // UNREGISTERED result for that same generation.
@@ -109,8 +104,8 @@ try {
   assert(state.fcm.registration === "suspect", "same-FID duplicate does not clear suspect state");
   assert(state.delivery.state === "fallback", "same-FID duplicate does not leave fallback");
 
-  // A genuinely new FID is a new generation. It can replace registration state,
-  // but fallback stays up until a probe to that generation is ACKed by Android.
+  // A genuinely new FID is a new generation. It repairs registration identity,
+  // but fallback remains until an FCM send against that generation succeeds.
   await saveFcmRegistration({
     fid: "smoke-fid-newer-123456789",
     source: "smoke-newer",
@@ -121,7 +116,7 @@ try {
   state = await readAlertRuntime("fcm");
   assert(generation2 === generation1 + 1, "new FID increments registration generation");
   assert(state.fcm.registration === "synced", "new FID replaces suspect registration state");
-  assert(state.delivery.state === "fallback", "new FID waits for FCM receipt proof before recovery");
+  assert(state.delivery.state === "fallback", "new FID alone does not claim delivery recovery");
 
   const staleInvalidation = await markFcmRegistrationSuspect("fcm", "old-send-unregistered", {
     registrationGeneration: generation1,
@@ -132,37 +127,20 @@ try {
 
   const staleSuccess = await recordTransportSuccess("fcm", "fcm", {
     registrationGeneration: generation1,
-    receiptConfirmed: true,
   });
   state = await readAlertRuntime("fcm");
   assert(staleSuccess.ignoredStaleFcmResult === true, "old-generation success is ignored");
   assert(state.delivery.state === "fallback", "old-generation success cannot recover new FID");
 
-  state = await beginFcmRecoveryProbe("fcm", {
-    probeId: "probe-current",
+  state = await recordTransportSuccess("fcm", "fcm", {
     registrationGeneration: generation2,
   });
-  assert(state.fcm.pendingProbe?.id === "probe-current", "current-generation recovery probe is persisted");
+  assert(state.delivery.state === "primary_working", "one current-generation FCM success restores primary");
+  assert(state.websocketWanted === false, "one current-generation FCM success shuts down fallback WS");
 
-  let ack = await ackFcmRecoveryProbe("fcm", "probe-wrong");
-  assert(ack.probeAcked === false, "wrong probe ACK is ignored");
-  state = await readAlertRuntime("fcm");
-  assert(state.delivery.state === "fallback", "wrong probe ACK cannot recover FCM");
-
-  ack = await ackFcmRecoveryProbe("fcm", "probe-current");
-  assert(ack.probeAcked === true, "matching current-generation probe ACK is accepted");
-  assert(ack.delivery.state === "primary_working", "matching probe ACK recovers FCM");
-  assert(ack.websocketWanted === false, "matching probe ACK releases recovery WS");
-  assert(ack.fcm.pendingProbe === null, "matching probe ACK clears pending probe");
-  assert(ack.fcm.lastAckProbeId === "probe-current", "matching probe ACK is recorded for phone confirmation");
-
-  // If the FID changes while a probe is awaiting its ACK, that ACK belongs to
-  // the old generation and must not recover the new one.
+  // If another FID arrives later, results from generation 2 must no longer be
+  // able to alter its health.
   await markFcmRegistrationSuspect("fcm", "force-recovery", {
-    registrationGeneration: generation2,
-  });
-  await beginFcmRecoveryProbe("fcm", {
-    probeId: "probe-before-fid-change",
     registrationGeneration: generation2,
   });
   await saveFcmRegistration({
@@ -172,18 +150,17 @@ try {
   });
   registration = await readFcmRegistration();
   const generation3 = registration.generation;
-  ack = await ackFcmRecoveryProbe("fcm", "probe-before-fid-change");
+  const staleGeneration2Success = await recordTransportSuccess("fcm", "fcm", {
+    registrationGeneration: generation2,
+  });
   state = await readAlertRuntime("fcm");
-  assert(ack.probeAcked === false, "old-generation probe ACK is ignored after FID change");
-  assert(state.delivery.state === "fallback", "old-generation probe ACK cannot recover new FID");
+  assert(staleGeneration2Success.ignoredStaleFcmResult === true, "prior-generation success is ignored after FID change");
+  assert(state.delivery.state === "fallback", "prior-generation success cannot recover newest FID");
 
-  state = await beginFcmRecoveryProbe("fcm", {
-    probeId: "probe-third",
+  state = await recordTransportSuccess("fcm", "fcm", {
     registrationGeneration: generation3,
   });
-  ack = await ackFcmRecoveryProbe("fcm", "probe-third");
-  assert(ack.probeAcked === true, "new-generation probe ACK is accepted");
-  assert(ack.delivery.state === "primary_working", "new-generation ACK restores FCM");
+  assert(state.delivery.state === "primary_working", "newest-generation success restores FCM");
 
   const staleResult = await saveFcmRegistration({
     fid: "smoke-fid-stale-123456789",
@@ -206,10 +183,16 @@ try {
 
   // Exercise the cross-process runtime lock with concurrent mutations. Each
   // mutation must observe the previous committed count rather than overwrite it.
-  await recordTransportSuccess("fcm", "fcm", { receiptConfirmed: true });
+  await recordTransportSuccess("fcm", "fcm", {
+    registrationGeneration: registration.generation,
+  });
   await Promise.all(
     Array.from({ length: 10 }, () =>
-      recordTransportFailure("fcm", "fcm", { error: "concurrent", failureLimit: 99 })
+      recordTransportFailure("fcm", "fcm", {
+        error: "concurrent",
+        failureLimit: 99,
+        registrationGeneration: registration.generation,
+      })
     )
   );
   state = await readAlertRuntime("fcm");
