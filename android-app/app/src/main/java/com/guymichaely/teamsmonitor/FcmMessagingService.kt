@@ -24,6 +24,18 @@ class FcmMessagingService : FirebaseMessagingService() {
                 "fcm_control_received",
                 "messageId=${message.messageId ?: ""} actions=${actions.joinToString("|")} priority=${message.priority}"
             )
+
+            // Recovery probes/control messages may also carry current server
+            // transport state. Apply it before explicit actions.
+            val primary = data["primaryTransport"].orEmpty()
+            val websocketWanted = data["websocketWanted"]?.toBooleanStrictOrNull()
+            if ((primary == "fcm" || primary == "websocket") && websocketWanted != null) {
+                RecoveryControl.applyServerState(
+                    this,
+                    primaryTransport = primary,
+                    websocketWanted = websocketWanted
+                )
+            }
             RecoveryControl.handleControlMessage(this, actions)
             return
         }
@@ -44,6 +56,19 @@ class FcmMessagingService : FirebaseMessagingService() {
             return
         }
 
+        // Apply transport metadata even if this alertId is a duplicate. During
+        // fallback the alternate may alarm first and the duplicate FCM copy can
+        // be the successful primary recovery test that tells us to stop WS.
+        val primary = data["primaryTransport"].orEmpty()
+        val websocketWanted = data["websocketWanted"]?.toBooleanStrictOrNull()
+        if ((primary == "fcm" || primary == "websocket") && websocketWanted != null) {
+            RecoveryControl.applyServerState(
+                this,
+                primaryTransport = primary,
+                websocketWanted = websocketWanted
+            )
+        }
+
         val alertId = data["alertId"].orEmpty()
         if (!AlertDeduper.shouldHandle(this, alertId)) {
             AppLog.event(this, "alert_duplicate_ignored", "transport=fcm alertId=$alertId")
@@ -59,16 +84,6 @@ class FcmMessagingService : FirebaseMessagingService() {
             "fcm_message_received",
             "messageId=${message.messageId ?: ""} alertId=$alertId chat=$chat author=$author serverTime=$time textLength=${text.length} priority=${message.priority}"
         )
-
-        val primary = data["primaryTransport"].orEmpty()
-        val websocketWanted = data["websocketWanted"]?.toBooleanStrictOrNull()
-        if ((primary == "fcm" || primary == "websocket") && websocketWanted != null) {
-            RecoveryControl.applyServerState(
-                this,
-                primaryTransport = primary,
-                websocketWanted = websocketWanted
-            )
-        }
 
         AlertState.onAlert(this, chat, author, text, time)
         AlertNotifier.alert(this, chat, author, text)
