@@ -30,6 +30,9 @@ function freshRuntime(primaryTransport = "fcm") {
       lastSuccessAt: null,
       nextAttemptAt: null,
       backoffMs: 0,
+      pendingProbe: null,
+      lastAckProbeId: null,
+      lastAckAt: null,
     },
     websocketWanted: primaryTransport === "websocket",
     recoveryReason: null,
@@ -202,13 +205,14 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
 
   // A duplicate upload of the same registration must not clear a failure that
   // was observed after that upload was queued. Only a genuinely new generation
-  // resets registration/backoff state; FCM acceptance later proves recovery.
+  // resets registration/backoff state; FCM receipt is still proven separately.
   if (registrationChanged && !registration?.ignoredStale) {
     await updateAlertRuntime(null, (runtime) => {
       runtime.fcm.registration = "synced";
       runtime.fcm.lastError = null;
       runtime.fcm.nextAttemptAt = null;
       runtime.fcm.backoffMs = 0;
+      runtime.fcm.pendingProbe = null;
       return runtime;
     });
   }
@@ -222,6 +226,9 @@ function normalizeRuntime(stored, primaryTransport) {
   runtime.fcm ||= freshRuntime(primaryTransport).fcm;
   runtime.fcm.nextAttemptAt ??= null;
   runtime.fcm.backoffMs = Math.max(0, Number(runtime.fcm.backoffMs) || 0);
+  runtime.fcm.pendingProbe ??= null;
+  runtime.fcm.lastAckProbeId ??= null;
+  runtime.fcm.lastAckAt ??= null;
 
   if (runtime.delivery.primaryTransport !== primaryTransport) {
     runtime.delivery.primaryTransport = primaryTransport;
@@ -230,6 +237,7 @@ function normalizeRuntime(stored, primaryTransport) {
     runtime.delivery.failures = { fcm: 0, websocket: 0 };
     runtime.websocketWanted = primaryTransport === "websocket";
     runtime.recoveryReason = null;
+    runtime.fcm.pendingProbe = null;
   }
   return runtime;
 }
@@ -250,30 +258,48 @@ export async function updateAlertRuntime(primaryTransport, mutate) {
   });
 }
 
+function applyTransportSuccess(runtime, transport, primaryTransport, { receiptConfirmed = false } = {}) {
+  runtime.delivery.failures[transport] = 0;
+
+  if (transport === "fcm") {
+    runtime.fcm.lastSuccessAt = iso();
+    runtime.fcm.lastError = null;
+    runtime.fcm.nextAttemptAt = null;
+    runtime.fcm.backoffMs = 0;
+  }
+
+  // Firebase HTTP acceptance is useful evidence, but while FCM is recovering it
+  // is not proof that Android received the message. Keep WS/recovery state until
+  // a matching probe ACK comes back from the phone.
+  const recoveringFcmPrimary =
+    transport === "fcm" &&
+    transport === primaryTransport &&
+    !receiptConfirmed &&
+    (runtime.websocketWanted || runtime.delivery.state !== "primary_working");
+  if (recoveringFcmPrimary) return runtime;
+
+  if (transport === primaryTransport) {
+    runtime.delivery.state = "primary_working";
+    runtime.delivery.activeTransport = primaryTransport;
+    runtime.recoveryReason = null;
+    if (primaryTransport === "fcm") runtime.websocketWanted = false;
+  } else if (runtime.delivery.state === "fallback") {
+    runtime.delivery.activeTransport = transport;
+  }
+
+  if (transport === "fcm" && receiptConfirmed && runtime.fcm.registration === "suspect") {
+    runtime.fcm.registration = "synced";
+  }
+  return runtime;
+}
+
 export async function recordTransportSuccess(
   transport,
   primaryTransport,
-  { registrationGeneration = null } = {}
+  { registrationGeneration = null, receiptConfirmed = false } = {}
 ) {
-  const mutate = (runtime) => {
-    runtime.delivery.failures[transport] = 0;
-    if (transport === primaryTransport) {
-      runtime.delivery.state = "primary_working";
-      runtime.delivery.activeTransport = primaryTransport;
-      runtime.recoveryReason = null;
-      if (primaryTransport === "fcm") runtime.websocketWanted = false;
-    } else if (runtime.delivery.state === "fallback") {
-      runtime.delivery.activeTransport = transport;
-    }
-    if (transport === "fcm") {
-      runtime.fcm.lastSuccessAt = iso();
-      runtime.fcm.lastError = null;
-      runtime.fcm.nextAttemptAt = null;
-      runtime.fcm.backoffMs = 0;
-      if (runtime.fcm.registration === "suspect") runtime.fcm.registration = "synced";
-    }
-    return runtime;
-  };
+  const mutate = (runtime) =>
+    applyTransportSuccess(runtime, transport, primaryTransport, { receiptConfirmed });
 
   if (transport === "fcm") {
     return await mutateForFcmGeneration(primaryTransport, registrationGeneration, mutate);
@@ -293,7 +319,10 @@ export async function recordTransportFailure(
 ) {
   const mutate = (runtime) => {
     runtime.delivery.failures[transport] = (runtime.delivery.failures[transport] || 0) + 1;
-    if (transport === "fcm") runtime.fcm.lastError = error || null;
+    if (transport === "fcm") {
+      runtime.fcm.lastError = error || null;
+      runtime.fcm.pendingProbe = null;
+    }
 
     if (transport === primaryTransport) {
       const fallback = nonRetryable || runtime.delivery.failures[transport] >= failureLimit;
@@ -320,6 +349,7 @@ export async function recordFcmBackoff(
     runtime.fcm.lastError = error || runtime.fcm.lastError || null;
     runtime.fcm.backoffMs = delay;
     runtime.fcm.nextAttemptAt = delay > 0 ? new Date(Date.now() + delay).toISOString() : null;
+    runtime.fcm.pendingProbe = null;
     return runtime;
   });
 }
@@ -334,6 +364,7 @@ export async function markFcmRegistrationSuspect(
     runtime.fcm.lastError = reason;
     runtime.fcm.nextAttemptAt = null;
     runtime.fcm.backoffMs = 0;
+    runtime.fcm.pendingProbe = null;
     if (primaryTransport === "fcm") {
       runtime.delivery.state = "fallback";
       runtime.delivery.activeTransport = "websocket";
@@ -342,6 +373,62 @@ export async function markFcmRegistrationSuspect(
     }
     return runtime;
   });
+}
+
+export async function beginFcmRecoveryProbe(
+  primaryTransport,
+  { probeId, registrationGeneration } = {}
+) {
+  const id = String(probeId || "").trim();
+  if (!id) throw new Error("FCM recovery probe id is required");
+  return await mutateForFcmGeneration(primaryTransport, registrationGeneration, (runtime) => {
+    runtime.fcm.pendingProbe = {
+      id,
+      registrationGeneration,
+      sentAt: iso(),
+    };
+    return runtime;
+  });
+}
+
+export async function cancelFcmRecoveryProbe(
+  primaryTransport,
+  { probeId, registrationGeneration = null } = {}
+) {
+  const id = String(probeId || "").trim();
+  if (!id) return await readAlertRuntime(primaryTransport);
+  return await mutateForFcmGeneration(primaryTransport, registrationGeneration, (runtime) => {
+    if (runtime.fcm.pendingProbe?.id === id) runtime.fcm.pendingProbe = null;
+    return runtime;
+  });
+}
+
+export async function ackFcmRecoveryProbe(primaryTransport, probeId) {
+  const id = String(probeId || "").trim();
+  const snapshot = await readAlertRuntime(primaryTransport);
+  const pending = snapshot.fcm.pendingProbe;
+  if (!id || !pending || pending.id !== id) {
+    return { ...snapshot, probeAcked: false };
+  }
+
+  let acked = false;
+  const result = await mutateForFcmGeneration(
+    primaryTransport,
+    pending.registrationGeneration,
+    (runtime) => {
+      if (runtime.fcm.pendingProbe?.id !== id) return runtime;
+      acked = true;
+      applyTransportSuccess(runtime, "fcm", primaryTransport, { receiptConfirmed: true });
+      runtime.fcm.pendingProbe = null;
+      runtime.fcm.lastAckProbeId = id;
+      runtime.fcm.lastAckAt = iso();
+      return runtime;
+    }
+  );
+  return {
+    ...result,
+    probeAcked: acked && !result.ignoredStaleFcmResult,
+  };
 }
 
 export async function requestWebSocket(primaryTransport, reason = "fallback") {
@@ -370,6 +457,10 @@ export async function controlState(config) {
       lastSuccessAt: runtime.fcm.lastSuccessAt,
       nextAttemptAt: runtime.fcm.nextAttemptAt,
       backoffMs: runtime.fcm.backoffMs,
+      pendingProbeId: runtime.fcm.pendingProbe?.id || null,
+      pendingProbeSentAt: runtime.fcm.pendingProbe?.sentAt || null,
+      lastAckProbeId: runtime.fcm.lastAckProbeId,
+      lastAckAt: runtime.fcm.lastAckAt,
     },
     controlWorker: {
       enabled: !!config?.controlWorker?.enabled,
