@@ -3,9 +3,7 @@ package com.guymichaely.teamsmonitor
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import okhttp3.Call
@@ -114,28 +112,6 @@ object NotificationTransport {
         )
     }
 
-    /**
-     * A recovery probe can reach Android before the PC has finished persisting the
-     * matching pending-probe record. The immediate sync still runs first; this
-     * one-shot follow-up closes that small race without waiting for the 15-minute
-     * safety poll. The ACK itself remains persisted until the PC confirms it.
-     */
-    fun scheduleProbeAckRetry(context: Context) {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-        val work = OneTimeWorkRequestBuilder<ControlSyncWorker>()
-            .setInitialDelay(2, TimeUnit.SECONDS)
-            .setConstraints(constraints)
-            .build()
-        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-            PROBE_ACK_RETRY_WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
-            work
-        )
-        AppLog.event(context, "fcm_probe_ack_retry_scheduled", "delaySeconds=2")
-    }
-
     /** Worker is the fallback source of control state when direct sync failed. */
     private fun syncWorkerAsync(context: Context, prefs: Prefs) {
         if (!prefs.controlWorkerEnabled || prefs.controlWorkerUrl.isBlank()) {
@@ -181,7 +157,6 @@ object NotificationTransport {
                     if (it.isSuccessful) {
                         runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
                             applyHealthIncidents(context, body, "worker-mirror")
-                            clearConfirmedProbeAck(context, controlState(body), "worker-mirror")
                         }
                     }
                 }
@@ -202,7 +177,6 @@ object NotificationTransport {
                 if (response.isSuccessful) {
                     runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
                         applyHealthIncidents(context, body, "worker-mirror")
-                        clearConfirmedProbeAck(context, controlState(body), "worker-mirror")
                     }
                 }
             }
@@ -230,7 +204,6 @@ object NotificationTransport {
     private fun phoneState(prefs: Prefs): JSONObject = JSONObject()
         .put("at", Instant.now().toString())
         .put("fid", prefs.fcmFid)
-        .put("fcmProbeAckId", prefs.fcmProbeAckId)
         .put(
             "registrationUpdatedAt",
             if (prefs.fcmRegistrationUpdatedAtMs > 0)
@@ -263,7 +236,6 @@ object NotificationTransport {
         val workerEnabled = worker?.optBoolean("enabled")
         val workerUrl = worker?.optString("url")
 
-        clearConfirmedProbeAck(context, state, source)
         RecoveryControl.applyServerState(
             context,
             primaryTransport = primary,
@@ -277,18 +249,6 @@ object NotificationTransport {
             "control_synced",
             "source=$source primary=$primary websocketWanted=$websocketWanted fcmRegistration=${fcmStatus ?: "unknown"}"
         )
-    }
-
-    private fun clearConfirmedProbeAck(context: Context, state: JSONObject, source: String) {
-        val prefs = Prefs(context)
-        val pending = prefs.fcmProbeAckId
-        if (pending.isBlank()) return
-        val confirmed = state.optJSONObject("fcm")?.optString("lastAckProbeId").orEmpty()
-        if (confirmed == pending) {
-            prefs.fcmProbeAckId = ""
-            WorkManager.getInstance(context.applicationContext).cancelUniqueWork(PROBE_ACK_RETRY_WORK_NAME)
-            AppLog.event(context, "fcm_probe_ack_confirmed", "source=$source")
-        }
     }
 
     private fun applyHealthIncidents(context: Context, raw: JSONObject, source: String) {
@@ -311,5 +271,4 @@ object NotificationTransport {
     }
 
     private const val PERIODIC_WORK_NAME = "control-state-sync"
-    private const val PROBE_ACK_RETRY_WORK_NAME = "fcm-probe-ack-retry"
 }
