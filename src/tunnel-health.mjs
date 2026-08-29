@@ -1,23 +1,28 @@
 // Public-tunnel health monitoring used when the optional control Worker is off.
-// The Worker performs the same check independently when it is enabled.
+// Observation state is separate from report state so a failed FCM health push is
+// retried on later checks instead of being lost after the first transition.
 
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 
-const STATE_FILE = join(DATA_DIR, "tunnel-health.json");
+export const TUNNEL_HEALTH_FILE = join(DATA_DIR, "tunnel-health.json");
 let lastCheckAt = 0;
 
 async function readState() {
-  try { return JSON.parse(await readFile(STATE_FILE, "utf8")); }
+  try { return JSON.parse(await readFile(TUNNEL_HEALTH_FILE, "utf8")); }
   catch { return null; }
 }
 
 async function writeState(state) {
   await mkdir(DATA_DIR, { recursive: true });
-  const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.tmp`;
+  const tmp = `${TUNNEL_HEALTH_FILE}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
-  await rename(tmp, STATE_FILE);
+  await rename(tmp, TUNNEL_HEALTH_FILE);
+}
+
+function observationStatus(reachable) {
+  return reachable === false ? "missing" : "recovered";
 }
 
 export async function checkPublicTunnel(config, { force = false } = {}) {
@@ -29,17 +34,32 @@ export async function checkPublicTunnel(config, { force = false } = {}) {
   lastCheckAt = now;
 
   const previous = await readState();
+  const checkedAt = new Date().toISOString();
+
   if (!url) {
-    await rm(STATE_FILE, { force: true }).catch(() => {});
-    return {
+    // Disabling the probe resolves a previously reported missing incident. Keep
+    // state until that recovery notification succeeds so a failed FCM send can
+    // be retried on the next health tick.
+    const reportedStatus = previous?.reportedStatus || null;
+    const status = reportedStatus === "missing" ? "recovered" : null;
+    const current = {
       configured: false,
+      reachable: null,
+      statusCode: null,
+      error: null,
+      checkedAt,
+      reportedStatus: reportedStatus || "recovered",
+      reportedAt: previous?.reportedAt || null,
+    };
+    await writeState(current);
+    return {
+      ...current,
       changed: previous?.reachable === false,
-      status: previous?.reachable === false ? "recovered" : null,
-      checkedAt: new Date().toISOString(),
+      status,
+      needsReport: status === "recovered",
     };
   }
 
-  const checkedAt = new Date().toISOString();
   let reachable = false;
   let statusCode = null;
   let error = null;
@@ -56,21 +76,45 @@ export async function checkPublicTunnel(config, { force = false } = {}) {
     error = String(e?.message || e).slice(0, 300);
   }
 
+  const status = observationStatus(reachable);
+  // A first healthy observation establishes the baseline without notifying the
+  // phone. Otherwise preserve the last successfully reported status.
+  const reportedStatus = previous?.reportedStatus || (reachable ? "recovered" : null);
   const current = {
     configured: true,
     reachable,
     statusCode,
     error,
     checkedAt,
+    reportedStatus,
+    reportedAt: previous?.reportedAt || null,
   };
   await writeState(current);
 
   return {
     ...current,
     changed: previous?.reachable !== reachable,
-    // Initial healthy state is informational only. Initial failure is an incident.
-    status: previous?.reachable === undefined && reachable
-      ? null
-      : reachable ? "recovered" : "missing",
+    status: previous?.reachable === undefined && reachable ? null : status,
+    needsReport: status !== reportedStatus,
   };
+}
+
+export async function markPublicTunnelReported(status, at = new Date().toISOString()) {
+  const normalized = status === "missing" || status === "recovered" ? status : null;
+  if (!normalized) return false;
+  const state = await readState();
+  if (!state) return false;
+
+  // Do not acknowledge a report for an observation that has already changed.
+  const currentStatus = state.configured === false
+    ? "recovered"
+    : observationStatus(state.reachable);
+  if (currentStatus !== normalized) return false;
+
+  await writeState({
+    ...state,
+    reportedStatus: normalized,
+    reportedAt: at,
+  });
+  return true;
 }
