@@ -21,6 +21,7 @@
     "websocketUrl": "",
     "failover": {
       "failureLimit": 3,
+      "recoveryCheckIntervalMs": 30000,
       "websocketActivationDelayMs": 1500,
       "fcm": {
         "failureLimit": 3
