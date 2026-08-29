@@ -6,22 +6,79 @@ Personal-use, sideloaded Android app for the Teams monitoring system in this rep
 
 The native main screen shows WebSocket connection status, server URL, the last alert, quick alert toggles, and buttons for the web dashboard, Settings, battery-optimization exemption, alarm testing, and diagnostics export.
 
-The server supports two mutually exclusive phone transports: WebSocket and Firebase Cloud Messaging (FCM). The server-side `alerts.transport` value is authoritative. In WebSocket mode the foreground `AlertService` maintains the connection; in FCM mode the app stops that service and receives high-priority data messages through `FirebaseMessagingService`.
+The server has two alert-delivery capabilities: WebSocket and Firebase Cloud Messaging (FCM). `alerts.transport` selects the **preferred** transport, not an exclusive mode. The alternate path can be used for an individual failed alert or as a temporary fallback after repeated preferred-path failures.
 
-For either mode, configure the server connection used by the dashboard, transport sync, and FCM-token registration:
+For either path, configure the server/control connection:
 
 ```text
 Server URL: https://gui.guymichaely.com
 Access token: same value as GUI_TOKEN on the laptop
 ```
 
-The app converts that to the WSS alert endpoint and supplies the token as the WebSocket access token. Plain HTTP is intentionally unsupported.
+The app converts that URL to the WSS alert endpoint when WebSocket is wanted and supplies the token as the WebSocket access token. Plain HTTP is intentionally unsupported.
 
 Alerts can show a notification and/or play the alarm stream. Do Not Disturb bypass requires notification-policy access. There is deliberately no boot receiver; after reboot, open the app once.
 
+## Delivery and recovery behavior
+
+### FCM
+
+FCM uses Firebase Installation IDs (FIDs), not the deprecated registration-token lifecycle, for new registrations:
+
+- the manifest opts into FID-based FCM registration;
+- `FirebaseMessagingService.onRegistered(...)` persists the latest FID immediately;
+- Firebase auto-init owns routine FCM registration freshness;
+- `FirebaseMessaging.register()` is used only as an explicit recovery action;
+- the FID is uploaded to the PC and, when configured, mirrored to the optional control Worker;
+- failed phone→PC registration uploads are retried durably with WorkManager.
+
+The PC stores the current registration in gitignored `data/fcm-registration.json`. The old `data/fcm-device-token.txt` path exists only for migration compatibility.
+
+Normal FCM alert delivery goes directly from the orchestrator to Google FCM, so the GUI/tunnel do not need to be running once the PC has a usable FID.
+
+### WebSocket fallback
+
+The foreground `AlertService` maintains `/ws/alerts` whenever WebSocket is the preferred transport or recovery state asks for it. With FCM primary, WebSocket can remain off normally and start temporarily when FCM is degraded.
+
+The existing WebSocket behavior remains:
+
+- OkHttp ping every 30 seconds;
+- exponential reconnect delay capped at 60 seconds;
+- `START_STICKY` foreground service;
+- no boot receiver.
+
+Android background-start restrictions can prevent an immediate foreground-service start in some circumstances; recovery state remains persisted and is retried through later control/app activity rather than breaking FCM registration recovery.
+
+### Duplicate protection
+
+Every server alert has an `alertId`. The app retains recent IDs and suppresses duplicate alarm/notification delivery across FCM and WebSocket. Transport-control metadata is still applied before duplicate suppression, which lets a duplicate FCM recovery copy shut temporary WebSocket down without ringing twice.
+
+## Control synchronization and optional Worker
+
+The phone periodically reconciles control state with WorkManager, approximately every 15 minutes:
+
+1. try the direct PC `/api/control/sync` endpoint;
+2. if unavailable and the optional Worker is configured, use the Worker;
+3. when direct communication succeeds, also mirror current phone state to the Worker so its independent copy stays current.
+
+This is a safety/recovery channel, not the normal alert-delivery path.
+
+The optional Cloudflare Worker can tell the phone to re-register FCM or start/stop temporary WebSocket, and can independently report loss of the PC/orchestrator heartbeat. It is disabled by default in the server configuration.
+
+## PC watchdog
+
+Settings include a local policy for a missing PC/orchestrator heartbeat reported by the optional Worker:
+
+- **Show notification** — default;
+- **Alarm immediately**;
+- **Alarm after delay** — delay is configurable in minutes;
+- **Ignore**.
+
+A recovery event clears the incident, cancels any pending delayed alarm, and stops a watchdog alarm that is currently playing. Heartbeat state can arrive either by high-priority FCM health push or through the periodic Worker safety synchronization; both use the same incident handler.
+
 ## Diagnostics
 
-The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, 15-minute service heartbeats, WebSocket connection/reconnect/failure details, received alert metadata, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
+The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, WebSocket connection/reconnect/failure details, FID registration/synchronization, recovery/control activity, received alert metadata, heartbeat incidents, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
 
 Tap **Copy diagnostics** on the main screen to copy a report containing the recent log plus app/device version, current network state, battery-optimization status, notification permission/state, DND access, and relevant alert settings. Paste that report into a bug report or debugging chat.
 
@@ -42,6 +99,11 @@ Alert settings:
 - Use system alarm ringtone
 - Alarm volume
 - Alarm duration
+
+PC watchdog settings:
+
+- Heartbeat-loss policy
+- Delayed-alarm wait in minutes
 
 The main screen's **Test alarm** button uses the current alarm settings and becomes **Stop alarm** while the sound is playing.
 
@@ -89,23 +151,19 @@ The local GUI also serves the current debug build at `/app-debug.apk` when that 
 
 ## Testing
 
-The intended remote connection path is the Cloudflare tunnel. Run the GUI and tunnel, then set the app's server URL to `https://gui.guymichaely.com` and use the same access token as the server's `GUI_TOKEN`.
+For WebSocket testing, run the GUI and tunnel, set the app's server URL to `https://gui.guymichaely.com`, and use the same access token as `GUI_TOKEN`.
 
-Saving connection settings reconnects the alert listener immediately. The dashboard WebView uses the same server URL.
+Saving connection settings immediately runs a control synchronization and applies the current WebSocket policy. The dashboard WebView uses the same server URL.
+
+FCM testing requires both Firebase configuration files:
+
+- `android-app/app/google-services.json` — Android Firebase project configuration;
+- `config/fcm-service-account.json` — PC credential used to call the FCM HTTP v1 API.
+
+Both are intentionally untracked. GitHub Actions can embed `google-services.json` by restoring `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`. If that secret is absent, the APK still builds and the WebSocket path remains available, but Firebase initialization is unavailable in that APK.
 
 ## Do Not Disturb / battery behavior
 
 The `alerts2` notification channel is deliberately silent; alarm audio is played through `MediaPlayer` on the alarm stream. The app requests notification-policy access so alarms can work under DND.
 
 Use **Disable battery optimization** once after installation. OEM background-process policies can still terminate the foreground service, and there is deliberately no boot receiver.
-
-## Firebase Cloud Messaging
-
-FCM uses the same `AlertNotifier.alert(...)` path as WebSocket alerts. The phone registration token is POSTed to `/api/fcm/register` and stored locally on the laptop under gitignored `data/fcm-device-token.txt`; it is not tracked in `config.json`.
-
-Firebase configuration files are intentionally untracked:
-
-- `android-app/app/google-services.json` — Android Firebase project configuration.
-- `config/fcm-service-account.json` — server credential used to call the FCM HTTP v1 API.
-
-GitHub Actions can embed `google-services.json` by restoring the repository secret `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`. If that secret is absent, the APK still builds and WebSocket mode continues to work, but FCM initialization is unavailable in that APK.
