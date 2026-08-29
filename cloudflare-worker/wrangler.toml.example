@@ -1,14 +1,16 @@
 name = "teams-monitor-control"
 main = "src/index.js"
-compatibility_date = "2026-08-28"
+compatibility_date = "2026-08-29"
 
 [[durable_objects.bindings]]
 name = "CONTROL"
 class_name = "ControlState"
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["ControlState"]
+# New Workers should use declarative class lifecycle rather than legacy
+# migrations. New Durable Object namespaces must use SQLite storage.
+[exports.ControlState]
+type = "durable-object"
+storage = "sqlite"
 
 # Configure these as Wrangler secrets, not vars:
 #   CONTROL_TOKEN           same value used by GUI_TOKEN on PC/phone
