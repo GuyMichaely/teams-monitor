@@ -6,7 +6,7 @@ import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 import { injectObservability } from "./gui-observability-ui.mjs";
-import { controlState, saveFcmRegistration } from "./alert-runtime.mjs";
+import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
 import { loadConfig } from "./context.mjs";
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
@@ -49,6 +49,7 @@ export function startGui(config) {
   server.removeListener("request", runtimeHandler);
   const g = config?.gui || {};
   const token = process.env[g.authTokenEnv || "GUI_TOKEN"] || null;
+  const primaryTransport = config?.alerts?.transport || "websocket";
 
   logDiagnostic("gui_started", {
     pid: process.pid,
@@ -78,6 +79,9 @@ export function startGui(config) {
     }
 
     logDiagnostic("ws_connected", { ...meta, tokenConfigured: !!token, tokenSupplied });
+    recordTransportSuccess("websocket", primaryTransport).catch((e) => {
+      logDiagnostic("ws_state_update_failed", { ...meta, error: e.message });
+    });
     socket.on("error", (e) => logDiagnostic("ws_socket_error", { ...meta, error: e.message }));
     socket.once("close", (hadError) => {
       logDiagnostic("ws_disconnected", {
