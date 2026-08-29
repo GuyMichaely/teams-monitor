@@ -156,7 +156,7 @@ object NotificationTransport {
                     )
                     if (it.isSuccessful) {
                         runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
-                            applyHeartbeatIncident(context, body, "worker-mirror")
+                            applyHealthIncidents(context, body, "worker-mirror")
                             clearConfirmedProbeAck(context, controlState(body), "worker-mirror")
                         }
                     }
@@ -177,7 +177,7 @@ object NotificationTransport {
                 )
                 if (response.isSuccessful) {
                     runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
-                        applyHeartbeatIncident(context, body, "worker-mirror")
+                        applyHealthIncidents(context, body, "worker-mirror")
                         clearConfirmedProbeAck(context, controlState(body), "worker-mirror")
                     }
                 }
@@ -219,7 +219,7 @@ object NotificationTransport {
         raw.optJSONObject("pc")?.optJSONObject("state") ?: raw
 
     private fun applyControlResponse(context: Context, raw: JSONObject, source: String) {
-        applyHeartbeatIncident(context, raw, source)
+        applyHealthIncidents(context, raw, source)
 
         // Direct server responses expose state at the root. Worker responses
         // return the latest PC sync under pc.state.
@@ -266,16 +266,23 @@ object NotificationTransport {
         }
     }
 
-    private fun applyHeartbeatIncident(context: Context, raw: JSONObject, source: String) {
-        val heartbeat = raw.optJSONObject("incidents")?.optJSONObject("heartbeat") ?: return
-        val status = heartbeat.optString("status", "")
-        if (status.isBlank()) return
-        HealthIncidentManager.handleHeartbeat(
-            context,
-            status = status,
-            at = if (heartbeat.has("at")) heartbeat.optString("at") else null,
-            source = source
-        )
+    private fun applyHealthIncidents(context: Context, raw: JSONObject, source: String) {
+        val incidents = raw.optJSONObject("incidents") ?: return
+        listOf(
+            "heartbeat" to HealthIncidentManager.INCIDENT_PC_HEARTBEAT,
+            "tunnel" to HealthIncidentManager.INCIDENT_PUBLIC_TUNNEL
+        ).forEach { (key, incident) ->
+            val item = incidents.optJSONObject(key) ?: return@forEach
+            val status = item.optString("status", "")
+            if (status.isBlank()) return@forEach
+            HealthIncidentManager.handleIncident(
+                context,
+                incident = incident,
+                status = status,
+                at = if (item.has("at")) item.optString("at") else null,
+                source = source
+            )
+        }
     }
 
     private const val PERIODIC_WORK_NAME = "control-state-sync"
