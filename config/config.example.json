@@ -22,6 +22,7 @@
     "failover": {
       "failureLimit": 3,
       "recoveryCheckIntervalMs": 30000,
+      "probeAckTimeoutMs": 60000,
       "websocketActivationDelayMs": 1500,
       "fcm": {
         "failureLimit": 3
@@ -39,6 +40,7 @@
   "controlWorker": {
     "enabled": false,
     "url": "",
+    "publicHealthUrl": "",
     "authTokenEnv": "GUI_TOKEN",
     "heartbeatIntervalMs": 60000,
     "heartbeatTimeoutMs": 180000
