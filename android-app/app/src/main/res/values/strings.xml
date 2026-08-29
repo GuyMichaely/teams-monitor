@@ -18,6 +18,9 @@
     <string name="save">Save</string>
     <string name="section_connection">Connection</string>
     <string name="section_alerts">Alerts</string>
+    <string name="section_watchdog">PC watchdog</string>
+    <string name="heartbeat_policy_label">If the PC/orchestrator heartbeat disappears</string>
+    <string name="heartbeat_delay_label">Delayed alarm wait (minutes)</string>
     <string name="alarm_enabled">Play alarm sound</string>
     <string name="notif_enabled">Show notification</string>
     <string name="alarm_screen_on">Alarm even when screen is on</string>
@@ -29,4 +32,17 @@
     <string name="dnd_fix">Allow</string>
     <string name="channel_alerts">Alerts</string>
     <string name="channel_service">Alert listener</string>
+
+    <string-array name="heartbeat_policy_labels">
+        <item>Show notification</item>
+        <item>Alarm immediately</item>
+        <item>Alarm after delay</item>
+        <item>Ignore</item>
+    </string-array>
+    <string-array name="heartbeat_policy_values">
+        <item>notify</item>
+        <item>alarm_now</item>
+        <item>alarm_after_delay</item>
+        <item>ignore</item>
+    </string-array>
 </resources>
