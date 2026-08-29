@@ -10,6 +10,7 @@ export const FCM_REGISTRATION_FILE = join(DATA_DIR, "fcm-registration.json");
 export const LEGACY_FCM_TOKEN_FILE = join(DATA_DIR, "fcm-device-token.txt");
 export const ALERT_RUNTIME_FILE = join(DATA_DIR, "alert-runtime.json");
 const ALERT_RUNTIME_LOCK = join(DATA_DIR, "alert-runtime.lock");
+const FCM_REGISTRATION_LOCK = join(DATA_DIR, "fcm-registration.lock");
 
 const iso = () => new Date().toISOString();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -47,32 +48,36 @@ async function atomicWriteJson(path, value) {
   await rename(tmp, path);
 }
 
-async function withRuntimeLock(fn) {
+async function withFileLock(lockPath, label, fn) {
   await mkdir(DATA_DIR, { recursive: true });
   let handle = null;
   for (let attempt = 0; attempt < 80; attempt++) {
     try {
-      handle = await open(ALERT_RUNTIME_LOCK, "wx", 0o600);
+      handle = await open(lockPath, "wx", 0o600);
       break;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       // A hard-killed process can leave the lock file behind.
       if (attempt % 20 === 19) {
         try {
-          const s = await stat(ALERT_RUNTIME_LOCK);
-          if (Date.now() - s.mtimeMs > 10_000) await unlink(ALERT_RUNTIME_LOCK);
+          const s = await stat(lockPath);
+          if (Date.now() - s.mtimeMs > 10_000) await unlink(lockPath);
         } catch { /* another process released it */ }
       }
       await sleep(25);
     }
   }
-  if (!handle) throw new Error("timed out acquiring alert runtime lock");
+  if (!handle) throw new Error(`timed out acquiring ${label} lock`);
   try {
     return await fn();
   } finally {
     await handle.close().catch(() => {});
-    await unlink(ALERT_RUNTIME_LOCK).catch(() => {});
+    await unlink(lockPath).catch(() => {});
   }
+}
+
+async function withRuntimeLock(fn) {
+  return await withFileLock(ALERT_RUNTIME_LOCK, "alert runtime", fn);
 }
 
 export async function readFcmRegistration() {
@@ -94,26 +99,48 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
     throw Object.assign(new Error("invalid FCM registration identifier"), { httpCode: 400 });
   }
 
-  const registration = {
-    kind,
-    value,
-    source,
-    observedAt: observedAt || iso(),
-    updatedAt: iso(),
-  };
-  await atomicWriteJson(FCM_REGISTRATION_FILE, registration);
+  const incomingObservedAt = observedAt || iso();
+  let registration;
+  let accepted = false;
 
-  // Keep the old presence check/UI working during the FID migration. New sends
-  // read FCM_REGISTRATION_FILE and know whether this value is a fid or token.
-  await writeFile(LEGACY_FCM_TOKEN_FILE, value + "\n", { mode: 0o600 });
+  await withFileLock(FCM_REGISTRATION_LOCK, "FCM registration", async () => {
+    const current = await readJson(FCM_REGISTRATION_FILE);
+    if (current?.value && current.value !== value) {
+      const incomingAt = Date.parse(incomingObservedAt);
+      const currentAt = Date.parse(current.observedAt || current.updatedAt || 0);
+      // Network callbacks/WorkManager attempts can arrive out of order. Once we
+      // have a timestamped registration, an older or undated different FID may
+      // never replace it.
+      if (Number.isFinite(currentAt) && (!Number.isFinite(incomingAt) || incomingAt < currentAt)) {
+        registration = { ...current, ignoredStale: true };
+        return;
+      }
+    }
 
-  await updateAlertRuntime(null, (runtime) => {
-    runtime.fcm.registration = "synced";
-    runtime.fcm.lastError = null;
-    runtime.fcm.nextAttemptAt = null;
-    runtime.fcm.backoffMs = 0;
-    return runtime;
+    registration = {
+      kind,
+      value,
+      source,
+      observedAt: incomingObservedAt,
+      updatedAt: iso(),
+    };
+    await atomicWriteJson(FCM_REGISTRATION_FILE, registration);
+
+    // Keep the old presence check/UI working during the FID migration. New sends
+    // read FCM_REGISTRATION_FILE and know whether this value is a fid or token.
+    await writeFile(LEGACY_FCM_TOKEN_FILE, value + "\n", { mode: 0o600 });
+    accepted = true;
   });
+
+  if (accepted) {
+    await updateAlertRuntime(null, (runtime) => {
+      runtime.fcm.registration = "synced";
+      runtime.fcm.lastError = null;
+      runtime.fcm.nextAttemptAt = null;
+      runtime.fcm.backoffMs = 0;
+      return runtime;
+    });
+  }
   return registration;
 }
 
@@ -257,9 +284,10 @@ export async function newerWorkerRegistration(phone) {
   const local = await readFcmRegistration();
   const localAt = Date.parse(local?.observedAt || local?.updatedAt || 0);
   if (local?.kind === "fid" && local.value === fid) return false;
+  if (local && !Number.isFinite(remoteAt)) return false;
   if (Number.isFinite(remoteAt) && Number.isFinite(localAt) && remoteAt < localAt) return false;
-  await saveFcmRegistration({ fid, source: "worker", observedAt: phone.registrationUpdatedAt || null });
-  return true;
+  const saved = await saveFcmRegistration({ fid, source: "worker", observedAt: phone.registrationUpdatedAt || phone.updatedAt || null });
+  return !saved?.ignoredStale;
 }
 
 export function registrationFileExists() {
