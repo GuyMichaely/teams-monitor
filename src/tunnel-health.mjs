@@ -5,6 +5,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
+import { publicHealthUrl } from "./tunnel-config.mjs";
 
 export const TUNNEL_HEALTH_FILE = join(DATA_DIR, "tunnel-health.json");
 let lastCheckAt = 0;
@@ -28,7 +29,7 @@ function observationStatus(reachable) {
 export async function checkPublicTunnel(config, { force = false } = {}) {
   const w = config?.controlWorker || {};
   const intervalMs = Math.max(Number(w.heartbeatIntervalMs) || 60_000, 10_000);
-  const url = String(w.publicHealthUrl || "").trim();
+  const url = publicHealthUrl(config);
   const now = Date.now();
   if (!force && now - lastCheckAt < intervalMs) return null;
   lastCheckAt = now;
