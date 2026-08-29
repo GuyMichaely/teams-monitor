@@ -29,13 +29,20 @@ async function readJsonBody(req, cap = 16_384) {
   catch { throw Object.assign(new Error("invalid JSON"), { httpCode: 400 }); }
 }
 
-function diagnostics(limit) {
+async function diagnostics(limit) {
   const events = tailLines(join(DATA_DIR, "gui-diagnostics.jsonl"), limit).map((line) => {
     try { return JSON.parse(line); } catch { return { raw: redactSecrets(line) }; }
   });
+  let alertDelivery = null;
+  try {
+    alertDelivery = await controlState(await loadConfig());
+  } catch (e) {
+    alertDelivery = { error: e.message };
+  }
   return {
     generatedAt: new Date().toISOString(),
     serverPid: process.pid,
+    alertDelivery,
     events,
     tunnelLog: tailLines(TUNNEL_LOG, limit).map(redactSecrets),
     tunnelOutLog: tailLines(TUNNEL_OUT_LOG, limit).map(redactSecrets),
@@ -100,7 +107,7 @@ export function startGui(config) {
         return sendJson(res, 401, { ok: false, error: "unauthorized" });
       }
       const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 120, 1), 500);
-      return sendJson(res, 200, diagnostics(limit));
+      return sendJson(res, 200, await diagnostics(limit));
     }
 
     if (url.pathname === "/api/alerts" || url.pathname === "/api/fcm/register" || url.pathname === "/api/control/sync" || url.pathname === "/api/tunnel/start" || url.pathname === "/api/tunnel/stop") {
