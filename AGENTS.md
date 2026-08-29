@@ -1,290 +1,150 @@
 # AGENTS.md — project knowledge transfer
 
-Read this before touching anything. It captures architecture, hard-won gotchas,
-operational procedures, and user decisions that are not necessarily obvious from
-individual files.
+Read this before touching anything. It captures architecture, operational procedures, and user decisions that are not necessarily obvious from individual files.
 
 ## What this is
 
-A personal Microsoft Teams monitoring/alerting system. It drives the new Teams
-desktop client (MSIX/WebView2) over the Chrome DevTools Protocol, triages incoming
-messages with an LLM, and alerts the user's Android phone. Single user, runs on a
-Windows laptop, not a product. Priorities: reliable alerting > cautious automation >
-elegance.
+A personal Microsoft Teams monitoring/alerting system. It drives the new Teams desktop client (MSIX/WebView2) over the Chrome DevTools Protocol, triages incoming messages with an LLM, and alerts the user's Android phone. Single user, runs on a Windows laptop, not a product. Priorities: reliable alerting > cautious automation > elegance.
 
 ## Architecture map
 
 ```text
 src/
-  teams.mjs         CDP core. Connects to Teams' WebView2 debug port (9222), restarts
-                    Teams with the port if missing. listChats/setUnreadFilter/openChat/
-                    readOpenChat/sendMessage/watchMessages. Selectors are data-tid-based
-                    and can break on Teams updates.
-  monitor.mjs       Unread detection via Teams' own Unread rail filter + open/read chat.
-                    The unread filter is deliberately left on during monitor runs.
-  brain.mjs         Decision contract + Gemini provider. Message content is treated as
-                    untrusted prompt data; preserve that isolation.
-  orchestrator.mjs  Poll → read → dedupe → brain.decide → act → log. Writes a heartbeat
-                    every real loop tick; exports hardStop() and isAddressed().
-  actions.mjs       Action registry. alert_phone is registered here.
-  alerts.mjs        Preferred/fallback phone delivery over FCM and WebSocket. Assigns
-                    alertId, performs per-alert fallback, persisted failover/recovery,
-                    FCM error classification, receipt probes and Retry-After/backoff.
-  alert-runtime.mjs Shared gitignored delivery state: active/preferred transport,
-                    failure counts, FCM registration/FID generation, retry backoff,
-                    receipt-probe/ACK state and websocketWanted. Cross-process lock +
-                    atomic writes.
-  worker-control.mjs Optional Cloudflare Worker control-plane client. Mirrors PC state,
-                    heartbeat and phone registration/ACK state when enabled.
-  tunnel-health.mjs Public tunnel self-check used when Worker is disabled.
-  phone-health.mjs  High-priority direct FCM health transition sender.
-  gui-server*.mjs   Dashboard SPA + JSON API + WebSocket hub (/ws/alerts) + APK download
-                    + diagnostics + profile editor.
-  state.mjs         state.json + activity.jsonl audit under gitignored data/.
-  context.mjs       Loads gitignored config/config.json + context/user-profile.md,
-                    bootstrapping them from tracked examples when missing.
-  cli.mjs           run / stop / gui / catchup / chats / unread / readchat / read / send /
-                    watch. run also schedules health monitoring and transport recovery.
-android-app/        Kotlin companion. FID registration, FCM, WS fallback, WorkManager
-                    control sync, alertId dedupe, health policy, diagnostics.
-cloudflare-worker/  Optional independent control/recovery plane using a SQLite Durable
-                    Object. Disabled by default and not part of normal Teams alert data.
-tfs-agent/          VM-side TFS worker; code-complete but not live-tested/deployed.
+  teams.mjs         Teams WebView2/CDP core on port 9222.
+  monitor.mjs       Unread detection + chat reading.
+  brain.mjs         Gemini decision layer.
+  orchestrator.mjs  Poll → read → dedupe → decide → act → log. Writes real tick heartbeat.
+  actions.mjs       Action registry including alert_phone.
+  alerts.mjs        Preferred/fallback FCM + WebSocket delivery and recovery.
+  alert-runtime.mjs Persisted transport/FID generation/failure/backoff state.
+  worker-control.mjs Optional Cloudflare Worker control-plane client.
+  tunnel-health.mjs PC-side public tunnel probe when Worker is disabled.
+  phone-health.mjs  Direct high-priority FCM health-transition sender.
+  gui-server*.mjs   Dashboard, API, WebSocket alert hub and diagnostics.
+  state.mjs         Gitignored runtime state/activity under data/.
+  context.mjs       Loads ignored live config/profile, bootstraps from examples.
+android-app/        Kotlin companion: FID, FCM, WS fallback, WorkManager, health policy.
+cloudflare-worker/  Optional SQLite Durable Object control/watchdog plane.
 scripts/
-  start-stack.ps1   Canonical all-in-one startup for GUI/orchestrator/cloudflared.
-  smoke-gui.mjs     Real Bun GUI/WebSocket runtime smoke.
-  smoke-alert-state.mjs Persisted delivery/failover/backoff/generation/ACK smoke.
-config/
-  config.example.json  Tracked defaults copied to ignored config/config.json.
-context/
-  user-profile.example.md Tracked starter copied to ignored user-profile.md.
-.github/workflows/
-  android-apk.yml              builds/publishes Android debug APK.
-  bun-smoke.yml                Windows Bun + alert state + real WS smoke.
-  cloudflare-worker-smoke.yml  Wrangler dry-run; never deploys.
-FEATURES-TODO.md    Backlog/design notes.
+  smoke-gui.mjs         Real Bun GUI/WebSocket smoke.
+  smoke-alert-state.mjs Delivery/failover/backoff/FID-generation smoke.
+  smoke-health.mjs      Public tunnel health-transition smoke.
 ```
 
-## Current phone-delivery architecture
+## Phone delivery
 
-`config.alerts.transport` is the **preferred primary**, not an exclusive mode.
-Both FCM and WebSocket are delivery capabilities.
+`config.alerts.transport` is the preferred primary, not an exclusive mode. Both FCM and WebSocket remain available.
 
-### FCM
+### FCM registration
 
 - New registrations use Firebase Installation IDs (FIDs).
-- Android opts into the new FID registration system and handles
-  `FirebaseMessagingService.onRegistered(fid)`.
-- Firebase auto-init owns routine registration freshness; explicit
-  `FirebaseMessaging.register()` is a recovery operation only.
-- The phone persists the FID before network sync, uploads it to the PC and durably
-  retries failed direct uploads with WorkManager.
-- PC stores current registration in `data/fcm-registration.json` with a monotonic
-  generation. In-flight FCM results are tagged with the generation they used so stale
-  success/failure cannot mutate a newer registration.
-- `data/fcm-device-token.txt` remains only as a one-release/deprecated-token migration
-  path. Do not build new logic around it.
-- PC sends directly to Firebase HTTP v1 with `message.fid` for FIDs.
-- Normal FCM delivery does not need the GUI or Cloudflare Tunnel once the PC has the FID.
+- Android opts into FID registration and handles `FirebaseMessagingService.onRegistered(fid)`.
+- Firebase auto-init owns routine registration freshness; explicit `FirebaseMessaging.register()` is only a recovery action.
+- Phone persists FID before network sync, sends it direct to PC, durably retries failed direct uploads with WorkManager, and mirrors it to the optional Worker.
+- PC stores current registration in `data/fcm-registration.json`.
+- `data/fcm-device-token.txt` exists only as deprecated-token migration compatibility. Do not build new logic around it.
+- Each stored registration has a monotonic generation. Every FCM send result is associated with the generation it used; stale results from an older FID must not alter newer FID health.
+- PC sends raw Firebase HTTP v1 using `message.fid` for FIDs.
 
 ### WebSocket
 
-- Orchestrator POSTs to local GUI `/api/alerts`; GUI broadcasts `/ws/alerts`.
-- A remote phone reaches that WebSocket through the existing Cloudflare Tunnel.
-- If WebSocket is primary, Android keeps the foreground `AlertService` running.
-- If FCM is primary, WS can stay cold and start temporarily for recovery/fallback.
-- Existing reconnect policy: OkHttp ping 30s, exponential reconnect 1/2/4/... capped
-  at 60s, `START_STICKY` foreground service.
-- There is deliberately no boot receiver; after reboot the app must be opened once.
+- Orchestrator POSTs alerts to local GUI `/api/alerts`; GUI broadcasts `/ws/alerts`.
+- Remote phone reaches that socket through the existing Cloudflare Tunnel.
+- If WebSocket is preferred, Android keeps the foreground `AlertService` running.
+- If FCM is preferred, WebSocket stays cold normally and can run temporarily for fallback/recovery.
+- Reconnect is exponential 1/2/4/... seconds capped at 60 seconds with 30-second OkHttp pings.
+- No Android boot receiver by deliberate choice; after phone reboot, open the app once.
 
-### Failover/recovery
+### Failover and recovery
 
-- Every alert gets an `alertId`; Android dedupes recent IDs across both transports.
-- In healthy/retrying state, preferred transport is tried first. On failure the
-  alternate can carry that individual alert immediately.
-- Configurable consecutive preferred failures enter persisted `fallback` state.
-- In fallback, alternate transport is tried first; preferred may then be tested with
-  the same alertId, so a recovery copy cannot double-ring.
-- WebSocket primary returns to `primary_working` as soon as a usable connection/send is
-  established.
-- FCM is stricter once it is degraded/fallen back: a successful HTTP-v1 send proves
-  backend acceptance but does **not** release temporary WS. A periodic silent FCM
-  receipt probe is sent instead. Android persists the probe ID on receipt and returns
-  it in control state. Only a matching ACK for the currently pending probe and current
-  registration generation restores FCM `primary_working` and turns temporary WS off.
-- Android sends the ACK immediately and schedules one short network-constrained retry;
-  the ACK remains persisted until PC state confirms that exact probe was consumed.
-- `alerts.failover.recoveryCheckIntervalMs` controls probe cadence and
-  `alerts.failover.probeAckTimeoutMs` controls how long a pending probe is awaited before
-  replacement.
-- Definitive FCM registration errors bypass the transient failure budget.
-- FCM 429/5xx failures persist retry/backoff state and honor `Retry-After` where
-  available. Alerts during backoff use alternate delivery without manufacturing extra
-  FCM failure counts.
+- Every alert gets an `alertId`; Android dedupes recent IDs across FCM and WebSocket.
+- In healthy/retrying state, preferred transport is attempted first. If that alert fails, the alternate may carry it immediately.
+- Configurable consecutive failures enter persisted `fallback` state.
+- In fallback, alternate is attempted first and preferred is then tested with the same `alertId`.
+- **User decision: one successful attempt on the configured primary is enough to restore it immediately.** Do not add success-count or receipt-ACK hysteresis unless the user explicitly changes this policy.
+- For FCM, recovery success must belong to the current registration generation; an old in-flight result is ignored.
+- A periodic silent FCM recovery control send runs while FCM is preferred and degraded (`alerts.failover.recoveryCheckIntervalMs`, 30s example). A successful current-generation send returns to `primary_working` and clears temporary WebSocket.
+- Definitive invalid FCM registration bypasses transient retry threshold and enters FID repair/fallback immediately.
+- FCM 429/5xx failures persist Retry-After/backoff state. Alerts during backoff use alternate delivery without manufacturing more FCM failure counts.
 
-Important FCM error rule: **do not equate arbitrary HTTP 404 with an invalid phone
-registration**. Inspect FCM-specific error details. `UNREGISTERED` is the definitive
-stale registration signal. `INVALID_ARGUMENT` is registration-specific only when the
-FCM error detail says so / payload validity is otherwise established.
+FCM error rule: never equate arbitrary HTTP 404 with invalid registration. `UNREGISTERED` is definitive. `INVALID_ARGUMENT` is registration-specific only when the FCM-specific detail indicates it and the response is not an explicit `google.rpc.BadRequest` payload error.
 
-## Optional Cloudflare control Worker
+## Optional Cloudflare Worker
 
-`cloudflare-worker/` is optional and `controlWorker.enabled` defaults false.
-It is a control/recovery/watchdog plane, not the normal Teams-message alert path.
+`cloudflare-worker/` is optional and `controlWorker.enabled` defaults false. It is a small control/recovery/watchdog plane, not the normal Teams-alert message path.
 
 When enabled:
 
-- PC mirrors alert/control state and its real orchestrator heartbeat.
-- phone mirrors current FID, WS state and pending FCM probe ACK even when direct PC sync
-  succeeds;
-- Worker Durable Object tracks PC/phone state, retained ACK and health incidents;
-- Worker alarm detects a stale PC heartbeat independently of the home tunnel;
-- Worker independently probes `controlWorker.publicHealthUrl` so a live PC with a dead
-  tunnel is distinguishable from a dead/wedged orchestrator;
-- Worker can send high-priority FCM `control`/`health` messages to the phone;
-- phone still has a ~15-minute WorkManager safety reconciliation that tries direct PC
-  first, then Worker when necessary.
+- PC mirrors transport/control state and a heartbeat gated by freshness of `data/heartbeat.json`.
+- phone mirrors current FID and WebSocket state even when direct PC sync succeeds.
+- Worker Durable Object tracks PC/phone state and health incidents.
+- Worker alarm detects missing orchestrator heartbeat independently of the home tunnel.
+- Worker probes `controlWorker.publicHealthUrl` from outside the home network, distinguishing PC alive/tunnel dead from PC dead.
+- Worker can issue high-priority FCM control and health messages.
+- phone still performs roughly 15-minute WorkManager safety reconciliation: direct PC first, Worker fallback; direct success also mirrors Worker.
 
-Heartbeat semantics matter: Worker heartbeat is gated by freshness of the actual
-`data/heartbeat.json` written by orchestrator ticks. A live but wedged CLI process must
-not make the Worker think automation is healthy.
+A live-but-wedged CLI process must not keep Worker heartbeat alive; only a fresh orchestrator tick counts.
 
-If Worker is disabled, `src/tunnel-health.mjs` self-probes `publicHealthUrl` from the PC
-and sends transition-only tunnel health messages by FCM when possible. This keeps
-basic tunnel diagnosis but is not as independent as an outside Worker probe.
+If Worker is disabled, `src/tunnel-health.mjs` self-probes `publicHealthUrl` from the PC and sends tunnel transition messages over FCM when possible. This preserves tunnel diagnosis but is less independent than the outside Worker probe.
 
-Worker storage/config:
+Worker secrets: `CONTROL_TOKEN`, `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. CI performs only a Wrangler dry run and never deploys.
 
-- `ControlState extends DurableObject`.
-- new namespace uses SQLite storage.
-- tracked `wrangler.toml.example` uses declarative `[exports.ControlState]`.
-- secrets: `CONTROL_TOKEN`, `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`,
-  `FIREBASE_PRIVATE_KEY`.
-- CI only runs `wrangler deploy --dry-run`; it never deploys.
+## Android health behavior
 
-## Android control/health behavior
+PC-heartbeat and public-tunnel incidents are separate state machines using the same user-selected policy:
 
-- `NotificationTransport` runs a roughly 15-minute WorkManager safety sync.
-- direct `/api/control/sync` wins; Worker is fallback. Direct success also mirrors to
-  Worker so the independent shadow remains current.
-- FCM control pushes and Worker-poll state share the same recovery handlers.
-- A received FCM recovery probe persists `fcmProbeAckId`, triggers immediate control
-  sync and schedules one short follow-up sync. Do not clear it merely because a POST
-  succeeded; clear only when returned PC state contains matching `lastAckProbeId`.
-- PC-heartbeat and public-tunnel incidents are separate Android state machines using
-  the same local policy:
-  - `notify` (default)
-  - `alarm_now`
-  - `alarm_after_delay`
-  - `ignore`
-- recovery clears only the matching incident, cancels only its delayed work and stops
-  only health-watchdog audio owned by that incident. It must never silence a Teams
-  alert alarm or another still-active health incident.
+- `notify` (default)
+- `alarm_now`
+- `alarm_after_delay`
+- `ignore`
 
-## Running state & operations
+Recovery clears only the matching incident, cancels only its delayed work and stops only health-watchdog audio owned by that incident. It must not silence a Teams alert alarm or another still-active health incident.
 
-- Automation mode is currently **alert-only**: Gemini decides alarm vs ignore; the
-  orchestrator never sends Teams replies in this mode. Direct 1:1 chats and
-  name-addressed messages have deterministic alarm backstops.
-- Server runtime is **Bun 1.4+**, not Node.
-- Normal interactive startup: `bun run gui`; GUI can start/stop orchestrator and the
-  existing `teams-gui` tunnel.
-- Direct orchestrator: `bun start`.
-- All-in-one launcher: `scripts/start-stack.ps1`.
-- Stop orchestrator: `bun src/cli.mjs stop` or GUI Stop.
-- Starting orchestrator may restart Teams to expose CDP 9222.
-- After server changes, restart the relevant long-running processes so Bun reloads code
-  and `.env`.
-- Orchestrator needs `GUI_TOKEN` too because WS-hub POSTs are authenticated.
+Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker disabled) direct PC FCM tunnel-transition push.
 
-Local Android build:
+## Current operating decisions
 
-```bash
-cd android-app
-export JAVA_HOME="C:/Users/GuyMichaely/projects/teams-monitor/tools/jdk17"
-export ANDROID_HOME="C:/Users/GuyMichaely/projects/teams-monitor/tools/android-sdk"
-export ANDROID_SDK_ROOT="$ANDROID_HOME"
-cmd //c "gradlew.bat assembleDebug --no-daemon"
-```
-
-Preferred Android distribution is the stable `android-latest` GitHub Release. CI uses
-the same debug signing key as local builds via `ANDROID_DEBUG_KEYSTORE_BASE64`.
+- Automation mode is alert-only: Gemini decides alarm vs ignore; orchestrator does not send Teams replies in this mode.
+- Direct 1:1 chats and name-addressed messages have deterministic alarm backstops.
+- Runtime is Bun 1.4+.
+- Normal startup: `bun run gui`; direct orchestrator: `bun start`; all-in-one: `scripts/start-stack.ps1`.
+- `GUI_TOKEN` is the selected GUI/WS/control auth layer; Cloudflare Access was rejected.
+- Task Scheduler/autostart was blocked/rejected. Do not add it back without a new decision.
+- After server changes, restart long-running GUI/orchestrator processes.
 
 ## Hard-won gotchas
 
-1. **Teams unread often does not clear.** `processChat` dedupes latest message against
-   `state.chats[chat].lastSeen`; echoLoop is deliberately exempt.
-2. **Self-chat is the test harness.** `alerts.ignoreAuthors` is currently empty; don't
-   silently restore an ignore entry.
-3. **Orchestrator has died silently before.** Root cause never confirmed. Heartbeat
-   freshness now detects a wedged loop; startup script is still the recovery path.
-4. **Gemini model availability/quota changes.** Current model is
-   `gemini-3.1-flash-lite`.
-5. **Brain → phone alerting is two-layer.** Model decision plus deterministic addressed
-   backstop; preserve both.
-6. **Android notification channels are immutable.** `alerts2` is deliberately silent;
-   MediaPlayer on alarm stream makes the audible alarm.
-7. **ACCESS_NOTIFICATION_POLICY must remain in the manifest** for DND access.
-8. **No Android boot receiver** by deliberate decision.
-9. **Cleartext traffic is disabled** by deliberate decision; HTTP app URLs are unusable.
-10. **Cloudflare Access was rejected.** GUI_TOKEN is the chosen auth layer.
-11. **Task Scheduler/autostart was rejected/blocked.** Do not add it back.
-12. PowerShell via Git Bash can eat `$env:` in double-quoted `-Command` strings.
-13. Capture previous `lastSeen` before `markFirstRead`; it overwrites the field.
-14. Teams sends require focused compose; `sendMessage` returns reason strings rather
-    than throwing.
-15. **Runtime data must never be committed.** `data/` stays ignored; diagnostics redact
-    access tokens.
-16. **Android signing key must stay stable** or updates cannot replace installed APK.
-17. **Android alert reliability is auditable.** Rolling AppLog, WS lifecycle logs,
-    FID/control/recovery/health events and diagnostics report exist.
-18. **Alert IDs are a correctness primitive.** Do not remove cross-transport dedupe if
-    changing failover behavior.
-19. **FID is the current registration architecture.** Do not add new dependencies on
-    deprecated `onNewToken()`/`.token` registration APIs.
-20. **FCM backoff matters.** Honor Retry-After and persisted `nextAttemptAt`; do not make
-    every incoming Teams alert hammer FCM during quota/service failures.
-21. **Worker is optional.** Core FCM/WS operation must remain functional when
-    `controlWorker.enabled=false`.
-22. **Worker never gets Teams message contents in normal operation.** Keep it a small
-    control/recovery plane unless the user explicitly chooses otherwise.
-23. **Firebase acceptance is not FCM recovery proof once fallback is active.** Preserve
-    receipt-probe ACK semantics and registration-generation matching.
-24. **Health incidents are independent.** Do not let tunnel recovery clear heartbeat
-    state, or heartbeat recovery clear tunnel state.
+1. Teams unread often does not clear; `processChat` dedupes latest message against prior `lastSeen`.
+2. Self-chat is a test harness; `alerts.ignoreAuthors` is intentionally empty.
+3. Heartbeat freshness exists because the orchestrator has died/wedged silently before.
+4. Android notification channels are immutable; `alerts2` is deliberately silent and app alarm audio uses MediaPlayer.
+5. `ACCESS_NOTIFICATION_POLICY` must remain for DND behavior.
+6. No Android boot receiver by deliberate choice.
+7. Cleartext Android traffic is disabled.
+8. Runtime data/secrets must never be committed: `data/`, `.env`, live config/profile and Firebase credentials remain ignored.
+9. Android signing key must remain stable so APK updates install over the existing app.
+10. `alertId` dedupe is a correctness primitive for dual-transport attempts.
+11. FID is the current registration architecture; do not add new dependencies on deprecated `onNewToken()`/`.token` APIs.
+12. FCM backoff and registration-generation isolation are correctness requirements.
+13. Worker is optional; core FCM/WS behavior must work with `controlWorker.enabled=false`.
+14. Worker does not receive Teams message contents during normal operation.
+15. Health incidents are independent; recovery of one must not clear another.
+16. One current-generation primary success is the chosen recovery criterion.
 
 ## Secrets inventory
 
-- `.env` (ignored): `GUI_TOKEN`, `GEMINI_API_KEY`.
-- `GUI_TOKEN`: guards GUI `/api/*`, `/ws/alerts`, dashboard overlay; also used as the
-  default Worker control token when Worker is deployed.
-- `GEMINI_API_KEY`: brain provider credential.
-- `config/fcm-service-account.json` (ignored): PC-side Firebase service account.
-- `android-app/app/google-services.json` (ignored): Android Firebase config.
+- `.env`: `GUI_TOKEN`, `GEMINI_API_KEY`.
+- `config/fcm-service-account.json`: PC Firebase service account.
+- `android-app/app/google-services.json`: Android Firebase config.
 - GitHub Actions: `ANDROID_DEBUG_KEYSTORE_BASE64`, `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`.
-- optional Worker secrets listed above; never place them in tracked Wrangler config.
-- `TFS_AGENT_TOKEN`: disabled TFS integration.
+- optional Worker secrets listed above.
 - `~/.cloudflared/`: local tunnel credentials.
 
-## Conventions
+## Conventions / status
 
-- Zero npm dependencies for the main server; Bun 1.4+ uses Node-compatible built-ins.
-- ESM `.mjs`, terse WHY-comments, minimal diffs.
-- Android: plain Views/appcompat + OkHttp + WorkManager; no Compose.
-- Do not commit `data/`, `.env`, live config/profile or Firebase credentials.
-- Live `config/config.json` and `context/user-profile.md` are gitignored and bootstrap
-  from tracked examples. Do not re-track them.
+- Main server intentionally has zero npm dependencies; use Bun/Node-compatible built-ins.
+- ESM `.mjs`, terse WHY-comments; Android uses Views/appcompat + OkHttp + WorkManager.
 - Keep Bun, Android and Worker smoke workflows green when touching their domains.
-
-## Where things stand
-
-- Alert-only automation is the active mode; whitelist is empty.
-- FID + hybrid FCM/WS fallback/recovery, registration-generation isolation and
-  receipt-ACK recovery are implemented.
-- PC heartbeat and public tunnel are separate health signals. Worker-enabled mode probes
-  externally; Worker-disabled mode retains a PC-side tunnel self-check.
-- Optional Cloudflare Worker source/config and dry-run CI are implemented but live
-  deployment/secrets remain an operational step; default config keeps it disabled.
-- A real-phone end-to-end FID/failover/receipt-ACK test is still required after
-  pulling/restarting the PC and installing the latest Android APK.
+- FID + hybrid FCM/WS fallback/recovery, generation isolation, separate heartbeat/tunnel health and optional Worker are implemented.
+- Worker live deployment and real-device FCM/failover tests are operational steps, not CI-proven behavior.
 - TFS integration remains disabled/un-deployed.
