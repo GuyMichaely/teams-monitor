@@ -64,9 +64,10 @@ try {
   assert(state.fcm.backoffMs === 0, "FCM success clears retry backoff");
   assert(state.fcm.nextAttemptAt === null, "FCM success clears next-attempt timestamp");
 
-  state = await markFcmRegistrationSuspect("fcm", "UNREGISTERED");
-  assert(state.delivery.state === "fallback", "invalid FCM registration skips retry threshold");
-  assert(state.fcm.registration === "suspect", "registration marked suspect");
+  // No registration at send time is itself a generation (-1). If a registration
+  // appears before the failure is recorded, that obsolete failure must be ignored.
+  state = await markFcmRegistrationSuspect("fcm", "missing", { registrationGeneration: -1 });
+  assert(state.delivery.state === "fallback", "missing registration enters fallback while still missing");
 
   await saveFcmRegistration({
     fid: "smoke-fid-123456789",
@@ -76,12 +77,60 @@ try {
   let registration = await readFcmRegistration();
   assert(registration?.kind === "fid", "FID registration persisted");
   assert(registration?.value === "smoke-fid-123456789", "FID registration value round-trips");
+  assert(registration?.generation === 1, "first FID gets generation 1");
+  const generation1 = registration.generation;
 
+  state = await recordTransportSuccess("fcm", "fcm", { registrationGeneration: generation1 });
+  assert(state.delivery.state === "primary_working", "current generation can recover FCM");
+
+  // A queued duplicate upload of the same FID must not clear a later
+  // UNREGISTERED result for that same generation.
+  state = await markFcmRegistrationSuspect("fcm", "UNREGISTERED", {
+    registrationGeneration: generation1,
+  });
+  assert(state.fcm.registration === "suspect", "current FID generation can be marked suspect");
+  await saveFcmRegistration({
+    fid: "smoke-fid-123456789",
+    source: "duplicate",
+    observedAt: "2026-08-29T00:00:30.000Z",
+  });
+  registration = await readFcmRegistration();
+  state = await readAlertRuntime("fcm");
+  assert(registration?.generation === generation1, "same FID keeps the same generation");
+  assert(state.fcm.registration === "suspect", "same-FID duplicate does not clear suspect state");
+  assert(state.delivery.state === "fallback", "same-FID duplicate does not leave fallback");
+
+  // A genuinely new FID is a new generation. It can replace registration state,
+  // but fallback stays up until an FCM send to that generation succeeds.
   await saveFcmRegistration({
     fid: "smoke-fid-newer-123456789",
     source: "smoke-newer",
     observedAt: "2026-08-29T00:02:00.000Z",
   });
+  registration = await readFcmRegistration();
+  const generation2 = registration.generation;
+  state = await readAlertRuntime("fcm");
+  assert(generation2 === generation1 + 1, "new FID increments registration generation");
+  assert(state.fcm.registration === "synced", "new FID replaces suspect registration state");
+  assert(state.delivery.state === "fallback", "new FID waits for FCM proof before recovery");
+
+  const staleInvalidation = await markFcmRegistrationSuspect("fcm", "old-send-unregistered", {
+    registrationGeneration: generation1,
+  });
+  state = await readAlertRuntime("fcm");
+  assert(staleInvalidation.ignoredStaleFcmResult === true, "old-generation invalidation is ignored");
+  assert(state.fcm.registration === "synced", "old-generation invalidation cannot poison new FID");
+
+  const staleSuccess = await recordTransportSuccess("fcm", "fcm", {
+    registrationGeneration: generation1,
+  });
+  state = await readAlertRuntime("fcm");
+  assert(staleSuccess.ignoredStaleFcmResult === true, "old-generation success is ignored");
+  assert(state.delivery.state === "fallback", "old-generation success cannot recover new FID");
+
+  state = await recordTransportSuccess("fcm", "fcm", { registrationGeneration: generation2 });
+  assert(state.delivery.state === "primary_working", "new generation success recovers FCM");
+
   const staleResult = await saveFcmRegistration({
     fid: "smoke-fid-stale-123456789",
     source: "smoke-stale",
