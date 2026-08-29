@@ -69,6 +69,7 @@ object FcmRegistration {
         if (prefs.serverUrl.isBlank()) {
             prefs.fcmSyncPending = true
             AppLog.event(app, "fcm_sync_deferred", "reason=server_not_configured")
+            mirrorToWorkerAsync(app, prefs, fid)
             enqueueRetry(app)
             return
         }
@@ -87,6 +88,9 @@ object FcmRegistration {
                     if (it.isSuccessful) {
                         prefs.fcmSyncPending = false
                         AppLog.event(app, "fcm_sync_ok", "path=direct http=${it.code} fidLength=${fid.length}")
+                        // Worker is a shadow control plane, so keep it current even
+                        // when the direct phone->PC path is healthy.
+                        mirrorToWorkerAsync(app, prefs, fid)
                         WorkManager.getInstance(app).cancelUniqueWork(WORK_NAME)
                     } else {
                         prefs.fcmSyncPending = true
@@ -104,13 +108,18 @@ object FcmRegistration {
         val app = context.applicationContext
         val prefs = Prefs(app)
         val fid = prefs.fcmFid
-        if (fid.isBlank() || prefs.serverUrl.isBlank()) return false
+        if (fid.isBlank()) return false
+        if (prefs.serverUrl.isBlank()) {
+            mirrorToWorkerBlocking(app, prefs, fid)
+            return false
+        }
 
         return try {
             client.newCall(directRequest(prefs, fid)).execute().use { response ->
                 if (response.isSuccessful) {
                     prefs.fcmSyncPending = false
                     AppLog.event(app, "fcm_sync_ok", "path=worker-direct http=${response.code} fidLength=${fid.length}")
+                    mirrorToWorkerBlocking(app, prefs, fid)
                     true
                 } else {
                     prefs.fcmSyncPending = true
@@ -209,7 +218,7 @@ object FcmRegistration {
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(context.applicationContext)
-            .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, work)
+            .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, work)
     }
 
     private const val WORK_NAME = "fcm-registration-sync"
