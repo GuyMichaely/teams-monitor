@@ -21,17 +21,15 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Single entry point for raising an alert. Called by the WebSocket path
- * (AlertService) today; a future FirebaseMessagingService should call [alert]
- * too instead of building its own notifications.
- */
+/** Shared notification/alarm path for both FCM and WebSocket delivery. */
 object AlertNotifier {
 
     const val CHANNEL_ALERTS = "alerts2" // v2: silent channel; the app plays the alarm itself
     const val CHANNEL_ALERTS_LEGACY = "alerts"
     const val CHANNEL_SERVICE = "service"
     const val SERVICE_NOTIFICATION_ID = 1
+    const val OWNER_ALERT = "alert"
+    const val OWNER_WATCHDOG = "watchdog"
 
     private val nextId = AtomicInteger(100)
 
@@ -61,6 +59,8 @@ object AlertNotifier {
     }
 
     private var player: MediaPlayer? = null
+    private var playerOwner: String? = null
+    private var playbackGeneration = 0L
     private var volumeObserver: ContentObserver? = null
     private var observerContext: Context? = null
 
@@ -68,8 +68,14 @@ object AlertNotifier {
     @Volatile var onPlaybackChanged: (() -> Unit)? = null
 
     @Synchronized
-    fun playAlarm(context: Context, volume: Float = 1f, durationMs: Long = 8000) {
+    fun playAlarm(
+        context: Context,
+        volume: Float = 1f,
+        durationMs: Long = 8000,
+        owner: String = OWNER_ALERT
+    ) {
         stopAlarm("replaced")
+        val generation = ++playbackGeneration
         val systemRingtone = Prefs(context).useSystemRingtone
         val sound = if (systemRingtone) {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
@@ -95,15 +101,16 @@ object AlertNotifier {
             AppLog.event(
                 context,
                 "alarm_failure",
-                "error=${e.javaClass.simpleName}:${e.message ?: ""} systemRingtone=$systemRingtone"
+                "owner=$owner error=${e.javaClass.simpleName}:${e.message ?: ""} systemRingtone=$systemRingtone"
             )
             throw e
         }
         player = p
+        playerOwner = owner
         AppLog.event(
             context,
             "alarm_started",
-            "volume=$volume durationMs=$durationMs systemRingtone=$systemRingtone"
+            "owner=$owner volume=$volume durationMs=$durationMs systemRingtone=$systemRingtone"
         )
         val appContext = context.applicationContext
         volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
@@ -117,23 +124,42 @@ object AlertNotifier {
         }
         observerContext = appContext
         notifyPlaybackChanged()
-        Handler(Looper.getMainLooper()).postDelayed({ stopAlarm("timeout") }, durationMs)
+        Handler(Looper.getMainLooper()).postDelayed(
+            { stopAlarmIfGeneration(generation, "timeout") },
+            durationMs
+        )
     }
 
     @Synchronized
     fun isAlarmPlaying(): Boolean = player?.isPlaying == true
 
     @Synchronized
+    fun stopAlarmIfOwner(owner: String, reason: String): Boolean {
+        if (playerOwner != owner || player == null) return false
+        stopAlarm(reason)
+        return true
+    }
+
+    @Synchronized
+    private fun stopAlarmIfGeneration(generation: Long, reason: String) {
+        if (generation != playbackGeneration || player == null) return
+        stopAlarm(reason)
+    }
+
+    @Synchronized
     fun stopAlarm(reason: String = "unspecified") {
         val p = player ?: return
         val logContext = observerContext
+        val owner = playerOwner
         try { p.stop() } catch (_: Exception) { /* already stopped */ }
         p.release()
         player = null
+        playerOwner = null
+        playbackGeneration++ // invalidate any timeout belonging to the stopped player
         volumeObserver?.let { observerContext?.contentResolver?.unregisterContentObserver(it) }
         volumeObserver = null
         observerContext = null
-        logContext?.let { AppLog.event(it, "alarm_stopped", "reason=$reason") }
+        logContext?.let { AppLog.event(it, "alarm_stopped", "owner=${owner ?: "unknown"} reason=$reason") }
         notifyPlaybackChanged()
     }
 
@@ -158,7 +184,8 @@ object AlertNotifier {
             playAlarm(
                 context,
                 volume = prefs.alarmVolume / 100f,
-                durationMs = prefs.alarmDurationSec * 1000L
+                durationMs = prefs.alarmDurationSec * 1000L,
+                owner = OWNER_ALERT
             )
         } else {
             val reason = if (!prefs.alarmEnabled) "app_setting" else "screen_on_rule"
