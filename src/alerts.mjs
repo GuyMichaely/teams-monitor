@@ -441,21 +441,33 @@ async function fcmRequest(projectId, accessToken, body) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const status = String(j.error?.status || "");
-    const fcmDetail = Array.isArray(j.error?.details)
-      ? j.error.details.find((d) => d?.["@type"] === "type.googleapis.com/google.firebase.fcm.v1.FcmError")
-      : null;
+    const details = Array.isArray(j.error?.details) ? j.error.details : [];
+    const fcmDetail = details.find(
+      (d) => d?.["@type"] === "type.googleapis.com/google.firebase.fcm.v1.FcmError"
+    );
+    const badRequestDetail = details.find(
+      (d) => d?.["@type"] === "type.googleapis.com/google.rpc.BadRequest"
+    );
     const fcmErrorCode = String(fcmDetail?.errorCode || "");
     const code = fcmErrorCode || status || `FCM_HTTP_${r.status}`;
     const e = new Error(`FCM send failed: ${r.status} ${code} ${j.error?.message || JSON.stringify(j)}`.trim());
     e.httpStatus = r.status;
     e.fcmStatus = status;
     e.fcmErrorCode = fcmErrorCode;
+    e.badRequest = !!badRequestDetail;
     e.code = code;
     e.retryAfterMs = retryAfterMs(r.headers.get("retry-after"), r.status);
+    // Firebase overloads INVALID_ARGUMENT: BadRequest means the request itself
+    // is malformed, whereas its FcmError example identifies an invalid target.
+    // Never throw away a FID in the presence of explicit payload violations.
     e.registrationInvalid =
       fcmErrorCode === "UNREGISTERED" ||
       status === "UNREGISTERED" ||
-      (status === "INVALID_ARGUMENT" && fcmErrorCode === "INVALID_ARGUMENT");
+      (
+        status === "INVALID_ARGUMENT" &&
+        fcmErrorCode === "INVALID_ARGUMENT" &&
+        !badRequestDetail
+      );
     throw e;
   }
   return j;
