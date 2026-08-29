@@ -64,6 +64,14 @@ export class ControlState extends DurableObject {
     };
     state.updatedAt = new Date().toISOString();
 
+    // The PC mirrors the last ACK it actually consumed. Once that reaches the
+    // Worker, the rendezvous copy of the phone ACK is no longer needed.
+    const consumedProbeId = String(body.state?.fcm?.lastAckProbeId || "").trim();
+    if (consumedProbeId && state.phone?.fcmProbeAckId === consumedProbeId) {
+      delete state.phone.fcmProbeAckId;
+      delete state.phone.fcmProbeAckAt;
+    }
+
     if (wasMissing) {
       state.incidents ||= {};
       state.incidents.heartbeat = {
@@ -78,6 +86,7 @@ export class ControlState extends DurableObject {
       });
     }
 
+    await this.refreshTunnelHealth(state, body.publicHealthUrl);
     await this.ctx.storage.put("state", state);
     await this.ctx.storage.setAlarm(Date.now() + state.pc.heartbeatTimeoutMs);
     return json({ ok: true, ...state });
@@ -146,6 +155,84 @@ export class ControlState extends DurableObject {
     }
 
     return json({ ok: true, ...state });
+  }
+
+  async refreshTunnelHealth(state, rawUrl) {
+    const publicHealthUrl = typeof rawUrl === "string" ? rawUrl.trim() : "";
+    const checkedAt = new Date().toISOString();
+    const previousMissing = state.incidents?.tunnel?.status === "missing";
+
+    if (!publicHealthUrl) {
+      state.tunnel = {
+        configured: false,
+        reachable: null,
+        checkedAt,
+      };
+      if (previousMissing) {
+        state.incidents ||= {};
+        state.incidents.tunnel = {
+          status: "recovered",
+          at: checkedAt,
+          reason: "probe_disabled",
+        };
+        await this.sendPhoneData(state, {
+          kind: "health",
+          incident: "public_tunnel",
+          status: "recovered",
+          at: checkedAt,
+        });
+      }
+      return;
+    }
+
+    let reachable = false;
+    let statusCode = null;
+    let error = null;
+    try {
+      const response = await fetch(publicHealthUrl, {
+        method: "GET",
+        redirect: "follow",
+        signal: AbortSignal.timeout(4000),
+      });
+      statusCode = response.status;
+      reachable = response.ok;
+      await response.body?.cancel().catch(() => {});
+    } catch (e) {
+      error = String(e?.message || e).slice(0, 300);
+    }
+
+    state.tunnel = {
+      configured: true,
+      reachable,
+      statusCode,
+      checkedAt,
+      error,
+    };
+    state.incidents ||= {};
+
+    if (!reachable && !previousMissing) {
+      state.incidents.tunnel = {
+        status: "missing",
+        at: checkedAt,
+      };
+      await this.sendPhoneData(state, {
+        kind: "health",
+        incident: "public_tunnel",
+        status: "missing",
+        at: checkedAt,
+      });
+    } else if (reachable && previousMissing) {
+      state.incidents.tunnel = {
+        status: "recovered",
+        at: checkedAt,
+      };
+      await this.sendPhoneData(state, {
+        kind: "health",
+        incident: "public_tunnel",
+        status: "recovered",
+        at: checkedAt,
+      });
+    }
   }
 
   async alarm() {
