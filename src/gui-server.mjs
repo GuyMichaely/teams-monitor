@@ -6,7 +6,12 @@ import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 import { injectObservability } from "./gui-observability-ui.mjs";
-import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
+import {
+  ackFcmRecoveryProbe,
+  controlState,
+  recordTransportSuccess,
+  saveFcmRegistration,
+} from "./alert-runtime.mjs";
 import { loadConfig } from "./context.mjs";
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
@@ -147,6 +152,7 @@ export function startGui(config) {
           ok: true,
           registered: true,
           kind: registration.kind,
+          generation: registration.generation,
           updatedAt: registration.updatedAt,
         });
       } catch (e) {
@@ -155,7 +161,8 @@ export function startGui(config) {
     }
 
     // Phone control/safety synchronization. The phone may include its current
-    // FID so this route also repairs a missed registration upload.
+    // FID so this route repairs missed registration uploads. A receipt-probe ACK
+    // on the same request is what proves FCM reached Android before WS is released.
     if (req.method === "POST" && url.pathname === "/api/control/sync") {
       try {
         if (token && !authOk(req.headers.authorization, token)) {
@@ -170,7 +177,23 @@ export function startGui(config) {
           });
         }
         const liveConfig = await loadConfig();
-        return sendJson(res, 200, { ok: true, ...(await controlState(liveConfig)) });
+        let probeAcked = false;
+        if (typeof body.fcmProbeAckId === "string" && body.fcmProbeAckId.trim()) {
+          const ack = await ackFcmRecoveryProbe(
+            liveConfig?.alerts?.transport || "websocket",
+            body.fcmProbeAckId
+          );
+          probeAcked = !!ack.probeAcked;
+          logDiagnostic("fcm_probe_ack", {
+            ...requestMeta(req),
+            probeAcked,
+          });
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          probeAcked,
+          ...(await controlState(liveConfig)),
+        });
       } catch (e) {
         return sendJson(res, e.httpCode || 500, { ok: false, error: e.message });
       }
