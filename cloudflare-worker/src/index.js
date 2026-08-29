@@ -64,14 +64,6 @@ export class ControlState extends DurableObject {
     };
     state.updatedAt = new Date().toISOString();
 
-    // The PC mirrors the last ACK it actually consumed. Once that reaches the
-    // Worker, the rendezvous copy of the phone ACK is no longer needed.
-    const consumedProbeId = String(body.state?.fcm?.lastAckProbeId || "").trim();
-    if (consumedProbeId && state.phone?.fcmProbeAckId === consumedProbeId) {
-      delete state.phone.fcmProbeAckId;
-      delete state.phone.fcmProbeAckAt;
-    }
-
     if (wasMissing) {
       state.incidents ||= {};
       state.incidents.heartbeat = {
@@ -95,7 +87,6 @@ export class ControlState extends DurableObject {
   async phoneSync(body) {
     const state = (await this.ctx.storage.get("state")) || {};
     const incomingFid = typeof body.fid === "string" ? body.fid.trim() : "";
-    const probeAckId = typeof body.fcmProbeAckId === "string" ? body.fcmProbeAckId.trim() : "";
     const incomingAt = Date.parse(body.registrationUpdatedAt || 0);
     const storedAt = Date.parse(state.phone?.registrationUpdatedAt || 0);
     const canReplaceFid = !!incomingFid && (
@@ -111,10 +102,6 @@ export class ControlState extends DurableObject {
       ...(canReplaceFid ? {
         fid: incomingFid,
         registrationUpdatedAt: body.registrationUpdatedAt || state.phone?.registrationUpdatedAt || new Date().toISOString(),
-      } : {}),
-      ...(probeAckId ? {
-        fcmProbeAckId: probeAckId,
-        fcmProbeAckAt: body.at || new Date().toISOString(),
       } : {}),
     };
     state.updatedAt = new Date().toISOString();
