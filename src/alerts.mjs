@@ -6,6 +6,7 @@ import {
   markFcmRegistrationSuspect,
   readAlertRuntime,
   readFcmRegistration,
+  recordFcmBackoff,
   recordTransportFailure,
   recordTransportSuccess,
   requestWebSocket,
@@ -36,6 +37,12 @@ function otherTransport(transport) {
 
 function errorSummary(error) {
   return String(error?.message || error || "unknown error").slice(0, 500);
+}
+
+function fcmBackoffRemainingMs(runtime) {
+  const at = Date.parse(runtime?.fcm?.nextAttemptAt || 0);
+  if (!Number.isFinite(at)) return 0;
+  return Math.max(0, at - Date.now());
 }
 
 /**
@@ -188,24 +195,44 @@ async function sendWhileFallback(body, config, primary, secondary) {
 }
 
 async function recordPrimaryFailure(primary, error, classification, config) {
-  const { failureLimit } = failoverSettings(config, primary);
   if (primary === "fcm" && classification.registrationInvalid) {
     return await markFcmRegistrationSuspect(primary, classification.code || "fcm_registration_invalid");
   }
-  return await recordTransportFailure(primary, primary, {
+  if (primary === "fcm" && classification.backoffActive) {
+    return await readAlertRuntime(primary);
+  }
+
+  const { failureLimit } = failoverSettings(config, primary);
+  let runtime = await recordTransportFailure(primary, primary, {
     error: errorSummary(error),
     nonRetryable: classification.nonRetryable,
     failureLimit,
   });
+  if (primary === "fcm" && classification.retryAfterMs > 0) {
+    runtime = await recordFcmBackoff(primary, {
+      error: errorSummary(error),
+      delayMs: classification.retryAfterMs,
+    });
+  }
+  return runtime;
 }
 
 async function recordSecondaryFailure(secondary, primary, error, config) {
+  const classification = classifyFailure(secondary, error);
+  if (secondary === "fcm" && classification.backoffActive) return;
+
   const { failureLimit } = failoverSettings(config, secondary);
   await recordTransportFailure(secondary, primary, {
     error: errorSummary(error),
-    nonRetryable: classifyFailure(secondary, error).nonRetryable,
+    nonRetryable: classification.nonRetryable,
     failureLimit,
   });
+  if (secondary === "fcm" && classification.retryAfterMs > 0) {
+    await recordFcmBackoff(primary, {
+      error: errorSummary(error),
+      delayMs: classification.retryAfterMs,
+    });
+  }
 }
 
 async function prepareWebSocketFallback(config, classification, error, reason = null) {
@@ -259,6 +286,14 @@ async function attempt(transport, body, config) {
   const runtime = await readAlertRuntime(a.transport || "websocket");
   if (transport === "websocket") return await sendViaGuiHub(body, a, config);
   if (transport === "fcm") {
+    const backoffMs = fcmBackoffRemainingMs(runtime);
+    if (backoffMs > 0) {
+      throw Object.assign(
+        new Error(`FCM retry backoff active for ${Math.ceil(backoffMs / 1000)}s`),
+        { code: "FCM_BACKOFF", backoffActive: true, retryAfterMs: backoffMs }
+      );
+    }
+
     // A successful FCM message can carry the phone's desired WS policy. For FCM
     // primary this is false; for WS primary it is true. The phone applies this
     // metadata even when alertId dedupe suppresses the duplicate alarm.
@@ -383,6 +418,19 @@ async function sendFcmControl(config, data) {
   });
 }
 
+function retryAfterMs(header, httpStatus) {
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    const date = Date.parse(header);
+    if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  }
+  if (httpStatus === 429) return 60_000;
+  if (httpStatus === 503) return 5_000;
+  if (httpStatus >= 500) return 2_000;
+  return 0;
+}
+
 async function fcmRequest(projectId, accessToken, body) {
   const r = await fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`, {
     method: "POST",
@@ -393,11 +441,21 @@ async function fcmRequest(projectId, accessToken, body) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const status = String(j.error?.status || "");
-    const e = new Error(`FCM send failed: ${r.status} ${status} ${j.error?.message || JSON.stringify(j)}`.trim());
+    const fcmDetail = Array.isArray(j.error?.details)
+      ? j.error.details.find((d) => d?.["@type"] === "type.googleapis.com/google.firebase.fcm.v1.FcmError")
+      : null;
+    const fcmErrorCode = String(fcmDetail?.errorCode || "");
+    const code = fcmErrorCode || status || `FCM_HTTP_${r.status}`;
+    const e = new Error(`FCM send failed: ${r.status} ${code} ${j.error?.message || JSON.stringify(j)}`.trim());
     e.httpStatus = r.status;
     e.fcmStatus = status;
-    e.code = status || `FCM_HTTP_${r.status}`;
-    if (status === "UNREGISTERED" || r.status === 404) e.registrationInvalid = true;
+    e.fcmErrorCode = fcmErrorCode;
+    e.code = code;
+    e.retryAfterMs = retryAfterMs(r.headers.get("retry-after"), r.status);
+    e.registrationInvalid =
+      fcmErrorCode === "UNREGISTERED" ||
+      status === "UNREGISTERED" ||
+      (status === "INVALID_ARGUMENT" && fcmErrorCode === "INVALID_ARGUMENT");
     throw e;
   }
   return j;
@@ -416,6 +474,10 @@ export async function recoverAlertTransport(config) {
   const runtime = await readAlertRuntime(primary);
   if (runtime.delivery.state === "primary_working") {
     return { attempted: false, reason: "already_working" };
+  }
+  const backoffMs = fcmBackoffRemainingMs(runtime);
+  if (backoffMs > 0) {
+    return { attempted: false, reason: "fcm_backoff", retryInMs: backoffMs };
   }
 
   try {
@@ -437,6 +499,11 @@ export async function recoverAlertTransport(config) {
         actions: ["ensure_fcm_registration", "start_ws"],
         error: errorSummary(error),
       }).catch(() => {});
+    } else if (classification.retryAfterMs > 0) {
+      await recordFcmBackoff(primary, {
+        error: errorSummary(error),
+        delayMs: classification.retryAfterMs,
+      });
     }
     return { attempted: true, recovered: false, error: errorSummary(error) };
   }
@@ -448,12 +515,27 @@ function classifyFailure(transport, error) {
       code: error?.code || "WEBSOCKET_ERROR",
       nonRetryable: false,
       registrationInvalid: false,
+      retryAfterMs: 0,
+      backoffActive: false,
     };
   }
 
-  const status = String(error?.fcmStatus || error?.code || "");
+  const code = String(error?.fcmErrorCode || error?.fcmStatus || error?.code || "");
   const http = Number(error?.httpStatus || 0);
-  const registrationInvalid = !!error?.registrationInvalid || status === "UNREGISTERED" || http === 404;
-  const nonRetryable = registrationInvalid || status === "FCM_CONFIG" || status === "FCM_AUTH";
-  return { code: status || null, nonRetryable, registrationInvalid };
+  const registrationInvalid = !!error?.registrationInvalid || code === "UNREGISTERED";
+  const retryMs = Math.max(0, Number(error?.retryAfterMs) || 0);
+  const backoffActive = !!error?.backoffActive || code === "FCM_BACKOFF";
+  const nonRetryable =
+    registrationInvalid ||
+    code === "FCM_CONFIG" ||
+    code === "FCM_AUTH" ||
+    code === "SENDER_ID_MISMATCH";
+  return {
+    code: code || null,
+    http,
+    nonRetryable,
+    registrationInvalid,
+    retryAfterMs: retryMs,
+    backoffActive,
+  };
 }
