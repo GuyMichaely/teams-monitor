@@ -1,12 +1,12 @@
 # teams-monitor
 
-Personal Microsoft Teams monitoring/automation system. It drives the new Teams desktop client (WebView2) over the Chrome DevTools Protocol (CDP), triages unread messages, exposes a management GUI, and can alert the Android companion app through a Cloudflare Tunnel.
+Personal Microsoft Teams monitoring/automation system. It drives the new Teams desktop client (WebView2) over the Chrome DevTools Protocol (CDP), triages unread messages, exposes a management GUI, and alerts an Android companion app through Firebase Cloud Messaging (FCM) and/or a WebSocket connection through the Cloudflare Tunnel.
 
 ## Requirements
 
 - Windows with the new Teams desktop client (`ms-teams.exe`).
 - Bun 1.4+.
-- An existing Cloudflare Tunnel named `teams-gui` if remote GUI/phone connectivity is wanted.
+- An existing Cloudflare Tunnel named `teams-gui` if remote GUI/WebSocket connectivity is wanted.
 
 There are no server package dependencies.
 
@@ -30,7 +30,7 @@ Bun loads it explicitly through the package scripts. Runtime state and logs stay
 
 The live configuration and brain profile are also machine-local and gitignored:
 
-- `config/config.json` — runtime settings changed by the GUI, including polling interval and alert transport.
+- `config/config.json` — runtime settings changed by the GUI, including polling interval and preferred alert transport.
 - `context/user-profile.md` — freeform context/instructions supplied to the brain.
 
 On first run, missing local files are automatically copied from `config/config.example.json` and `context/user-profile.example.md`. Edit the live files, not the tracked examples, for machine-specific settings that should survive `git pull`.
@@ -115,7 +115,9 @@ src/monitor.mjs                unread enumeration + chat reading
 src/brain.mjs                  decision layer
 src/orchestrator.mjs           poll → read → decide → act → log loop
 src/actions.mjs                action registry, including alert_phone
-src/alerts.mjs                 phone-alert transports
+src/alerts.mjs                 primary/fallback phone-alert delivery
+src/alert-runtime.mjs          persisted delivery/FID/failure/backoff state
+src/worker-control.mjs         optional Cloudflare Worker control-plane client
 src/gui-server*.mjs            dashboard, API, WebSocket alert hub, diagnostics
 src/state.mjs                  runtime state/activity under data/
 config/config.example.json     tracked configuration template
@@ -123,30 +125,61 @@ config/config.json             gitignored live configuration
 context/user-profile.example.md tracked brain-profile template
 context/user-profile.md        gitignored live brain context
 android-app/                   Android companion app
+cloudflare-worker/             optional independent control/recovery Worker
 tfs-agent/                     separate TFS worker integration
 ```
 
-The GUI's `/ws/alerts` endpoint is the live alert channel used when WebSocket transport is selected. FCM can instead deliver Android alarms through Firebase Cloud Messaging.
+### Phone alert delivery
+
+`alerts.transport` is the **preferred** transport, not an exclusive mode. The other transport remains available as a fallback:
+
+- **FCM** sends directly from the orchestrator to Google and does not require the GUI or Cloudflare Tunnel for normal delivery once the phone's Firebase Installation ID (FID) has been synchronized.
+- **WebSocket** sends through the local GUI alert hub and, for a remote phone, the Cloudflare Tunnel.
+- Every alert has an `alertId`; the Android app deduplicates IDs so fallback/recovery attempts cannot ring twice.
+- A failed preferred attempt can use the alternate transport for that individual alert. Configurable consecutive preferred failures move the persisted delivery state into fallback mode.
+- One successful preferred-path recovery returns the system to its configured primary.
+- FCM retryable 429/5xx failures respect `Retry-After`/backoff state instead of repeatedly hitting FCM.
+- An invalid FCM registration is treated as a recovery event immediately rather than consuming the normal transient-failure budget.
+
+When FCM is primary, WebSocket can therefore remain cold during normal operation and run temporarily during recovery. A periodic silent FCM recovery check is controlled by `alerts.failover.recoveryCheckIntervalMs`.
+
+FCM registration state lives in gitignored `data/fcm-registration.json`. The deprecated `data/fcm-device-token.txt` is retained only as a migration compatibility path.
+
+### Optional control Worker
+
+`cloudflare-worker/` contains an optional Cloudflare Worker backed by a SQLite Durable Object. It is **disabled by default** and is not part of normal Teams-message delivery. Its purpose is an independent control/recovery plane:
+
+- mirror PC and phone control state;
+- mirror the phone's current FID;
+- receive an orchestrator heartbeat;
+- detect heartbeat loss independently of the home tunnel;
+- issue high-priority FCM recovery/health control messages when useful.
+
+The Android app performs a roughly 15-minute WorkManager safety synchronization. It tries the direct PC endpoint first and uses the Worker when configured and necessary; direct success also mirrors state to the Worker so its shadow copy stays current.
+
+See `cloudflare-worker/README.md` for deployment/secrets. `controlWorker.enabled` remains `false` until a Worker is actually deployed and its URL is configured.
 
 ## GUI diagnostics
 
-The dashboard has **Connection diagnostics** with Refresh/Copy controls. It records WebSocket connection/rejection/disconnection events and includes redacted Cloudflare tunnel logs. `access_token`/`GUI_TOKEN` values are not intentionally exposed by the diagnostics API.
+The dashboard has **Connection diagnostics** with Refresh/Copy controls plus a live pipeline timeline. It records WebSocket connection/rejection/disconnection events and includes redacted Cloudflare tunnel logs. `access_token`/`GUI_TOKEN` values are not intentionally exposed by the diagnostics API.
 
 ## Android app
 
-See `android-app/README.md` for app behavior and local builds.
+See `android-app/README.md` for FID registration, fallback behavior, watchdog policy, diagnostics, and local builds.
 
 The repository also has `.github/workflows/android-apk.yml`. Android changes automatically build a signed APK and publish it to the stable GitHub Release tag `android-latest`, while also retaining an Actions artifact when the signing secret is configured.
 
-## Bun compatibility guard
+## CI guards
 
-`.github/workflows/bun-smoke.yml` runs on Windows and starts the real GUI under Bun, then performs an authenticated WebSocket handshake against `/ws/alerts`. This keeps the Node-compatibility-sensitive part of the server under CI instead of relying on assumption alone.
+- `.github/workflows/bun-smoke.yml` runs on Windows, exercises the persisted alert-delivery state machine, and performs a real authenticated GUI/WebSocket handshake under Bun.
+- `.github/workflows/android-apk.yml` compiles and publishes the Android companion app.
+- `.github/workflows/cloudflare-worker-smoke.yml` performs a Wrangler dry-run of the optional control Worker without deploying it.
 
 ## Safety / operational notes
 
 - `config/config.json`, `context/user-profile.md`, `.env`, Firebase credentials, and `data/` are ignored local/runtime state.
 - Keep reusable non-secret defaults in the tracked `*.example.*` files.
 - The monitor can restart Teams to expose its debugging port.
-- The Cloudflare GUI uses `GUI_TOKEN`; stopping the tunnel while using `gui.guymichaely.com` disconnects that remote session.
+- The Cloudflare GUI uses `GUI_TOKEN`; stopping the tunnel while using `gui.guymichaely.com` disconnects that remote session and WebSocket alert path.
 - Stop the orchestrator with the GUI Stop button or `bun src/cli.mjs stop`.
 - Teams DOM selectors can break when Microsoft changes the client.
