@@ -86,6 +86,7 @@ export class ControlState extends DurableObject {
   async phoneSync(body) {
     const state = (await this.ctx.storage.get("state")) || {};
     const incomingFid = typeof body.fid === "string" ? body.fid.trim() : "";
+    const probeAckId = typeof body.fcmProbeAckId === "string" ? body.fcmProbeAckId.trim() : "";
     const incomingAt = Date.parse(body.registrationUpdatedAt || 0);
     const storedAt = Date.parse(state.phone?.registrationUpdatedAt || 0);
     const canReplaceFid = !!incomingFid && (
@@ -101,6 +102,10 @@ export class ControlState extends DurableObject {
       ...(canReplaceFid ? {
         fid: incomingFid,
         registrationUpdatedAt: body.registrationUpdatedAt || state.phone?.registrationUpdatedAt || new Date().toISOString(),
+      } : {}),
+      ...(probeAckId ? {
+        fcmProbeAckId: probeAckId,
+        fcmProbeAckAt: body.at || new Date().toISOString(),
       } : {}),
     };
     state.updatedAt = new Date().toISOString();
