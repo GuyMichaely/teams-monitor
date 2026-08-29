@@ -7,6 +7,7 @@ on:
     paths:
       - "src/**"
       - "scripts/smoke-gui.mjs"
+      - "scripts/smoke-alert-state.mjs"
       - "scripts/start-stack.ps1"
       - "package.json"
       - ".github/workflows/bun-smoke.yml"
@@ -14,6 +15,7 @@ on:
     paths:
       - "src/**"
       - "scripts/smoke-gui.mjs"
+      - "scripts/smoke-alert-state.mjs"
       - "scripts/start-stack.ps1"
       - "package.json"
       - ".github/workflows/bun-smoke.yml"
@@ -31,6 +33,9 @@ jobs:
 
       - name: Show Bun version
         run: bun --version
+
+      - name: Test alert delivery state machine
+        run: bun scripts/smoke-alert-state.mjs
 
       - name: Test Bun child process and GUI WebSocket
         run: bun scripts/smoke-gui.mjs
