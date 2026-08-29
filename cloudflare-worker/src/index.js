@@ -74,6 +74,7 @@ export class ControlState extends DurableObject {
         kind: "health",
         incident: "pc_heartbeat",
         status: "recovered",
+        at: state.incidents.heartbeat.at,
       });
     }
 
@@ -84,19 +85,22 @@ export class ControlState extends DurableObject {
 
   async phoneSync(body) {
     const state = (await this.ctx.storage.get("state")) || {};
+    const incomingFid = typeof body.fid === "string" ? body.fid.trim() : "";
     const incomingAt = Date.parse(body.registrationUpdatedAt || 0);
     const storedAt = Date.parse(state.phone?.registrationUpdatedAt || 0);
-    const canReplaceFid =
-      typeof body.fid === "string" && body.fid.trim() &&
-      (!state.phone?.fid || !Number.isFinite(storedAt) || !Number.isFinite(incomingAt) || incomingAt >= storedAt);
+    const canReplaceFid = !!incomingFid && (
+      !state.phone?.fid ||
+      state.phone.fid === incomingFid ||
+      (Number.isFinite(incomingAt) && (!Number.isFinite(storedAt) || incomingAt >= storedAt))
+    );
 
     state.phone = {
       ...(state.phone || {}),
       at: body.at || new Date().toISOString(),
       websocketState: body.websocketState || state.phone?.websocketState || null,
       ...(canReplaceFid ? {
-        fid: body.fid.trim(),
-        registrationUpdatedAt: body.registrationUpdatedAt || new Date().toISOString(),
+        fid: incomingFid,
+        registrationUpdatedAt: body.registrationUpdatedAt || state.phone?.registrationUpdatedAt || new Date().toISOString(),
       } : {}),
     };
     state.updatedAt = new Date().toISOString();
@@ -106,9 +110,10 @@ export class ControlState extends DurableObject {
 
   async pcEvent(body) {
     const state = (await this.ctx.storage.get("state")) || {};
+    // Only /api/pc/sync is a watchdog heartbeat. Recovery/activity events may
+    // update mirrored PC state but must never extend heartbeat liveness.
     state.pc = {
       ...(state.pc || {}),
-      at: body.at || state.pc?.at || new Date().toISOString(),
       state: body.state || state.pc?.state || {},
     };
     state.lastEvent = {
@@ -159,6 +164,7 @@ export class ControlState extends DurableObject {
         kind: "health",
         incident: "pc_heartbeat",
         status: "missing",
+        at: state.incidents.heartbeat.at,
       });
       state.lastHealthPush = {
         at: new Date().toISOString(),
