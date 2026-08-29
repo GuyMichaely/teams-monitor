@@ -3,8 +3,6 @@
 
 import { createSign, randomUUID } from "node:crypto";
 import {
-  beginFcmRecoveryProbe,
-  cancelFcmRecoveryProbe,
   isCurrentFcmRegistrationGeneration,
   markFcmRegistrationSuspect,
   readAlertRuntime,
@@ -34,13 +32,6 @@ function failoverSettings(config, transport) {
   };
 }
 
-function recoveryProbeTimeoutMs(config) {
-  return Math.max(
-    10_000,
-    Number(config?.alerts?.failover?.probeAckTimeoutMs) || 60_000
-  );
-}
-
 function otherTransport(transport) {
   return transport === "fcm" ? "websocket" : "fcm";
 }
@@ -63,20 +54,11 @@ function transportResultOptions(transport, resultOrError) {
   };
 }
 
-function fcmRecovered(runtime) {
-  return runtime?.delivery?.state === "primary_working" && !runtime?.websocketWanted;
-}
-
 /**
- * Send one alert.
- *
- * While the preferred transport is healthy/retrying, it gets the first attempt
- * and the alternate gets one per-alert fallback attempt on failure.
- *
- * Once the persisted delivery state is FALLBACK, the alternate gets the first
- * attempt. The preferred transport is then tried with the same alertId as an
- * acceptance test; phone-side dedupe prevents a second alarm. FCM is not marked
- * recovered until a separate receipt probe is ACKed by Android.
+ * Send one alert. Healthy/retrying state attempts the preferred transport first.
+ * Fallback state attempts the alternate first, then gives the preferred transport
+ * an immediate recovery attempt using the same alertId. Android dedupe prevents
+ * that second attempt from ringing twice.
  */
 export async function sendAlert(payload, config) {
   const a = config?.alerts || {};
@@ -153,9 +135,8 @@ async function sendWhileFallback(body, config, primary, secondary) {
     await recordTransportSuccess(secondary, primary, transportResultOptions(secondary, secondaryResult));
     attempts.push({ transport: secondary, ok: true, ...secondaryResult });
 
-    // The alert has a working delivery path now. Give the preferred path a
-    // same-alert acceptance test. For FCM this does not release WS; the periodic
-    // receipt probe below is what proves Android actually received FCM again.
+    // The alternate delivered the alert. Test the configured primary immediately;
+    // one successful current-generation send restores it.
     const recoveryResult = await attempt(primary, body, config).catch((error) => ({ error }));
     if (!recoveryResult.error) {
       const recoveredState = await recordTransportSuccess(
@@ -163,7 +144,9 @@ async function sendWhileFallback(body, config, primary, secondary) {
         primary,
         transportResultOptions(primary, recoveryResult)
       );
-      const primaryRecovered = fcmRecovered(recoveredState) || primary !== "fcm";
+      const primaryRecovered =
+        !recoveredState.ignoredStaleFcmResult &&
+        recoveredState.delivery.state === "primary_working";
       attempts.push({ transport: primary, ok: true, recoveryTest: true, ...recoveryResult });
       return {
         alertId: body.alertId,
@@ -193,7 +176,8 @@ async function sendWhileFallback(body, config, primary, secondary) {
     };
   }
 
-  // The fallback path failed. Give the configured primary an immediate chance.
+  // The fallback path failed. Give the configured primary an immediate chance;
+  // if it works, it both delivers the alert and restores primary state.
   const secondaryError = secondaryResult.error;
   await recordSecondaryFailure(secondary, primary, secondaryError, config);
   attempts.push(failedAttempt(secondary, secondaryError, classifyFailure(secondary, secondaryError)));
@@ -205,7 +189,9 @@ async function sendWhileFallback(body, config, primary, secondary) {
       primary,
       transportResultOptions(primary, primaryResult)
     );
-    const primaryRecovered = fcmRecovered(recoveredState) || primary !== "fcm";
+    const primaryRecovered =
+      !recoveredState.ignoredStaleFcmResult &&
+      recoveredState.delivery.state === "primary_working";
     attempts.push({ transport: primary, ok: true, recoveryTest: true, ...primaryResult });
     return {
       alertId: body.alertId,
@@ -335,14 +321,11 @@ async function attempt(transport, body, config) {
       );
     }
 
-    // A successful FCM message can carry the phone's desired WS policy. For FCM
-    // primary this is false only while fully healthy; recovery keeps WS wanted
-    // until a receipt probe is ACKed.
     return await sendViaFcm({
       ...body,
-      websocketWanted: String(
-        (a.transport || "websocket") === "websocket" || !!runtime.websocketWanted
-      ),
+      // Once an FCM-primary send succeeds, recovery is complete, so the same
+      // message can tell Android to release temporary WS if it is delivered.
+      websocketWanted: String((a.transport || "websocket") === "websocket"),
       deliveryState: runtime.delivery.state,
     }, a.fcm || {});
   }
@@ -366,7 +349,12 @@ async function sendViaGuiHub(body, a, config) {
     signal: AbortSignal.timeout(5000),
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(`alert hub rejected: ${r.status} ${j.error || ""}`.trim()), { code: "WS_HUB_REJECTED" });
+  if (!r.ok) {
+    throw Object.assign(
+      new Error(`alert hub rejected: ${r.status} ${j.error || ""}`.trim()),
+      { code: "WS_HUB_REJECTED" }
+    );
+  }
   const delivered = Number(j.delivered || 0);
   if (delivered < 1) {
     throw Object.assign(new Error("alert hub has no connected phone clients"), { code: "NO_WS_CLIENTS" });
@@ -396,7 +384,12 @@ async function fcmAccessToken(sa) {
     }),
     signal: AbortSignal.timeout(10_000),
   });
-  if (!r.ok) throw Object.assign(new Error(`FCM OAuth token exchange failed: ${r.status} ${await r.text()}`), { code: "FCM_AUTH" });
+  if (!r.ok) {
+    throw Object.assign(
+      new Error(`FCM OAuth token exchange failed: ${r.status} ${await r.text()}`),
+      { code: "FCM_AUTH" }
+    );
+  }
   const j = await r.json();
   cachedToken = { accessToken: j.access_token, expMs: Date.now() + j.expires_in * 1000 };
   return cachedToken.accessToken;
@@ -433,8 +426,8 @@ async function requestCurrentFcmRegistration(projectId, accessToken, buildMessag
       error.registrationGeneration = registration.generation;
       lastError = error;
       // If the phone updated its registration while this request was in flight,
-      // retry once against the new generation instead of degrading health based
-      // on an obsolete target.
+      // retry once against the new generation instead of mutating health from an
+      // obsolete request.
       if (
         attemptNo === 0 &&
         !(await isCurrentFcmRegistrationGeneration(registration.generation))
@@ -451,14 +444,19 @@ async function sendViaFcm(body, fcm) {
   const resolved = await resolveFcmConfig(fcm);
   if (!resolved.serviceAccountValid) {
     const detail = resolved.serviceAccountPresent ? "invalid service account JSON" : "service account file missing";
-    throw Object.assign(new Error(`alerts.fcm not configured — ${detail}: ${resolved.serviceAccountFile}`), { code: "FCM_CONFIG" });
+    throw Object.assign(
+      new Error(`alerts.fcm not configured — ${detail}: ${resolved.serviceAccountFile}`),
+      { code: "FCM_CONFIG" }
+    );
   }
   if (!resolved.projectId) {
-    throw Object.assign(new Error("alerts.fcm not configured — project ID missing from service account"), { code: "FCM_CONFIG" });
+    throw Object.assign(
+      new Error("alerts.fcm not configured — project ID missing from service account"),
+      { code: "FCM_CONFIG" }
+    );
   }
 
-  const sa = resolved.serviceAccount;
-  const accessToken = await fcmAccessToken(sa);
+  const accessToken = await fcmAccessToken(resolved.serviceAccount);
   const data = {
     kind: "alert",
     alertId: String(body.alertId || ""),
@@ -538,9 +536,8 @@ async function fcmRequest(projectId, accessToken, body) {
     e.badRequest = !!badRequestDetail;
     e.code = code;
     e.retryAfterMs = retryAfterMs(r.headers.get("retry-after"), r.status);
-    // Firebase overloads INVALID_ARGUMENT: BadRequest means the request itself
-    // is malformed, whereas its FcmError example identifies an invalid target.
-    // Never throw away a FID in the presence of explicit payload violations.
+    // INVALID_ARGUMENT is overloaded. Explicit google.rpc.BadRequest details
+    // indicate a payload problem, not a dead registration.
     e.registrationInvalid =
       fcmErrorCode === "UNREGISTERED" ||
       status === "UNREGISTERED" ||
@@ -554,16 +551,12 @@ async function fcmRequest(projectId, accessToken, body) {
   return j;
 }
 
-/**
- * Periodic recovery check for an FCM primary that is retrying/fallen back.
- * Firebase acceptance starts a receipt probe; only a matching phone ACK marks
- * FCM healthy and releases temporary WebSocket.
- */
+/** Periodically gives a degraded FCM primary a chance to recover without waiting for a real alert. */
 export async function recoverAlertTransport(config) {
   const primary = config?.alerts?.transport || "websocket";
   if (primary !== "fcm") return { attempted: false, reason: "primary_not_fcm" };
 
-  let runtime = await readAlertRuntime(primary);
+  const runtime = await readAlertRuntime(primary);
   if (runtime.delivery.state === "primary_working" && !runtime.websocketWanted) {
     return { attempted: false, reason: "already_working" };
   }
@@ -572,53 +565,26 @@ export async function recoverAlertTransport(config) {
     return { attempted: false, reason: "fcm_backoff", retryInMs: backoffMs };
   }
 
-  const pending = runtime.fcm.pendingProbe;
-  if (pending) {
-    const sentAt = Date.parse(pending.sentAt || 0);
-    const ageMs = Date.now() - sentAt;
-    if (Number.isFinite(sentAt) && ageMs >= 0 && ageMs < recoveryProbeTimeoutMs(config)) {
-      return {
-        attempted: false,
-        reason: "awaiting_phone_ack",
-        probeId: pending.id,
-        ageMs,
-      };
-    }
-    await cancelFcmRecoveryProbe(primary, {
-      probeId: pending.id,
-      registrationGeneration: pending.registrationGeneration,
-    });
-    runtime = await readAlertRuntime(primary);
-  }
-
-  const probeId = randomUUID();
   try {
     const result = await sendFcmControl(config, {
       kind: "control",
-      actions: "",
-      reason: "fcm_recovery_probe",
-      probeId,
+      actions: "stop_ws",
+      reason: "fcm_recovery_check",
       primaryTransport: "fcm",
-      websocketWanted: "true",
+      websocketWanted: "false",
     });
     const generationOptions = transportResultOptions("fcm", result);
-    const probeState = await beginFcmRecoveryProbe(primary, {
-      probeId,
-      registrationGeneration: generationOptions.registrationGeneration,
-    });
-    if (probeState.ignoredStaleFcmResult) {
+    const recoveredState = await recordTransportSuccess("fcm", primary, generationOptions);
+    if (recoveredState.ignoredStaleFcmResult) {
       return {
         attempted: true,
         recovered: false,
-        reason: "registration_changed_during_probe",
+        reason: "registration_changed_during_recovery_check",
       };
     }
-    await recordTransportSuccess("fcm", primary, generationOptions);
     return {
       attempted: true,
-      recovered: false,
-      awaitingAck: true,
-      probeId,
+      recovered: true,
       messageId: result.name || null,
     };
   } catch (error) {
