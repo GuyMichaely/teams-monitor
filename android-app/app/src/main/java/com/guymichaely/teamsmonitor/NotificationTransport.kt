@@ -138,7 +138,7 @@ object NotificationTransport {
         })
     }
 
-    /** Direct sync already won; this request only keeps the shadow state current. */
+    /** Direct sync already won; this request only keeps shadow/health state current. */
     private fun mirrorWorkerAsync(context: Context, prefs: Prefs) {
         if (!prefs.controlWorkerEnabled || prefs.controlWorkerUrl.isBlank()) return
         client.newCall(workerRequest(prefs)).enqueue(object : Callback {
@@ -148,11 +148,17 @@ object NotificationTransport {
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
+                    val bodyText = it.body?.string().orEmpty()
                     AppLog.event(
                         context,
                         if (it.isSuccessful) "control_worker_mirror_ok" else "control_worker_mirror_failed",
                         "http=${it.code}"
                     )
+                    if (it.isSuccessful) {
+                        runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
+                            applyHeartbeatIncident(context, body, "worker-mirror")
+                        }
+                    }
                 }
             }
         })
@@ -162,11 +168,17 @@ object NotificationTransport {
         if (!prefs.controlWorkerEnabled || prefs.controlWorkerUrl.isBlank()) return
         runCatching {
             client.newCall(workerRequest(prefs)).execute().use { response ->
+                val bodyText = response.body?.string().orEmpty()
                 AppLog.event(
                     context,
                     if (response.isSuccessful) "control_worker_mirror_ok" else "control_worker_mirror_failed",
                     "http=${response.code}"
                 )
+                if (response.isSuccessful) {
+                    runCatching { JSONObject(bodyText) }.getOrNull()?.let { body ->
+                        applyHeartbeatIncident(context, body, "worker-mirror")
+                    }
+                }
             }
         }.onFailure {
             AppLog.event(context, "control_worker_mirror_failed", "error=${it.javaClass.simpleName}:${it.message ?: ""}")
@@ -201,6 +213,8 @@ object NotificationTransport {
         .put("websocketState", AlertState.connection.name.lowercase())
 
     private fun applyControlResponse(context: Context, raw: JSONObject, source: String) {
+        applyHeartbeatIncident(context, raw, source)
+
         // Direct server responses expose state at the root. Worker responses
         // return the latest PC sync under pc.state.
         val state = raw.optJSONObject("pc")?.optJSONObject("state") ?: raw
@@ -229,6 +243,18 @@ object NotificationTransport {
             context,
             "control_synced",
             "source=$source primary=$primary websocketWanted=$websocketWanted fcmRegistration=${fcmStatus ?: "unknown"}"
+        )
+    }
+
+    private fun applyHeartbeatIncident(context: Context, raw: JSONObject, source: String) {
+        val heartbeat = raw.optJSONObject("incidents")?.optJSONObject("heartbeat") ?: return
+        val status = heartbeat.optString("status", "")
+        if (status.isBlank()) return
+        HealthIncidentManager.handleHeartbeat(
+            context,
+            status = status,
+            at = if (heartbeat.has("at")) heartbeat.optString("at") else null,
+            source = source
         )
     }
 
