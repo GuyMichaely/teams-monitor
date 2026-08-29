@@ -59,8 +59,8 @@ export async function runActions(invokeActions, ctx) {
 registerAction({
   name: "alert_phone",
   description:
-    "Push an alert to the user's phone (companion app). Transport per config.alerts.transport: " +
-    "'websocket' via the GUI server's /ws/alerts hub, or 'fcm' direct via Firebase Cloud Messaging.",
+    "Push an alert to the user's phone. config.alerts.transport selects the preferred " +
+    "transport (WebSocket or FCM); alerts.mjs may use the other transport as fallback.",
   sideEffect: true,
   run: async (args) => {
     const config = await loadConfig();
