@@ -12,24 +12,41 @@ import { loadState } from "./state.mjs";
 import { loadConfig } from "./context.mjs";
 import { startGui } from "./gui-server.mjs";
 import { syncWorkerHeartbeat } from "./worker-control.mjs";
+import { recoverAlertTransport } from "./alerts.mjs";
 
 const [, , cmd, arg] = process.argv;
 
 try {
   switch (cmd) {
     case "run": {
-      // Worker heartbeat is intentionally outside the Teams polling loop. The
-      // client itself rate-limits to the configured cadence and is a no-op when
-      // the optional Worker is disabled.
-      const workerHeartbeat = setInterval(async () => {
-        try { await syncWorkerHeartbeat(await loadConfig()); } catch { /* next heartbeat retries */ }
+      // Worker heartbeat and alert-transport recovery are intentionally outside
+      // the Teams polling loop. The heartbeat client is itself rate-limited;
+      // FCM recovery checks use their own configurable cadence.
+      let lastAlertRecoveryAt = 0;
+      const healthTimer = setInterval(async () => {
+        try {
+          const config = await loadConfig();
+          await syncWorkerHeartbeat(config).catch(() => {});
+
+          const recoveryIntervalMs = Math.max(
+            Number(config?.alerts?.failover?.recoveryCheckIntervalMs) || 30_000,
+            10_000
+          );
+          if (Date.now() - lastAlertRecoveryAt >= recoveryIntervalMs) {
+            lastAlertRecoveryAt = Date.now();
+            await recoverAlertTransport(config).catch(() => {});
+          }
+        } catch { /* next health tick retries */ }
       }, 10_000);
-      workerHeartbeat.unref();
+      healthTimer.unref();
       try {
-        await syncWorkerHeartbeat(await loadConfig(), { force: true }).catch(() => {});
+        const config = await loadConfig();
+        await syncWorkerHeartbeat(config, { force: true }).catch(() => {});
+        await recoverAlertTransport(config).catch(() => {});
+        lastAlertRecoveryAt = Date.now();
         await run();
       } finally {
-        clearInterval(workerHeartbeat);
+        clearInterval(healthTimer);
       }
       break;
     }
