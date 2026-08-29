@@ -22,9 +22,9 @@ function assert(condition, message) {
 async function clean() {
   await Promise.all([
     rm(ALERT_RUNTIME_FILE, { force: true }),
-    rm(RUNTIME_LOCK_FILE, { force: true }),
+    rm(RUNTIME_LOCK_FILE, { recursive: true, force: true }),
     rm(FCM_REGISTRATION_FILE, { force: true }),
-    rm(REGISTRATION_LOCK_FILE, { force: true }),
+    rm(REGISTRATION_LOCK_FILE, { recursive: true, force: true }),
     rm(LEGACY_FCM_TOKEN_FILE, { force: true }),
   ]);
 }
