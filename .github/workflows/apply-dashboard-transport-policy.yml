@@ -1,0 +1,41 @@
+name: Apply dashboard transport policy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apply-dashboard-transport-policy.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply patch
+        run: python .github/scripts/apply-dashboard-transport-policy.py
+
+      - name: Validate syntax and config
+        run: |
+          node --check src/gui-server-runtime.mjs
+          node --check src/alerts.mjs
+          node --check src/alert-runtime.mjs
+          node --check src/gui-dashboard-layout.mjs
+          node --check src/actions.mjs
+          node --check scripts/smoke-alert-state.mjs
+          python -m json.tool config/config.example.json >/dev/null
+
+      - name: Commit result and remove temporary patch machinery
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-dashboard-transport-policy.yml
+          git rm .github/scripts/apply-dashboard-transport-policy.py
+          git add src/gui-server-runtime.mjs src/alerts.mjs src/alert-runtime.mjs src/gui-dashboard-layout.mjs src/actions.mjs scripts/smoke-alert-state.mjs config/config.example.json AGENTS.md
+          git commit -m "Refine dashboard delivery controls"
+          git push origin HEAD:main
