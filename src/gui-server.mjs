@@ -6,9 +6,11 @@ import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 import { injectObservability } from "./gui-observability-ui.mjs";
+import { injectPresenceControls } from "./gui-presence-ui.mjs";
 import { injectDashboardLayout } from "./gui-dashboard-layout.mjs";
 import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
 import { loadConfig } from "./context.mjs";
+import { getTeamsPresence, setTeamsPresence } from "./teams-presence.mjs";
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
@@ -51,7 +53,7 @@ async function diagnostics(limit) {
 }
 
 function decoratePage(page) {
-  return injectDashboardLayout(injectObservability(page));
+  return injectDashboardLayout(injectPresenceControls(injectObservability(page)));
 }
 
 export function startGui(config) {
@@ -106,6 +108,33 @@ export function startGui(config) {
 
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
+
+    if (url.pathname === "/api/teams/presence") {
+      const meta = requestMeta(req);
+      const startedAt = Date.now();
+      res.once("finish", () => {
+        logDiagnostic("teams_presence_http", {
+          ...meta,
+          statusCode: res.statusCode,
+          durationMs: Date.now() - startedAt,
+        });
+      });
+      try {
+        if (token && !authOk(req.headers.authorization, token)) {
+          return sendJson(res, 401, { ok: false, error: "unauthorized" });
+        }
+        if (req.method === "GET") {
+          return sendJson(res, 200, await getTeamsPresence());
+        }
+        if (req.method === "PUT") {
+          const body = await readJsonBody(req);
+          return sendJson(res, 200, await setTeamsPresence(body.status));
+        }
+        return sendJson(res, 405, { ok: false, error: "method not allowed" });
+      } catch (e) {
+        return sendJson(res, e.httpCode || 500, { ok: false, error: e.message });
+      }
+    }
 
     if (url.pathname === "/api/diagnostics") {
       if (token && !authOk(req.headers.authorization, token)) {
