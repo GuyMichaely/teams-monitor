@@ -1,15 +1,21 @@
 // Diagnostics layer around the runtime GUI/tunnel server.
 // Logs connection behavior without logging GUI_TOKEN/access_token values.
 
-import { join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 import { injectObservability } from "./gui-observability-ui.mjs";
+import { injectPolicyUi } from "./gui-policy-ui.mjs";
 import { injectDashboardLayout } from "./gui-dashboard-layout.mjs";
 import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
 import { loadConfig } from "./context.mjs";
+import { validateDeterministicRules } from "./deterministic-rules.mjs";
 
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const CONFIG_FILE = join(ROOT, "config", "config.json");
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
 
@@ -50,8 +56,22 @@ async function diagnostics(limit) {
   };
 }
 
+async function getPolicyRules() {
+  const cfg = await loadConfig();
+  try { return validateDeterministicRules(cfg.automation?.rules || []); }
+  catch { return []; }
+}
+
+async function putPolicyRules(body) {
+  const rules = validateDeterministicRules(body?.rules);
+  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  cfg.automation = { ...(cfg.automation || {}), rules };
+  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  return rules;
+}
+
 function decoratePage(page) {
-  return injectDashboardLayout(injectObservability(page));
+  return injectDashboardLayout(injectPolicyUi(injectObservability(page)));
 }
 
 export function startGui(config) {
@@ -106,6 +126,24 @@ export function startGui(config) {
 
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
+
+    if (url.pathname === "/api/policy/rules") {
+      try {
+        if (token && !authOk(req.headers.authorization, token)) {
+          return sendJson(res, 401, { ok: false, error: "unauthorized" });
+        }
+        if (req.method === "GET") {
+          return sendJson(res, 200, { ok: true, rules: await getPolicyRules() });
+        }
+        if (req.method === "PUT") {
+          const rules = await putPolicyRules(await readJsonBody(req));
+          return sendJson(res, 200, { ok: true, rules });
+        }
+        return sendJson(res, 405, { ok: false, error: "method not allowed" });
+      } catch (e) {
+        return sendJson(res, e.httpCode || 400, { ok: false, error: e.message });
+      }
+    }
 
     if (url.pathname === "/api/diagnostics") {
       if (token && !authOk(req.headers.authorization, token)) {
