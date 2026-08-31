@@ -19,6 +19,21 @@ The core Teams-to-phone path is implemented. Remaining work is mostly live valid
 - Test invalid/stale FID recovery and generation isolation.
 - Test phone reboot behavior. There is intentionally no boot receiver, so WebSocket cannot be assumed available after reboot until the app has been opened again.
 
+## LLM failure handling
+
+Review later.
+
+Transient Gemini failures such as HTTP 503, HTTP 429, and request timeouts are currently treated as terminal failures for that message. There is no LLM retry/backoff path.
+
+There is also a message-loss risk in the current ordering:
+
+- `markFirstRead()` updates `lastSeen` before the LLM decision completes;
+- if the LLM call then fails, `processChat()` records a brain error and aborts;
+- on the next tick, deduplication sees that message as already handled and skips it;
+- in `alert-only` mode, deterministic direct-chat/name-addressed alarm backstops are after the LLM call, so they do not run when the LLM throws.
+
+When revisiting this, consider transient LLM retries, only advancing handled-message state after a terminal decision, and a fail-safe path that still runs deterministic alarm backstops when the LLM is unavailable.
+
 ## Watchdog behavior
 
 Implemented with the optional Cloudflare Worker:
