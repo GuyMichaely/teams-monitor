@@ -23,6 +23,7 @@
 //   - "anthropic" / "openai" : seams only. Fill in callLLM() with your provider.
 
 import { listActions } from "./actions.mjs";
+import { describeDeterministicRule, matchDeterministicRule } from "./deterministic-rules.mjs";
 
 async function emitTrace(trace, name, payload) {
   const fn = trace?.[name];
@@ -30,19 +31,51 @@ async function emitTrace(trace, name, payload) {
   try { await fn(payload); } catch { /* observability must never change a brain decision */ }
 }
 
+function withDeterministicRules(decide) {
+  return async function decideWithRules(input, trace = {}) {
+    if (input.config?.automation?.mode === "alert-only") {
+      const rule = matchDeterministicRule(input, input.config?.automation?.rules || []);
+      if (rule) {
+        const reason = `deterministic rule: ${describeDeterministicRule(rule)}`;
+        await emitTrace(trace, "onInput", {
+          provider: "deterministic",
+          model: null,
+          skipped: true,
+          reason,
+          rule,
+        });
+        const decision = {
+          action: rule.action,
+          reply: null,
+          invokeActions: [],
+          reason,
+        };
+        await emitTrace(trace, "onDecision", { decision });
+        return decision;
+      }
+    }
+    return decide(input, trace);
+  };
+}
+
 export function createBrain(config) {
   const provider = config?.brain?.provider || "stub";
+  let decide;
   switch (provider) {
     case "stub":
-      return { decide: stubDecide };
+      decide = stubDecide;
+      break;
     case "gemini":
-      return { decide: makeGeminiDecide(config) };
+      decide = makeGeminiDecide(config);
+      break;
     case "anthropic":
     case "openai":
-      return { decide: makeLLMDecide(provider, config) };
+      decide = makeLLMDecide(provider, config);
+      break;
     default:
       throw new Error(`Unknown brain provider: ${provider}`);
   }
+  return { decide: withDeterministicRules(decide) };
 }
 
 // Signals that a human is specifically needed -> escalate no matter what.
