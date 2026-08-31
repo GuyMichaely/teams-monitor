@@ -54,7 +54,7 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
   if (!main || document.getElementById("dashboardSplit")) return;
 
   const title = [...main.children].find(function(el) {
-    return el.querySelector?.("h1") || el.tagName === "H1";
+    return el.querySelector?.("#statusDot") || el.id === "statusDot";
   });
   if (title) title.classList.add("dashboard-title");
 
@@ -92,6 +92,7 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
   movePair("Runtime", left);
   movePair("Teams availability", left);
   movePair("Overview", left, "Overview");
+  movePair("Message policy", left);
   movePair("Auto-send whitelist", left);
   movePair("Brain context (user-profile.md)", left, "Brain context / instructions");
   movePair("Message pipeline", right);
