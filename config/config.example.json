@@ -4,7 +4,7 @@
   "whitelist": {
     "autoSend": []
   },
-  "holdMessage": "Thanks \u2014 I've seen this and will get back to you shortly.",
+  "holdMessage": "Thanks — I've seen this and will get back to you shortly.",
   "brain": {
     "provider": "gemini",
     "model": "gemini-3.1-flash-lite",
@@ -58,6 +58,7 @@
     "echoLoop": false
   },
   "automation": {
-    "mode": "alert-only"
+    "mode": "alert-only",
+    "rules": []
   }
 }
