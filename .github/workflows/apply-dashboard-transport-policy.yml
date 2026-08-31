@@ -17,6 +17,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fix patch replacement escaping
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/apply-dashboard-transport-policy.py')
+          s = p.read_text(encoding='utf-8')
+          old = 're.subn(pattern, replacement, text, count=1, flags=re.S)'
+          new = 're.subn(pattern, lambda _m: replacement, text, count=1, flags=re.S)'
+          if old not in s:
+              raise SystemExit('patch helper expression not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply patch
         run: python .github/scripts/apply-dashboard-transport-policy.py
 
