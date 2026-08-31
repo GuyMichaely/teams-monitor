@@ -18,6 +18,7 @@ import { getUnreadChats, readChat } from "./monitor.mjs";
 import { sendMessage } from "./teams.mjs";
 import { createBrain } from "./brain.mjs";
 import { escalate, runActions } from "./actions.mjs";
+import { matchDeterministicRule } from "./deterministic-rules.mjs";
 import { startDispatcher } from "./integrations/tfs-server.mjs";
 import { loadConfig, loadUserProfile } from "./context.mjs";
 import { loadState, saveState, markFirstRead, logActivity, DATA_DIR } from "./state.mjs";
@@ -297,13 +298,19 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
   // performs the phone alert deterministically. Whitelists and reply text cannot
   // cause a Teams send while this mode is active.
   if (config.automation?.mode === "alert-only") {
+    const deterministicRule = matchDeterministicRule(
+      { chat, latest },
+      config.automation?.rules || []
+    );
     const mentionNames = config.alerts?.mentionNames || [];
     const ignoredAuthor =
       (config.alerts?.ignoreAuthors || []).includes(latest.author) ||
       isSelfAuthored(latest.author, mentionNames);
     const directChat = !ignoredAuthor && looksLikeDirectChat(chat, latest.author);
     const addressed = !ignoredAuthor && isAddressed(latest.text, mentionNames);
-    const shouldAlarm = !ignoredAuthor && (decision.action === "alarm" || directChat || addressed);
+    const shouldAlarm = deterministicRule
+      ? deterministicRule.action === "alarm"
+      : !ignoredAuthor && (decision.action === "alarm" || directChat || addressed);
 
     if (shouldAlarm) {
       const reason = decision.action === "alarm"
@@ -321,7 +328,11 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
       await recordEffect("phone_alert", actionStatus(results), { reason, results });
       console.error(`[${chat}] alarm — ${reason} (${results[0]?.error || "sent"})`);
     } else {
-      const reason = ignoredAuthor ? "message authored by user/ignored author" : decision.reason;
+      const reason = deterministicRule
+        ? decision.reason
+        : ignoredAuthor
+          ? "message authored by user/ignored author"
+          : decision.reason;
       await recordEffect("ignored", "ignored", { reason });
       console.error(`[${chat}] no alarm — ${reason}`);
     }
