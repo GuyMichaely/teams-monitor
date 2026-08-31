@@ -25,8 +25,19 @@ const LAYOUT_STYLE = `
   .dashboard-right .diag-events { max-height:420px; }
   .dashboard-right #diagnosticsLog { max-height:420px; }
   .dashboard-right #log { max-height:420px; }
+  @media (min-width:1051px) {
+    body { overflow:hidden; }
+    main { height:100vh; overflow:hidden; }
+    .dashboard-split { height:calc(100vh - 62px); overflow:hidden; align-items:stretch; }
+    .dashboard-pane { height:100%; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding-right:8px; }
+    .dashboard-pane-head { position:sticky; top:0; z-index:4; background:var(--bg); padding-top:2px; }
+  }
   @media (max-width:1050px) {
-    .dashboard-split { grid-template-columns:1fr; }
+    body { overflow:auto; }
+    main { height:auto; overflow:visible; }
+    .dashboard-split { grid-template-columns:1fr; height:auto; overflow:visible; }
+    .dashboard-pane { height:auto; overflow:visible; padding-right:0; }
+    .dashboard-pane-head { position:static; }
     .dashboard-left .grid { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
   }
   @media (max-width:560px) {
