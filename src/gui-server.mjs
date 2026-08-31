@@ -6,6 +6,7 @@ import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 import { injectObservability } from "./gui-observability-ui.mjs";
+import { injectDashboardLayout } from "./gui-dashboard-layout.mjs";
 import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
 import { loadConfig } from "./context.mjs";
 
@@ -47,6 +48,10 @@ async function diagnostics(limit) {
     tunnelLog: tailLines(TUNNEL_LOG, limit).map(redactSecrets),
     tunnelOutLog: tailLines(TUNNEL_OUT_LOG, limit).map(redactSecrets),
   };
+}
+
+function decoratePage(page) {
+  return injectDashboardLayout(injectObservability(page));
 }
 
 export function startGui(config) {
@@ -181,8 +186,8 @@ export function startGui(config) {
       const runtimeEnd = res.end.bind(res);
       res.end = (chunk, encoding, callback) => {
         let body = chunk;
-        if (typeof chunk === "string") body = injectObservability(chunk);
-        else if (Buffer.isBuffer(chunk)) body = Buffer.from(injectObservability(chunk.toString("utf8")));
+        if (typeof chunk === "string") body = decoratePage(chunk);
+        else if (Buffer.isBuffer(chunk)) body = Buffer.from(decoratePage(chunk.toString("utf8")));
         return runtimeEnd(body, encoding, callback);
       };
     }
