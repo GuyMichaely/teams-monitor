@@ -1,94 +1,90 @@
-# Features TODO
+# Project TODO
 
-Captured from the 2026-08-01 design discussion. Unscheduled — refine each item
-before implementing. Ordered roughly by priority.
+Last reviewed 2026-08-31 against `main`.
 
-## 1. Response policy rework (replaces the whitelist)
+This file tracks work that is still relevant to the current system. It is not a history of old implementation plans.
 
-Today: `whitelist.autoSend` — auto-send only in listed chats, everything else is
-hold + escalate.
+## Current alert-only system
 
-Desired:
+The core Teams-to-phone path is implemented. Remaining work is mostly live validation on the real PC and phone.
 
-- **Default posture: the system may respond to anyone.** The binary whitelist goes away.
-- **Risk tiers** instead of a binary list:
-  - Low-risk people/topics → auto-send freely.
-  - Benign / low-value messages → OK to ignore (no reply, no alert).
-  - Everything else, or whenever the brain is **not confident** → alert me rather than guess.
-- **Follow-up / history awareness.** If someone was ignored and follows up, the
-  system should auto-respond or escalate. Needs per-chat decision history — we
-  have `data/activity.jsonl` as the audit trail; likely also want a per-chat
-  "consecutive ignores" counter in `data/state.json` so follow-up detection is
-  deterministic rather than re-derived from logs.
-- **Open design question:** explicit rules vs. feeding the "vibe" as context to
-  the brain LLM at inference time.
-  - Leading idea (hybrid): deterministic gates for hard constraints (never
-    auto-send to X, always-escalate patterns) — cheap and auditable; LLM with
-    rich context for the gray zone (tone, risk, follow-up judgment).
+- Validate Teams CDP monitoring against the currently installed Teams desktop client.
+- Validate Gemini decisions using real Teams traffic.
+- Validate Android FID registration end to end.
+- Validate real FCM alert delivery, including Android background/Doze behavior.
+- Validate real WebSocket delivery through the Cloudflare Tunnel.
+- Force FCM failures and verify WebSocket fallback behavior.
+- Recover FCM and verify one successful current-generation FCM send restores FCM and releases temporary WebSocket demand.
+- Force WebSocket/tunnel failures and verify FCM remains usable.
+- Test invalid/stale FID recovery and generation isolation.
+- Test phone reboot behavior. There is intentionally no boot receiver, so WebSocket cannot be assumed available after reboot until the app has been opened again.
 
-## 2. Org-hierarchy awareness
+## Watchdog behavior
 
-- The brain should know the corporate hierarchy relevant to me — **me, my
-  descendants, my siblings, and all my ancestors** — and use it when deciding
-  how/whether to respond (a boss, a peer, and a report get different handling).
-- **Automate collection** — don't hand-maintain. Pull the org chart from
-  Teams/Graph (via the CDP session or an API), or another corporate source.
-- **Refresh:** weekly. Either a time-based trigger or a manual "refresh org
-  chart" button in the GUI (button first is simpler; scheduling can come later).
-- Output: something like `context/org-chart.md` (or JSON) fed to the brain
-  alongside `user-profile.md`.
+Implemented with the optional Cloudflare Worker:
 
-## 3. GUI as "avatar of me"
+- PC sends fresh orchestrator heartbeat state to the Worker.
+- Worker independently detects heartbeat loss after its configured timeout.
+- Worker sends a high-priority FCM health message to the phone.
+- Failed Worker health pushes are retried.
+- The phone's roughly 15-minute control sync provides a slower backup path for learning persisted Worker incidents.
+- Tunnel health and PC/orchestrator heartbeat are separate incidents.
 
-Direction: the GUI should feel like an avatar I've instructed to monitor and
-respond on my behalf — not just a log viewer.
+Still to decide/implement:
 
-- **Visibility into monitoring:** show what it's doing right now — current tick,
-  which chats are unread/being read, the last decision per chat (not just the
-  global activity feed).
-- **Context supply** (design needed): a way for me to tell it what I'm doing /
-  working on so its replies are accurate. Candidates:
-  - A free-form "current focus" editor in the GUI → `context/current-focus.md`,
-    injected into the brain prompt next to `user-profile.md`. (Simplest; good first step.)
-  - Later: per-person / per-chat notes; auto-derived context (calendar, my
-    assigned TFS tickets).
-- **Editable monitoring instructions:** a GUI editor for standing instructions
-  to the brain (tone, things to never say, when to wake me) — a user-editable
-  layer of the system prompt, versioned so edits are auditable.
+- When the Worker is disabled and the phone's periodic direct-PC control sync fails, decide whether the phone should raise a local health incident. A failed request may mean the PC/tunnel is down or merely that the phone has poor connectivity, so the incident should probably be phrased as the PC control path being unreachable rather than asserting that the PC is dead.
+- Deploy and live-test the Worker only if the independent watchdog path is wanted in production.
 
-## 4. Android companion app
+## Alert durability
 
-Decisions locked 2026-08-01: Kotlin + WebView shell (dashboard = the existing
-web GUI at the Cloudflare-tunnel URL, native code only for push + alarm sound).
-Sideloaded APK, personal use only; target a Pixel 6 / Android 16, minSdk ~26
-for broad compatibility. Alert sound: custom bundled sound on an
-`IMPORTANCE_HIGH` notification channel (channels are immutable after creation —
-get it right in the first build).
+Deferred for now.
 
-- Server side is DONE: `alert_phone` action + `alerts.notifyAll` mode +
-  `/ws/alerts` hub in the GUI server + FCM transport in `src/alerts.mjs`.
-- Transport is config-selectable (`alerts.transport`): `websocket` (app
-  maintains a connection to the hub) or `fcm` (recommended for alarms — the
-  only mechanism that reliably wakes a dozing phone).
-- App scaffold EXISTS (`android-app/`): Kotlin + WebView, foreground-service
-  WebSocket with backoff reconnect, alarm notification channel with bundled
-  sound, boot receiver, battery-optimization flow, URL/token settings screen.
-  Written without a compiler — first build in Android Studio is the smoke test.
-- Still needed: build/sideload the app (Android Studio + SDK 34), on-device
-  test via `adb reverse tcp:8090 tcp:8090`, Cloudflare tunnel + Access for the
-  GUI, then the Firebase project to switch transport to `fcm`.
+`alert_phone` currently attempts the preferred transport and then the alternate transport. If both fail, the alert payload is not retained for later delivery.
 
-## Known gaps (from the 2026-08-01 state report)
+Later reliability work should consider:
 
-- ~~LLM provider call in `src/brain.mjs` is still a scaffold~~ → DONE 2026-08-02:
-  `gemini` provider implemented (config: `brain.provider`, `brain.model`,
-  `brain.apiKey` or env). anthropic/openai remain seams.
-- ~~Escalation transport is console-only~~ → DONE 2026-08-01: `alert_phone`
-  action + `alerts.notifyAll` mode (websocket hub + FCM). The companion app
-  itself is still to be built (section 4).
-- The loop triages the user's **own** outbound messages (Teams marks replies to
-  you as unread). Suppress self-authored "latest" messages before enabling real
-  auto-send.
-- `context/user-profile.md` is still mostly template.
-- TFS agent: never deployed on the VM, never tested against live TFS;
-  `run_agent_task` unimplemented.
+- a persisted outbound alert queue keyed by `alertId`;
+- retrying the same `alertId` after transient transport recovery;
+- optionally adding phone receipt acknowledgements if confirmed device receipt becomes a requirement.
+
+Android already deduplicates by `alertId`, so retrying the same alert later can be made safe without causing duplicate alarms.
+
+## Future automation features
+
+These are product ideas, not blockers for the current alert-only system.
+
+### Response policy
+
+If automatic Teams replies are enabled again, replace the old binary whitelist model with a more useful risk policy. Likely requirements:
+
+- low-risk messages may be answered automatically;
+- benign messages may be ignored;
+- uncertain or risky messages should alert the user rather than guess;
+- follow-ups should take earlier decisions into account;
+- deterministic gates should remain for hard constraints, with the LLM handling the gray area.
+
+The current `alert-only` mode prevents Teams sends regardless of whitelist state.
+
+### Org hierarchy awareness
+
+Potential future context for the brain:
+
+- relevant managers, peers, and reports;
+- automatically refreshed rather than hand-maintained;
+- supplied to the model as structured context.
+
+### GUI context and instructions
+
+Potential additions:
+
+- editable current-focus/context supplied to the brain;
+- editable standing monitoring/reply instructions;
+- per-person or per-chat notes if they prove useful.
+
+The current GUI already exposes the monitoring/decision/action pipeline and connection diagnostics, so the old TODO describing it as primarily a log viewer is obsolete.
+
+## Separate TFS integration
+
+`tfs-agent/` is a separate experimental integration for executing TFS operations from an outbound-only VM. It is not part of Teams monitoring or phone-alert delivery and is not required for the current system.
+
+No TFS work is currently treated as a blocker here. If that integration is no longer wanted, it can be removed separately rather than mixed into the alert-system backlog.
