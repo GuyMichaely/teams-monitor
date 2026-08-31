@@ -3,9 +3,9 @@
 
 const LAYOUT_STYLE = `
 <style id="dashboardLayoutStyle">
-  main { max-width:1600px; padding:14px 18px 24px; }
+  main { width:100%; max-width:none; margin:0; padding:14px 18px 24px; }
   .dashboard-title { margin-bottom:10px; }
-  .dashboard-split { display:grid; grid-template-columns:minmax(360px,.82fr) minmax(520px,1.35fr); gap:18px; align-items:start; }
+  .dashboard-split { display:grid; grid-template-columns:clamp(480px,36vw,620px) minmax(0,1fr); gap:18px; align-items:start; }
   .dashboard-pane { min-width:0; }
   .dashboard-pane-head { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--line); }
   .dashboard-pane-head h2 { margin:0; }
@@ -15,6 +15,8 @@ const LAYOUT_STYLE = `
   .dashboard-section:first-of-type > h2 { margin-top:10px; }
   .dashboard-left .grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .dashboard-left #profile { min-height:260px; }
+  .brain-file-note { color:var(--dim); font-size:12px; margin:0 0 8px; }
+  .brain-file-note code { color:var(--fg); }
   .dashboard-left #diagnosticsSummary { margin:0; }
   .dashboard-left .diag-summary { display:grid; grid-template-columns:1fr; gap:6px; }
   .dashboard-left .diag-pill { white-space:normal; line-height:1.35; }
@@ -125,7 +127,16 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
   else main.prepend(split);
 
   const profile = document.getElementById("profile");
-  if (profile) profile.setAttribute("rows", "18");
+  if (profile) {
+    profile.setAttribute("rows", "18");
+    const card = profile.closest(".card");
+    if (card && !card.querySelector(".brain-file-note")) {
+      const note = document.createElement("div");
+      note.className = "brain-file-note";
+      note.innerHTML = 'Stored in <code>context/user-profile.md</code>';
+      card.insertBefore(note, profile);
+    }
+  }
 
   function updateHealthHeadline() {
     const dot = document.getElementById("systemHealthDot");

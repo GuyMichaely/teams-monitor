@@ -45,15 +45,26 @@ async function readJsonBody(req, cap = 8192) {
   catch { throw Object.assign(new Error("invalid JSON"), { httpCode: 400 }); }
 }
 
+function configuredFallbackTransport(alerts, primary) {
+  if (Object.prototype.hasOwnProperty.call(alerts || {}, "fallbackTransport")) {
+    const value = alerts.fallbackTransport;
+    if (value === null || value === false || value === "none") return null;
+    return String(value || "");
+  }
+  return primary === "fcm" ? "websocket" : "fcm";
+}
+
 async function runtimeConfig() {
   const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
   const fcm = cfg.alerts?.fcm || {};
   const resolvedFcm = await resolveFcmConfig(fcm);
+  const transport = cfg.alerts?.transport || "websocket";
   return {
     pollIntervalMs: cfg.pollIntervalMs || 15000,
     mode: cfg.automation?.mode || "respond",
     alerts: {
-      transport: cfg.alerts?.transport || "websocket",
+      transport,
+      fallbackTransport: configuredFallbackTransport(cfg.alerts, transport),
       fcmProjectId: resolvedFcm.projectId,
       fcmRegistrationPresent: registrationFileExists(),
       fcmServiceAccountPresent: resolvedFcm.serviceAccountPresent,
@@ -68,18 +79,43 @@ async function saveAlertConfig(req) {
   if (!["websocket", "fcm"].includes(transport)) {
     throw Object.assign(new Error("transport must be websocket or fcm"), { httpCode: 400 });
   }
+
   const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
   cfg.alerts = cfg.alerts || {};
+  const hasRequestedFallback = Object.prototype.hasOwnProperty.call(body, "fallbackTransport");
+  const hadExplicitFallback = Object.prototype.hasOwnProperty.call(cfg.alerts, "fallbackTransport");
+  let fallbackTransport = hasRequestedFallback
+    ? body.fallbackTransport
+    : hadExplicitFallback
+      ? configuredFallbackTransport(cfg.alerts, cfg.alerts.transport || "websocket")
+      : (transport === "fcm" ? "websocket" : "fcm");
+
+  if (fallbackTransport === "none" || fallbackTransport === false) fallbackTransport = null;
+  if (fallbackTransport !== null && fallbackTransport !== undefined) {
+    fallbackTransport = String(fallbackTransport || "");
+    if (!["websocket", "fcm"].includes(fallbackTransport)) {
+      throw Object.assign(new Error("fallbackTransport must be websocket, fcm, or null"), { httpCode: 400 });
+    }
+    if (fallbackTransport === transport) {
+      if (!hasRequestedFallback) fallbackTransport = transport === "fcm" ? "websocket" : "fcm";
+      else throw Object.assign(new Error("fallbackTransport must differ from the primary transport"), { httpCode: 400 });
+    }
+  } else {
+    fallbackTransport = null;
+  }
+
   const nextFcm = {
     ...(cfg.alerts.fcm || {}),
     serviceAccountFile: cfg.alerts.fcm?.serviceAccountFile || DEFAULT_FCM_SERVICE_ACCOUNT_FILE,
   };
   delete nextFcm.projectId;
   const resolvedFcm = await resolveFcmConfig(nextFcm);
-  if (transport === "fcm" && !resolvedFcm.projectId) {
+  if ((transport === "fcm" || fallbackTransport === "fcm") && !resolvedFcm.projectId) {
     throw Object.assign(new Error("Firebase project ID missing from service account"), { httpCode: 400 });
   }
+
   cfg.alerts.transport = transport;
+  cfg.alerts.fallbackTransport = fallbackTransport;
   cfg.alerts.fcm = nextFcm;
   delete cfg.alerts.fcm.deviceToken;
   await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
@@ -254,28 +290,31 @@ const TUNNEL_HTML = `
     </div>
 
     <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
-      <div class="row" style="justify-content:space-between">
-        <div>
-          <strong>Preferred phone notification transport</strong>
-          <div style="color:var(--dim);font-size:12px">The other transport remains available for fallback and recovery.</div>
-        </div>
-        <div class="row">
+      <div>
+        <strong>Phone notification delivery</strong>
+        <div style="color:var(--dim);font-size:12px">The primary transport is tried first. Fallback is optional.</div>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end">
+        <label style="display:flex;flex-direction:column;gap:4px;color:var(--dim);font-size:12px">
+          Primary
           <select id="alertTransport" onchange="renderAlertTransportFields()"
             style="background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
             <option value="websocket">WebSocket</option>
             <option value="fcm">Firebase Cloud Messaging</option>
           </select>
-          <button class="secondary" onclick="saveAlertTransport()">Save</button>
-        </div>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;color:var(--dim);font-size:12px">
+          Fallback
+          <select id="alertFallbackTransport" onchange="renderAlertTransportFields(this.value)"
+            style="background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
+          </select>
+        </label>
+        <button class="secondary" onclick="saveAlertTransport()">Save</button>
       </div>
       <div id="fcmFields" style="margin-top:10px">
-        <span id="fcmStatus" style="color:var(--dim);font-size:12px"></span>
+        <div id="fcmStatus" style="display:flex;flex-direction:column;gap:6px"></div>
       </div>
     </div>
-
-    <p style="color:var(--dim);font-size:12px;margin:10px 0 0">
-      The tunnel exposes ${TUNNEL_HOST} to this GUI and the phone app. Stopping it remotely disconnects both.
-    </p>
   </div>
 `;
 
@@ -298,28 +337,57 @@ function renderTunnelStatus(s) {
   document.getElementById("btnTunnelStart").disabled = s.running;
   document.getElementById("btnTunnelStop").disabled = !s.running;
 }
+function transportName(value) {
+  return value === "fcm" ? "Firebase Cloud Messaging" : "WebSocket";
+}
+function renderFcmConfigStatus(c) {
+  const status = document.getElementById("fcmStatus");
+  if (!status) return;
+  const rows = [
+    {
+      label: "Firebase project",
+      value: c.alerts?.fcmProjectId || "missing",
+      ok: !!c.alerts?.fcmProjectId,
+      detail: "Identifies the Firebase project this PC sends through.",
+    },
+    {
+      label: "Service account",
+      value: c.alerts?.fcmServiceAccountValid ? "valid" : c.alerts?.fcmServiceAccountPresent ? "invalid" : "missing",
+      ok: !!c.alerts?.fcmServiceAccountValid,
+      detail: "Credentials used by this PC to authenticate to Firebase Cloud Messaging.",
+    },
+    {
+      label: "Phone registration",
+      value: c.alerts?.fcmRegistrationPresent ? "present" : "missing",
+      ok: !!c.alerts?.fcmRegistrationPresent,
+      detail: "A stored phone registration identifier tells FCM which app instance to target.",
+    },
+  ];
+  status.replaceChildren();
+  for (const row of rows) {
+    const line = document.createElement("div");
+    line.style.cssText = "display:grid;grid-template-columns:130px minmax(90px,auto) 1fr;gap:8px;align-items:baseline;font-size:12px";
+    const label = document.createElement("strong");
+    label.textContent = row.label;
+    const value = document.createElement("span");
+    value.textContent = row.value;
+    value.style.color = row.ok ? "var(--ok)" : "var(--bad)";
+    const detail = document.createElement("span");
+    detail.textContent = row.detail;
+    detail.style.color = "var(--dim)";
+    line.append(label, value, detail);
+    status.appendChild(line);
+  }
+}
 function applyRuntimeConfig(c) {
   const input = document.getElementById("pollIntervalSec");
   if (input && document.activeElement !== input) input.value = String(c.pollIntervalMs / 1000);
   const transport = c.alerts?.transport || "websocket";
   const transportSelect = document.getElementById("alertTransport");
   if (transportSelect && document.activeElement !== transportSelect) transportSelect.value = transport;
+  renderAlertTransportFields(c.alerts?.fallbackTransport == null ? "none" : c.alerts.fallbackTransport);
+  renderFcmConfigStatus(c);
 
-  const status = document.getElementById("fcmStatus");
-  if (status) {
-    const projectStatus = c.alerts?.fcmProjectId ? "project ID ✓ (service account)" : "project ID missing";
-    const serviceAccountStatus = c.alerts?.fcmServiceAccountValid
-      ? "service account ✓"
-      : c.alerts?.fcmServiceAccountPresent
-        ? "service account invalid"
-        : "service account missing";
-    status.textContent = [
-      projectStatus,
-      serviceAccountStatus,
-      c.alerts?.fcmRegistrationPresent ? "phone registration ✓" : "phone registration missing",
-    ].join(" · ");
-  }
-  renderAlertTransportFields();
   const alertOnly = c.mode === "alert-only";
   const whitelistHeading = [...document.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Auto-send whitelist");
   if (whitelistHeading) {
@@ -338,21 +406,41 @@ async function refreshRuntimeConfig() {
 async function refreshRuntimeStatus() {
   await Promise.all([refreshTunnelStatus(), refreshRuntimeConfig()]);
 }
-function renderAlertTransportFields() {
-  const fcm = document.getElementById("alertTransport")?.value === "fcm";
+function renderAlertTransportFields(preferredFallback) {
+  const primary = document.getElementById("alertTransport")?.value || "websocket";
+  const fallbackSelect = document.getElementById("alertFallbackTransport");
+  if (!fallbackSelect) return;
+  const other = primary === "fcm" ? "websocket" : "fcm";
+  const previous = preferredFallback === undefined
+    ? (fallbackSelect.value || other)
+    : (preferredFallback || "none");
+  const fallbackEnabled = previous !== "none";
+
+  fallbackSelect.replaceChildren();
+  const none = document.createElement("option");
+  none.value = "none";
+  none.textContent = "None";
+  const alternate = document.createElement("option");
+  alternate.value = other;
+  alternate.textContent = transportName(other);
+  fallbackSelect.append(none, alternate);
+  fallbackSelect.value = fallbackEnabled ? other : "none";
+
   const fields = document.getElementById("fcmFields");
-  if (fields) fields.style.display = fcm ? "block" : "none";
+  if (fields) fields.style.display = (primary === "fcm" || fallbackSelect.value === "fcm") ? "block" : "none";
 }
 async function saveAlertTransport() {
   const transport = document.getElementById("alertTransport").value;
+  const fallbackValue = document.getElementById("alertFallbackTransport").value;
+  const fallbackTransport = fallbackValue === "none" ? null : fallbackValue;
   try {
     const result = await tunnelApi("/api/config/alerts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transport }),
+      body: JSON.stringify({ transport, fallbackTransport }),
     });
     applyRuntimeConfig(result);
-    toast(transport === "fcm" ? "FCM selected" : "WebSocket selected");
+    toast("Phone delivery policy saved");
   } catch (e) { toast(e.message); }
 }
 async function savePollInterval() {

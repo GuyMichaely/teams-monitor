@@ -59,8 +59,8 @@ export async function runActions(invokeActions, ctx) {
 registerAction({
   name: "alert_phone",
   description:
-    "Push an alert to the user's phone. config.alerts.transport selects the preferred " +
-    "transport (WebSocket or FCM); alerts.mjs may use the other transport as fallback.",
+    "Push an alert to the user's phone. config.alerts.transport selects the primary " +
+    "transport; config.alerts.fallbackTransport optionally selects a fallback.",
   sideEffect: true,
   run: async (args) => {
     const config = await loadConfig();

@@ -15,7 +15,7 @@ src/
   brain.mjs         Gemini decision layer.
   orchestrator.mjs  Poll → read → dedupe → decide → act → log. Writes real tick heartbeat.
   actions.mjs       Action registry including alert_phone.
-  alerts.mjs        Preferred/fallback FCM + WebSocket delivery and recovery.
+  alerts.mjs        Configurable primary FCM/WebSocket delivery, optional fallback, and recovery.
   alert-runtime.mjs Persisted transport/FID generation/failure/backoff state.
   worker-control.mjs Optional Cloudflare Worker control-plane client.
   tunnel-health.mjs PC-side public tunnel probe when Worker is disabled.

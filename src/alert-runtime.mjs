@@ -319,6 +319,34 @@ export async function recordTransportFailure(
   return await updateAlertRuntime(primaryTransport, mutate);
 }
 
+export async function recordPrimaryOnlyFailure(
+  transport,
+  primaryTransport,
+  { error = null, registrationInvalid = false, registrationGeneration = null } = {}
+) {
+  const mutate = (runtime) => {
+    runtime.delivery.failures[transport] = (runtime.delivery.failures[transport] || 0) + 1;
+    runtime.delivery.state = "primary_failed";
+    runtime.delivery.activeTransport = primaryTransport;
+    runtime.recoveryReason = error || `${transport}_failed`;
+    runtime.websocketWanted = primaryTransport === "websocket";
+    if (transport === "fcm") {
+      runtime.fcm.lastError = error || null;
+      if (registrationInvalid) {
+        runtime.fcm.registration = "suspect";
+        runtime.fcm.nextAttemptAt = null;
+        runtime.fcm.backoffMs = 0;
+      }
+    }
+    return runtime;
+  };
+
+  if (transport === "fcm") {
+    return await mutateForFcmGeneration(primaryTransport, registrationGeneration, mutate);
+  }
+  return await updateAlertRuntime(primaryTransport, mutate);
+}
+
 export async function recordFcmBackoff(
   primaryTransport,
   { error = null, delayMs = 0, registrationGeneration = null } = {}
@@ -362,12 +390,24 @@ export async function requestWebSocket(primaryTransport, reason = "fallback") {
 
 export async function controlState(config) {
   const primaryTransport = config?.alerts?.transport || "websocket";
+  const alerts = config?.alerts || {};
+  const fallbackTransport = Object.prototype.hasOwnProperty.call(alerts, "fallbackTransport")
+    ? (alerts.fallbackTransport === null || alerts.fallbackTransport === false || alerts.fallbackTransport === "none"
+        ? null
+        : String(alerts.fallbackTransport || ""))
+    : (primaryTransport === "fcm" ? "websocket" : "fcm");
   const runtime = await readAlertRuntime(primaryTransport);
   const registration = await readFcmRegistration();
+  const delivery = { ...runtime.delivery };
+  if (!fallbackTransport && delivery.state === "fallback") {
+    delivery.state = "primary_failed";
+    delivery.activeTransport = primaryTransport;
+  }
   return {
     primaryTransport,
-    delivery: runtime.delivery,
-    websocketWanted: primaryTransport === "websocket" || !!runtime.websocketWanted,
+    fallbackTransport,
+    delivery,
+    websocketWanted: primaryTransport === "websocket" || (fallbackTransport === "websocket" && !!runtime.websocketWanted),
     fcm: {
       registrationStatus: runtime.fcm.registration,
       registrationPresent: !!registration,

@@ -1,5 +1,5 @@
-// Phone alert delivery. config.alerts.transport is the preferred transport;
-// the other transport is available as fallback.
+// Phone alert delivery. config.alerts.transport is primary; alerts.fallbackTransport
+// selects an optional fallback. Missing fallbackTransport preserves the legacy other-transport fallback.
 
 import { createSign, randomUUID } from "node:crypto";
 import {
@@ -8,6 +8,7 @@ import {
   readAlertRuntime,
   readFcmRegistration,
   recordFcmBackoff,
+  recordPrimaryOnlyFailure,
   recordTransportFailure,
   recordTransportSuccess,
   requestWebSocket,
@@ -34,6 +35,23 @@ function failoverSettings(config, transport) {
 
 function otherTransport(transport) {
   return transport === "fcm" ? "websocket" : "fcm";
+}
+
+export function resolveFallbackTransport(config, primary) {
+  const alerts = config?.alerts || {};
+  if (!Object.prototype.hasOwnProperty.call(alerts, "fallbackTransport")) {
+    return otherTransport(primary);
+  }
+  const value = alerts.fallbackTransport;
+  if (value === null || value === false || value === "none") return null;
+  const fallback = String(value || "");
+  if (!["websocket", "fcm"].includes(fallback)) {
+    throw new Error(`unknown alerts.fallbackTransport: "${fallback}"`);
+  }
+  if (fallback === primary) {
+    throw new Error("alerts.fallbackTransport must differ from alerts.transport");
+  }
+  return fallback;
 }
 
 function errorSummary(error) {
@@ -67,7 +85,7 @@ export async function sendAlert(payload, config) {
     throw new Error(`unknown alerts.transport: "${primary}" (expected "websocket" or "fcm")`);
   }
 
-  const secondary = otherTransport(primary);
+  const secondary = resolveFallbackTransport(config, primary);
   const alertId = payload.alertId || randomUUID();
   const body = {
     kind: "alert",
@@ -79,11 +97,42 @@ export async function sendAlert(payload, config) {
     primaryTransport: primary,
   };
 
+  if (!secondary) return await sendPrimaryOnly(body, config, primary);
+
   const runtime = await readAlertRuntime(primary);
   if (runtime.delivery.state === "fallback") {
     return await sendWhileFallback(body, config, primary, secondary);
   }
   return await sendPrimaryFirst(body, config, primary, secondary);
+}
+
+async function sendPrimaryOnly(body, config, primary) {
+  const attempts = [];
+  const result = await attempt(primary, body, config).catch((error) => ({ error }));
+  if (!result.error) {
+    await recordTransportSuccess(primary, primary, transportResultOptions(primary, result));
+    attempts.push({ transport: primary, ok: true, ...result });
+    return { alertId: body.alertId, transport: primary, attempts };
+  }
+
+  const error = result.error;
+  const classification = classifyFailure(primary, error);
+  attempts.push(failedAttempt(primary, error, classification));
+  if (!(primary === "fcm" && classification.backoffActive)) {
+    const failedState = await recordPrimaryOnlyFailure(primary, primary, {
+      error: errorSummary(error),
+      registrationInvalid: classification.registrationInvalid,
+      ...transportResultOptions(primary, error),
+    });
+    if (primary === "fcm" && classification.retryAfterMs > 0 && !failedState.ignoredStaleFcmResult) {
+      await recordFcmBackoff(primary, {
+        error: errorSummary(error),
+        delayMs: classification.retryAfterMs,
+        ...transportResultOptions(primary, error),
+      });
+    }
+  }
+  throw deliveryError(body.alertId, attempts);
 }
 
 async function sendPrimaryFirst(body, config, primary, secondary) {
@@ -591,12 +640,19 @@ export async function recoverAlertTransport(config) {
     const classification = classifyFailure("fcm", error);
     const generationOptions = transportResultOptions("fcm", error);
     if (classification.registrationInvalid) {
-      const failedState = await markFcmRegistrationSuspect(
-        primary,
-        classification.code || "fcm_registration_invalid",
-        generationOptions
-      );
-      if (!failedState.ignoredStaleFcmResult) {
+      const fallback = resolveFallbackTransport(config, primary);
+      const failedState = fallback
+        ? await markFcmRegistrationSuspect(
+            primary,
+            classification.code || "fcm_registration_invalid",
+            generationOptions
+          )
+        : await recordPrimaryOnlyFailure(primary, primary, {
+            error: errorSummary(error),
+            registrationInvalid: true,
+            ...generationOptions,
+          });
+      if (fallback === "websocket" && !failedState.ignoredStaleFcmResult) {
         publishWorkerEvent(config, {
           type: "fcm_registration_invalid",
           actions: ["ensure_fcm_registration", "start_ws"],

@@ -7,10 +7,12 @@ import {
   readAlertRuntime,
   readFcmRegistration,
   recordFcmBackoff,
+  recordPrimaryOnlyFailure,
   recordTransportFailure,
   recordTransportSuccess,
   saveFcmRegistration,
 } from "../src/alert-runtime.mjs";
+import { resolveFallbackTransport } from "../src/alerts.mjs";
 
 const RUNTIME_LOCK_FILE = ALERT_RUNTIME_FILE.replace(/alert-runtime\.json$/, "alert-runtime.lock");
 const REGISTRATION_LOCK_FILE = FCM_REGISTRATION_FILE.replace(/fcm-registration\.json$/, "fcm-registration.lock");
@@ -31,6 +33,10 @@ async function clean() {
 
 await clean();
 try {
+  assert(resolveFallbackTransport({ alerts: {} }, "fcm") === "websocket", "legacy config defaults to other transport fallback");
+  assert(resolveFallbackTransport({ alerts: { fallbackTransport: null } }, "fcm") === null, "explicit null disables fallback");
+  assert(resolveFallbackTransport({ alerts: { fallbackTransport: "fcm" } }, "websocket") === "fcm", "explicit fallback is honored");
+
   let state = await readAlertRuntime("fcm");
   assert(state.delivery.state === "primary_working", "fresh runtime is primary_working");
   assert(state.websocketWanted === false, "FCM primary does not want WS initially");
@@ -197,6 +203,18 @@ try {
   );
   state = await readAlertRuntime("fcm");
   assert(state.delivery.failures.fcm === 10, `concurrent failure count is 10, got ${state.delivery.failures.fcm}`);
+
+  await clean();
+  state = await recordPrimaryOnlyFailure("fcm", "fcm", {
+    error: "primary-only failure",
+    registrationInvalid: true,
+  });
+  assert(state.delivery.state === "primary_failed", "primary-only failure does not enter fallback");
+  assert(state.delivery.activeTransport === "fcm", "primary-only failure keeps FCM active");
+  assert(state.websocketWanted === false, "primary-only FCM failure does not request WebSocket");
+  assert(state.fcm.registration === "suspect", "primary-only invalid registration is still tracked");
+  state = await recordTransportSuccess("fcm", "fcm");
+  assert(state.delivery.state === "primary_working", "primary-only success recovers primary state");
 
   console.log("alert runtime smoke: ok");
 } finally {
