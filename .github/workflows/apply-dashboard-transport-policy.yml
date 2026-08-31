@@ -43,12 +43,11 @@ jobs:
           node --check scripts/smoke-alert-state.mjs
           python -m json.tool config/config.example.json >/dev/null
 
-      - name: Commit result and remove temporary patch machinery
+      - name: Commit source changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/apply-dashboard-transport-policy.yml
-          git rm .github/scripts/apply-dashboard-transport-policy.py
+          git checkout -- .github/scripts/apply-dashboard-transport-policy.py
           git add src/gui-server-runtime.mjs src/alerts.mjs src/alert-runtime.mjs src/gui-dashboard-layout.mjs src/actions.mjs scripts/smoke-alert-state.mjs config/config.example.json AGENTS.md
           git commit -m "Refine dashboard delivery controls"
           git push origin HEAD:main
