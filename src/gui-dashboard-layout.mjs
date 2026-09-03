@@ -179,6 +179,54 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
     new MutationObserver(updateHealthHeadline).observe(summary, { childList:true, subtree:true, attributes:true, characterData:true });
   }
   updateHealthHeadline();
+
+  // Replace the observability layer's polling-interval label with the age of
+  // the most recent successful fetch for each view.
+  let pipelineUpdatedAt = null;
+  let diagnosticsUpdatedAt = null;
+
+  function updatedAge(at) {
+    if (!at) return "not updated yet";
+    const seconds = Math.max(0, Math.floor((Date.now() - at) / 1000));
+    if (seconds < 2) return "updated just now";
+    if (seconds < 60) return "updated " + seconds + "s ago";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return "updated " + minutes + "m ago";
+    const hours = Math.floor(minutes / 60);
+    return "updated " + hours + "h ago";
+  }
+
+  function updateObservabilityBadges() {
+    const pipelineBadge = document.getElementById("pipelineLiveBadge");
+    const diagnosticsBadge = document.getElementById("diagnosticsLiveBadge");
+    if (pipelineBadge) {
+      const live = !pipelineBadge.classList.contains("paused");
+      pipelineBadge.textContent = (live ? "LIVE" : "PAUSED") + " · " + updatedAge(pipelineUpdatedAt);
+    }
+    if (diagnosticsBadge) {
+      const live = !diagnosticsBadge.classList.contains("paused");
+      diagnosticsBadge.textContent = (live ? "LIVE" : "PAUSED") + " · " + updatedAge(diagnosticsUpdatedAt);
+    }
+  }
+
+  if (typeof tunnelApi === "function") {
+    const baseTunnelApi = tunnelApi;
+    tunnelApi = async function(path, opts) {
+      const result = await baseTunnelApi(path, opts);
+      const requestPath = String(path || "");
+      if (requestPath.startsWith("/api/activity")) pipelineUpdatedAt = Date.now();
+      if (requestPath.startsWith("/api/diagnostics")) diagnosticsUpdatedAt = Date.now();
+      updateObservabilityBadges();
+      return result;
+    };
+  }
+
+  updateObservabilityBadges();
+  setInterval(updateObservabilityBadges, 1000);
+  // The observability script starts its first requests before this layout script
+  // wraps tunnelApi, so force one tracked refresh for each view.
+  if (typeof obsRefreshPipeline === "function") obsRefreshPipeline(true);
+  if (typeof obsRefreshDiagnostics === "function") obsRefreshDiagnostics(true);
 })();
 </script>`;
 
