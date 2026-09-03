@@ -15,12 +15,12 @@ const ABSOLUTE_LOG_TIME_SCRIPT = `<script id="absoluteLogTimeScript">
     });
   }
 
-  // Message-pipeline flow headers previously used the core relative `ago()`
-  // helper through obsAgo(). Keep stage deltas (+120ms, +1.2s) unchanged since
-  // those are durations, not wall-clock timestamps.
+  // Message-pipeline flow headers previously used the core relative ago() helper
+  // through obsAgo(). Keep stage deltas (+120ms, +1.2s) unchanged since those
+  // are durations, not wall-clock timestamps.
   if (typeof obsAgo === "function") obsAgo = logDateTime;
 
-  // The legacy activity/escalation feeds call the core lexical `ago()` helper,
+  // The legacy activity/escalation feeds call the core lexical ago() helper,
   // which cannot be reassigned from an injected script. Replace their renderer
   // instead so every visible event timestamp is an absolute local datetime.
   if (typeof renderActivity === "function") {
