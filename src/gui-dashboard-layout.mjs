@@ -180,20 +180,21 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
   }
   updateHealthHeadline();
 
-  // Replace the observability layer's polling-interval label with the age of
-  // the most recent successful fetch for each view.
+  // Show the local date/time of the most recent successful fetch for each view.
   let pipelineUpdatedAt = null;
   let diagnosticsUpdatedAt = null;
 
-  function updatedAge(at) {
+  function updatedTimestamp(at) {
     if (!at) return "not updated yet";
-    const seconds = Math.max(0, Math.floor((Date.now() - at) / 1000));
-    if (seconds < 2) return "updated just now";
-    if (seconds < 60) return "updated " + seconds + "s ago";
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return "updated " + minutes + "m ago";
-    const hours = Math.floor(minutes / 60);
-    return "updated " + hours + "h ago";
+    return "updated " + new Date(at).toLocaleString([], {
+      year:"numeric",
+      month:"short",
+      day:"numeric",
+      hour:"numeric",
+      minute:"2-digit",
+      second:"2-digit",
+      timeZoneName:"short",
+    });
   }
 
   function updateObservabilityBadges() {
@@ -201,11 +202,11 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
     const diagnosticsBadge = document.getElementById("diagnosticsLiveBadge");
     if (pipelineBadge) {
       const live = !pipelineBadge.classList.contains("paused");
-      pipelineBadge.textContent = (live ? "LIVE" : "PAUSED") + " · " + updatedAge(pipelineUpdatedAt);
+      pipelineBadge.textContent = (live ? "LIVE" : "PAUSED") + " · " + updatedTimestamp(pipelineUpdatedAt);
     }
     if (diagnosticsBadge) {
       const live = !diagnosticsBadge.classList.contains("paused");
-      diagnosticsBadge.textContent = (live ? "LIVE" : "PAUSED") + " · " + updatedAge(diagnosticsUpdatedAt);
+      diagnosticsBadge.textContent = (live ? "LIVE" : "PAUSED") + " · " + updatedTimestamp(diagnosticsUpdatedAt);
     }
   }
 
