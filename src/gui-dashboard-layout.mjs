@@ -4,7 +4,6 @@
 const LAYOUT_STYLE = `
 <style id="dashboardLayoutStyle">
   main { width:100%; max-width:none; margin:0; padding:14px 18px 24px; }
-  .dashboard-title { margin-bottom:10px; }
   .dashboard-split { display:grid; grid-template-columns:clamp(480px,36vw,620px) minmax(0,1fr); gap:18px; align-items:start; }
   .dashboard-pane { min-width:0; }
   .dashboard-pane-head { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--line); }
@@ -30,7 +29,7 @@ const LAYOUT_STYLE = `
   @media (min-width:1051px) {
     body { overflow:hidden; }
     main { height:100vh; overflow:hidden; }
-    .dashboard-split { height:calc(100vh - 62px); overflow:hidden; align-items:stretch; }
+    .dashboard-split { height:100%; overflow:hidden; align-items:stretch; }
     .dashboard-pane { height:100%; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding-right:8px; }
     .dashboard-pane-head { position:sticky; top:0; z-index:4; background:var(--bg); padding-top:2px; }
   }
@@ -53,10 +52,14 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
   const main = document.querySelector("main");
   if (!main || document.getElementById("dashboardSplit")) return;
 
-  const title = [...main.children].find(function(el) {
-    return el.querySelector?.("#statusDot") || el.id === "statusDot";
-  });
-  if (title) title.classList.add("dashboard-title");
+  // The runtime layer used to leave a title-only row at the top of <main>.
+  // The visible title is intentionally removed, so discard that now-empty row
+  // instead of trying to use it as an insertion anchor.
+  for (const child of [...main.children]) {
+    if (child.classList?.contains("row") && !child.textContent.trim() && child.children.length === 0) {
+      child.remove();
+    }
+  }
 
   const split = document.createElement("div");
   split.id = "dashboardSplit";
@@ -117,15 +120,14 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
   movePair("Orchestrator log", right);
 
   for (const child of [...main.children]) {
-    if (child === title || child === split) continue;
+    if (child === split) continue;
     if (child.tagName === "H2" || child.classList?.contains("card") || child.classList?.contains("feed") || child.tagName === "PRE") {
       right.appendChild(child);
     }
   }
 
   split.append(left, right);
-  if (title) title.insertAdjacentElement("afterend", split);
-  else main.prepend(split);
+  main.prepend(split);
 
   const profile = document.getElementById("profile");
   if (profile) {
