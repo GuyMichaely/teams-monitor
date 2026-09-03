@@ -94,7 +94,20 @@ const LAYOUT_SCRIPT = `<script id="dashboardLayoutScript">
 
   movePair("Runtime", left);
   movePair("Teams availability", left);
-  movePair("Overview", left, "Overview");
+
+  // Keep the old #cards node hidden because the legacy refresh function still
+  // writes into it. Removing the node outright would make refresh() throw, but
+  // there is no longer any visible Overview section in the dashboard.
+  const overviewHeading = sectionForHeading("Overview");
+  if (overviewHeading) {
+    const cards = overviewHeading.nextElementSibling;
+    overviewHeading.remove();
+    if (cards) {
+      cards.style.display = "none";
+      cards.setAttribute("aria-hidden", "true");
+    }
+  }
+
   movePair("Message policy", left);
   movePair("Auto-send whitelist", left);
   movePair("Brain context (user-profile.md)", left, "Brain context / instructions");
