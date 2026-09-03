@@ -9,6 +9,7 @@ import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
 import { injectObservability } from "./gui-observability-ui.mjs";
 import { injectPolicyUi } from "./gui-policy-ui.mjs";
+import { injectAbsoluteLogTime } from "./gui-absolute-log-time-ui.mjs";
 import { injectDashboardLayout } from "./gui-dashboard-layout.mjs";
 import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
 import { loadConfig } from "./context.mjs";
@@ -71,7 +72,7 @@ async function putPolicyRules(body) {
 }
 
 function decoratePage(page) {
-  return injectDashboardLayout(injectPolicyUi(injectObservability(page)));
+  return injectDashboardLayout(injectAbsoluteLogTime(injectPolicyUi(injectObservability(page))));
 }
 
 export function startGui(config) {
