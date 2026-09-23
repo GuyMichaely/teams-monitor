@@ -114,11 +114,65 @@
                 android:layout_height="wrap_content"
                 android:text="@string/test_alarm" />
 
-            <Button
-                android:id="@+id/btn_copy_diagnostics"
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/copy_diagnostics" />
+                android:layout_marginTop="16dp"
+                android:text="@string/diagnostics_title"
+                android:textStyle="bold" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:labelFor="@id/diagnostics_window"
+                android:text="@string/diagnostics_window_label" />
+            <Spinner
+                android:id="@+id/diagnostics_window"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:entries="@array/diagnostics_windows" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:labelFor="@id/diagnostics_category"
+                android:text="@string/diagnostics_category_label" />
+            <Spinner
+                android:id="@+id/diagnostics_category"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:entries="@array/diagnostics_categories" />
+            <EditText
+                android:id="@+id/diagnostics_search"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:inputType="text"
+                android:maxLength="200"
+                android:singleLine="true"
+                android:hint="@string/diagnostics_search_hint" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/diagnostics_export_note" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <Button
+                    android:id="@+id/btn_copy_diagnostics"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/copy_diagnostics"
+                    android:textAllCaps="false" />
+                <Button
+                    android:id="@+id/btn_share_diagnostics"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/share_diagnostics"
+                    android:textAllCaps="false" />
+            </LinearLayout>
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

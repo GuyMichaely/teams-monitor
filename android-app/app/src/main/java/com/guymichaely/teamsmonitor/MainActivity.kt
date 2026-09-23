@@ -15,6 +15,8 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +27,7 @@ import androidx.core.content.ContextCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
+    private var exportingDiagnostics = false
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) = refreshStatus()
@@ -93,10 +96,10 @@ class MainActivity : AppCompatActivity() {
             refreshTestButton()
         }
         findViewById<Button>(R.id.btn_copy_diagnostics).setOnClickListener {
-            AppLog.event(this, "diagnostics_copied")
-            val clipboard = getSystemService(ClipboardManager::class.java)
-            clipboard?.setPrimaryClip(ClipData.newPlainText("Teams Monitor diagnostics", AppLog.report(this)))
-            Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
+            exportDiagnostics(share = false)
+        }
+        findViewById<Button>(R.id.btn_share_diagnostics).setOnClickListener {
+            exportDiagnostics(share = true)
         }
 
         requestNotifPermission()
@@ -104,6 +107,51 @@ class MainActivity : AppCompatActivity() {
         if (!prefs.configured || prefs.serverUrl.isBlank()) {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+    }
+
+    private fun exportDiagnostics(share: Boolean) {
+        if (exportingDiagnostics) return
+        val windows = listOf(60 * 60 * 1000L, 24 * 60 * 60 * 1000L, 7 * 24 * 60 * 60 * 1000L, null)
+        val filter = DiagnosticsFilter(
+            windowMs = windows[findViewById<Spinner>(R.id.diagnostics_window).selectedItemPosition],
+            category = DiagnosticsFilter.Category.values()[findViewById<Spinner>(R.id.diagnostics_category).selectedItemPosition],
+            query = findViewById<EditText>(R.id.diagnostics_search).text.toString().trim()
+        )
+        exportingDiagnostics = true
+        setDiagnosticsButtonsEnabled(false)
+        val app = applicationContext
+        Thread({
+            val result = runCatching {
+                val report = AppLog.report(app, filter)
+                report to if (share) DiagnosticsExport.shareIntent(app, report) else null
+            }
+            runOnUiThread {
+                exportingDiagnostics = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                setDiagnosticsButtonsEnabled(true)
+                result.fold(onSuccess = { (report, intent) ->
+                    runCatching {
+                        if (intent != null) {
+                            startActivity(Intent.createChooser(intent, getString(R.string.share_diagnostics)))
+                        } else {
+                            val clipboard = getSystemService(ClipboardManager::class.java)
+                                ?: error("Clipboard unavailable")
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Teams Monitor diagnostics", report))
+                            Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
+                        }
+                    }.onFailure { diagnosticsExportFailed() }
+                }, onFailure = { diagnosticsExportFailed() })
+            }
+        }, "diagnostics-export").start()
+    }
+
+    private fun setDiagnosticsButtonsEnabled(enabled: Boolean) {
+        findViewById<Button>(R.id.btn_copy_diagnostics).isEnabled = enabled
+        findViewById<Button>(R.id.btn_share_diagnostics).isEnabled = enabled
+    }
+
+    private fun diagnosticsExportFailed() {
+        Toast.makeText(this, R.string.diagnostics_export_failed, Toast.LENGTH_LONG).show()
     }
 
     override fun onResume() {

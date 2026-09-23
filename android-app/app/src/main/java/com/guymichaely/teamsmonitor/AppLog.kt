@@ -41,7 +41,7 @@ object AppLog {
     }
 
     @Suppress("DEPRECATION")
-    fun report(context: Context): String {
+    fun report(context: Context, filter: DiagnosticsFilter = DiagnosticsFilter()): String {
         val app = context.applicationContext
         val prefs = Prefs(app)
         val pm = app.getSystemService(PowerManager::class.java)
@@ -51,14 +51,23 @@ object AppLog {
         val notificationsPermission = Build.VERSION.SDK_INT < 33 ||
             app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
+        val now = Instant.now()
+        val selected = filter.select(read(app), now)
         val header = buildString {
             appendLine("Teams Monitor diagnostics")
-            appendLine("generated=${Instant.now()}")
+            appendLine("generated=$now")
+            appendLine("logWindow=${filter.windowMs?.let { "${it / 60_000} minutes" } ?: "all retained"}")
+            appendLine("logCategory=${filter.category}")
+            appendLine("logSearch=${redact(filter.query).replace('\n', ' ')}")
+            appendLine("logExported=${selected.lines.size} matched=${selected.matchedCount} retained=${selected.retainedCount}")
+            appendLine("logOmittedByExportLimit=${selected.omittedCount} unparseableTimestamps=${selected.unparseableCount}")
+            appendLine("Log is rolling, not a complete history. Export keeps newest matching entries up to 200000 characters.")
+            appendLine("Timestamps are UTC. State below is current, not historical. Review chat/author names before sharing.")
             appendLine("appVersion=${packageInfo.versionName} ($versionCode)")
             appendLine("android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}")
             appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("connection=${AlertState.connection}")
-            appendLine("server=${prefs.serverUrl.ifBlank { "(not set)" }}")
+            appendLine("server=${redact(prefs.serverUrl).ifBlank { "(not set)" }}")
             appendLine("tokenConfigured=${prefs.token.isNotBlank()}")
             appendLine("preferredTransport=${prefs.alertTransport}")
             appendLine("websocketRecoveryRequested=${prefs.websocketRecoveryRequested}")
@@ -85,7 +94,10 @@ object AppLog {
             appendLine("alarmWhenScreenOn=${prefs.alarmWhenScreenOn}")
             appendLine("--- recent log ---")
         }
-        return header + read(app)
+        val report = header + if (selected.lines.isEmpty()) "(no events match these filters)\n"
+            else selected.lines.joinToString("\n", postfix = "\n")
+        val safeReport = redact(report)
+        return if (prefs.token.isNotBlank()) safeReport.replace(prefs.token, "<redacted>") else safeReport
     }
 
     fun networkSummary(context: Context): String {
@@ -107,7 +119,7 @@ object AppLog {
 
     private fun read(context: Context): String = synchronized(lock) {
         val file = File(context.applicationContext.filesDir, FILE_NAME)
-        if (file.exists()) file.readText() else "(no diagnostic events yet)\n"
+        if (file.exists()) file.readText() else ""
     }
 
     private fun trim(file: File) {

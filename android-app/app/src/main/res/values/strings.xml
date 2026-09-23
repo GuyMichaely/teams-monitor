@@ -6,7 +6,26 @@
     <string name="menu_battery">Disable battery optimization</string>
     <string name="open_dashboard">Open dashboard</string>
     <string name="test_alarm">Test alarm</string>
-    <string name="copy_diagnostics">Copy diagnostics</string>
+    <string name="copy_diagnostics">Copy</string>
+    <string name="share_diagnostics">Share file</string>
+    <string name="diagnostics_title">Diagnostics</string>
+    <string name="diagnostics_window_label">Time range</string>
+    <string name="diagnostics_category_label">Event category</string>
+    <string name="diagnostics_search_hint">Search event, chat, author, or alert ID</string>
+    <string name="diagnostics_export_note">Both buttons export these filters plus current device status. Up to 200,000 characters of newest matching events. Reports may contain chat and author names.</string>
+    <string name="diagnostics_export_failed">Could not export diagnostics. Try a shorter time range or another sharing app.</string>
+    <string-array name="diagnostics_windows">
+        <item>Last hour</item>
+        <item>Last 24 hours</item>
+        <item>Last 7 days</item>
+        <item>All retained events</item>
+    </string-array>
+    <string-array name="diagnostics_categories">
+        <item>All events</item>
+        <item>Alerts and notifications</item>
+        <item>Connections and registration</item>
+        <item>Errors and failures</item>
+    </string-array>
     <string name="diagnostics_copied">Diagnostics copied to clipboard</string>
     <string name="toggle_alarm_sound">Alarm sound</string>
     <string name="toggle_notifications">Notifications</string>

@@ -84,7 +84,11 @@ With the optional Worker enabled, heartbeat state and tunnel state can arrive by
 
 The app keeps a rolling diagnostic log in app-private storage. It records service lifecycle, WebSocket connection/reconnect/failure details, FID registration/synchronization, recovery/control activity, received alert metadata, heartbeat/tunnel incidents, and notification/alarm delivery or suppression decisions. Access tokens are never intentionally logged, and URL-style `access_token` values are redacted before persistence.
 
-Tap **Copy diagnostics** on the main screen to copy a report containing the recent log plus app/device version, current network state, battery-optimization status, notification permission/state, DND access, and relevant alert settings. Paste that report into a bug report or debugging chat.
+The main screen's diagnostics controls filter the export by time range, event category, and optional text search. **Copy** puts the filtered report on the clipboard; the adjacent **Share file** button opens Android's Sharesheet with a `.txt` attachment. Both include the selected filters and app/device version, current network state, battery-optimization status, notification permission/state, DND access, and relevant alert settings. Filtering exports does not erase the stored log.
+
+Reports can contain chat/author names and device information; review them before sharing. The share target receives temporary read access only to the exported file, not to the app's other files.
+
+The default is **Last hour / All events**. Other ranges are last 24 hours, last 7 days, and all retained events. Categories include alerts/notifications, connections/registration, and errors/failures. Search is case-insensitive across each event line (including chat, author, and alert ID). Both exports keep up to 200,000 characters of newest matching whole entries, with matched/exported/omitted counts in the header. Time-limited exports exclude malformed timestamps; all-retained exports can include them. Exports show current device status, not historical status. Share files are kept in a private cache, limited to 20 reports and cleaned of files older than 24 hours on the next share.
 
 The log is capped at roughly 1 MB and automatically retains the newest entries.
 
@@ -111,32 +115,20 @@ Health-watchdog settings:
 
 The main screen's **Test alarm** button uses the current alarm settings and becomes **Stop alarm** while the sound is playing.
 
-## Recommended install/update path: GitHub Release
+## GitHub build and download
 
-The repository workflow `.github/workflows/android-apk.yml` runs the same `assembleDebug` build used locally. GitHub Actions restores the development PC's existing `%USERPROFILE%\.android\debug.keystore` first, so CI APKs have the same signature as local debug builds and can update the currently installed app.
+Open the [latest APK download](https://github.com/GuyMichaely/teams-monitor/releases/download/android-latest/teams-monitor.apk) on the phone and install it, then open **Teams Monitor**. Configure the server URL and access token shown above; saving connection settings synchronizes the phone with the PC.
 
-One-time setup:
+The **Android APK** workflow (`.github/workflows/android-apk.yml`) runs when Android code or the workflow changes on `main`, and supports manual runs from GitHub Actions. It publishes `teams-monitor.apk` to the stable `android-latest` release and also uploads a workflow artifact. Versions use code `100000 + GITHUB_RUN_NUMBER` and name `1.0.<run number>`.
 
-1. Confirm `%USERPROFILE%\.android\debug.keystore` exists. A local `assembleDebug` build creates it if necessary.
-2. In PowerShell, copy it as Base64:
+Repository Actions secrets:
 
-   ```powershell
-   [Convert]::ToBase64String(
-       [IO.File]::ReadAllBytes("$HOME\.android\debug.keystore")
-   ) | Set-Clipboard
-   ```
+- `ANDROID_DEBUG_KEYSTORE_BASE64`: base64 of the existing local debug signing key. Publishing is skipped without it; do not substitute a new key for an existing installation.
+- `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`: base64 of `app/google-services.json`. Without it, the APK builds but cannot initialize Firebase/FCM.
 
-3. In GitHub, open **Settings → Secrets and variables → Actions → New repository secret**.
-4. Name the secret `ANDROID_DEBUG_KEYSTORE_BASE64`, paste the clipboard value, and save it.
-5. Open **Actions → Android APK → Run workflow** for the first published build.
+The PC service-account private key is not needed in the APK or this workflow. The public GUI URL [gui.guymichaely.com/app-debug.apk](https://gui.guymichaely.com/app-debug.apk) redirects to the latest GitHub release APK, independently of local builds.
 
-No GitHub CLI is required.
-
-**Back up `%USERPROFILE%\.android\debug.keystore`.** Android updates must continue to use the same signing key as the installed app.
-
-After setup, Android-related pushes automatically refresh the `android-latest` GitHub Release and also store `teams-monitor.apk` as an Actions artifact. Download `teams-monitor.apk` from that Release on the phone and install it over the existing copy.
-
-## Local build
+## Local build and install
 
 Requirements are JDK 17, Android SDK 34, and Gradle 8.9 (the wrapper is checked in).
 
@@ -151,9 +143,33 @@ Debug output:
 app\build\outputs\apk\debug\app-debug.apk
 ```
 
-The local GUI also serves the current debug build at `/app-debug.apk` when that file exists.
+The GUI's `/app-debug.apk` URL always downloads the GitHub release, not this local output. Use USB installation below to test a local build.
+
+To install over USB with Android platform-tools and USB debugging enabled, run from `android-app`:
+
+```powershell
+adb install -r app\build\outputs\apk\debug\app-debug.apk
+```
+
+To install the published GitHub build instead, start the GUI and tunnel, open `https://gui.guymichaely.com/app-debug.apk` on the phone, and install the downloaded APK.
+
+**Back up `%USERPROFILE%\.android\debug.keystore`.** Updates must use the same signing key as the installed app. Keep `app/google-services.json` present before building to include Firebase configuration.
+
+When updating an existing installation, use a version code at least as high as the installed app's code (shown in **Copy diagnostics**). The default build uses code `1`; override it with the `appVersionCode` Gradle property, and optionally set `appVersionName`. For example, if the installed code is `100123`:
+
+```powershell
+.\gradlew.bat assembleDebug -PappVersionCode=100124 -PappVersionName=1.0.local
+```
 
 ## Testing
+
+Run Android filter unit tests and compile the APK from `android-app`:
+
+```powershell
+.\gradlew.bat testDebugUnitTest assembleDebug
+```
+
+On a phone, check time/category/search combinations, a no-results export, clipboard contents, and sharing the text attachment to a receiving app. Confirm both export buttons use the same filters. The APK publishing workflow runs the unit tests before publishing.
 
 For WebSocket testing, run the GUI and tunnel, set the app's server URL to `https://gui.guymichaely.com`, and use the same access token as `GUI_TOKEN`.
 
@@ -164,7 +180,7 @@ FCM testing requires both Firebase configuration files:
 - `android-app/app/google-services.json` — Android Firebase project configuration;
 - `config/fcm-service-account.json` — PC credential used to call the FCM HTTP v1 API.
 
-Both are intentionally untracked. GitHub Actions can embed `google-services.json` by restoring `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`. If that secret is absent, the APK still builds and the WebSocket path remains available, but Firebase initialization is unavailable in that APK.
+Both are intentionally untracked. Place `google-services.json` in `android-app/app/` before building locally. Without that file, the APK still builds and the WebSocket path remains available, but Firebase initialization is unavailable in that APK.
 
 For a recovery test, force FCM into degraded/fallback state, confirm temporary WebSocket comes up, then restore FCM. One successful current-generation FCM recovery send should return the PC state to `primary_working`, and the recovery control/metadata tells Android to stop temporary WS if it receives that message.
 
