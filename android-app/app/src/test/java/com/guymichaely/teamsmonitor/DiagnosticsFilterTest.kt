@@ -19,6 +19,29 @@ class DiagnosticsFilterTest {
         assertEquals(3, result.retainedCount)
     }
 
+    @Test fun customRangeIncludesBothExactBounds() {
+        val start = line("2026-09-23T10:00:00Z", "at_start")
+        val middle = line("2026-09-23T10:30:00Z", "inside")
+        val end = line("2026-09-23T11:00:00Z", "at_end")
+        val before = line("2026-09-23T09:59:59.999Z", "before")
+        val after = line("2026-09-23T11:00:00.001Z", "after")
+        val result = DiagnosticsFilter(
+            windowMs = null,
+            rangeStartMs = Instant.parse("2026-09-23T10:00:00Z").toEpochMilli(),
+            rangeEndMs = Instant.parse("2026-09-23T11:00:00Z").toEpochMilli()
+        ).select(listOf(before, start, middle, end, after).joinToString("\n"), now)
+        assertEquals(listOf(start, middle, end), result.lines)
+    }
+
+    @Test fun customRangeRejectsReversedOrIncompleteBounds() {
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            DiagnosticsFilter(windowMs = null, rangeStartMs = 2L, rangeEndMs = 1L).select("", now)
+        }
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            DiagnosticsFilter(windowMs = null, rangeStartMs = 1L).select("", now)
+        }
+    }
+
     @Test fun categoryAndSearchCombineCaseInsensitively() {
         val alert = line("2026-09-23T11:30:00Z", "fcm_message_received", "chat=Example alertId=ABC")
         val connected = line("2026-09-23T11:30:01Z", "ws_connected", "chat=Example")

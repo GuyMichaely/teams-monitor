@@ -56,7 +56,12 @@ object AppLog {
         val header = buildString {
             appendLine("Teams Monitor diagnostics")
             appendLine("generated=$now")
-            appendLine("logWindow=${filter.windowMs?.let { "${it / 60_000} minutes" } ?: "all retained"}")
+            appendLine("logWindow=${if (filter.rangeStartMs != null) "custom range" else filter.windowMs?.let { "${it / 60_000} minutes" } ?: "all retained"}")
+            appendLine("selectionTimeZone=${filter.localZoneId}")
+            if (filter.rangeStartMs != null && filter.rangeEndMs != null) {
+                appendLine("logFromUtc=${Instant.ofEpochMilli(filter.rangeStartMs)}")
+                appendLine("logToUtc=${Instant.ofEpochMilli(filter.rangeEndMs)} (inclusive)")
+            }
             appendLine("logCategory=${filter.category}")
             appendLine("logSearch=${redact(filter.query).replace('\n', ' ')}")
             appendLine("logExported=${selected.lines.size} matched=${selected.matchedCount} retained=${selected.retainedCount}")
@@ -96,8 +101,7 @@ object AppLog {
         }
         val report = header + if (selected.lines.isEmpty()) "(no events match these filters)\n"
             else selected.lines.joinToString("\n", postfix = "\n")
-        val safeReport = redact(report)
-        return if (prefs.token.isNotBlank()) safeReport.replace(prefs.token, "<redacted>") else safeReport
+        return DiagnosticsRedaction.redact(report, prefs.token)
     }
 
     fun networkSummary(context: Context): String {

@@ -19,7 +19,11 @@
         <item>Last 24 hours</item>
         <item>Last 7 days</item>
         <item>All retained events</item>
+        <item>Custom date and time (local)</item>
     </string-array>
+    <string name="diagnostics_from_label">From</string>
+    <string name="diagnostics_to_label">To</string>
+    <string name="diagnostics_range_invalid">Start must be at or before end.</string>
     <string-array name="diagnostics_categories">
         <item>All events</item>
         <item>Alerts and notifications</item>

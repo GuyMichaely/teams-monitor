@@ -1,12 +1,16 @@
 package com.guymichaely.teamsmonitor
 
 import java.time.Instant
+import java.time.ZoneId
 
 /** Filters the existing timestamp | event | details format without Android dependencies. */
 data class DiagnosticsFilter(
     val windowMs: Long? = 60 * 60 * 1000L,
     val category: Category = Category.ALL,
-    val query: String = ""
+    val query: String = "",
+    val rangeStartMs: Long? = null,
+    val rangeEndMs: Long? = null,
+    val localZoneId: String = ZoneId.systemDefault().id
 ) {
     enum class Category { ALL, ALERTS, CONNECTIONS, ERRORS }
 
@@ -22,6 +26,8 @@ data class DiagnosticsFilter(
     fun select(log: String, now: Instant, maxChars: Int = 200_000): Result {
         require(maxChars >= 0)
         require(windowMs == null || windowMs >= 0)
+        require((rangeStartMs == null) == (rangeEndMs == null)) { "Custom range requires both bounds" }
+        require(rangeStartMs == null || rangeStartMs <= rangeEndMs!!) { "Range start must not be after range end" }
         val retained = log.lineSequence().filter { it.isNotBlank() }.toList()
         var unparseable = 0
         val matches = retained.filter { line ->
@@ -29,8 +35,13 @@ data class DiagnosticsFilter(
             val timestamp = runCatching { Instant.parse(parts[0]) }.getOrNull()
             if (timestamp == null) unparseable++
             val event = parts.getOrElse(1) { "" }
-            val inWindow = windowMs == null || (timestamp != null &&
-                !timestamp.isBefore(now.minusMillis(windowMs)) && !timestamp.isAfter(now))
+            val inWindow = when {
+                rangeStartMs != null -> timestamp != null &&
+                    !timestamp.isBefore(Instant.ofEpochMilli(rangeStartMs)) &&
+                    !timestamp.isAfter(Instant.ofEpochMilli(rangeEndMs!!))
+                windowMs == null -> true
+                else -> timestamp != null && !timestamp.isBefore(now.minusMillis(windowMs)) && !timestamp.isAfter(now)
+            }
             val inCategory = when (category) {
                 Category.ALL -> true
                 Category.ALERTS -> event.startsWith("alert_") || event.startsWith("alarm_") ||

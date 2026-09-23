@@ -2,6 +2,8 @@ package com.guymichaely.teamsmonitor
 
 import android.Manifest
 import android.app.NotificationManager
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -22,12 +24,16 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.text.DateFormat
+import java.util.Calendar
 
 /** Native control panel: connection status, last alert, and action buttons. */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
     private var exportingDiagnostics = false
+    private var rangeStartMs = 0L
+    private var rangeEndMs = 0L
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) = refreshStatus()
@@ -42,11 +48,31 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        val today = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }
+        rangeStartMs = savedInstanceState?.getLong(STATE_RANGE_START) ?: today.timeInMillis
+        rangeEndMs = savedInstanceState?.getLong(STATE_RANGE_END) ?: System.currentTimeMillis()
+
         prefs = Prefs(this)
         AlertNotifier.createChannels(this)
         AppLog.event(this, "main_create", "network=${AppLog.networkSummary(this)}")
 
         findViewById<View>(R.id.dnd_fix).setOnClickListener { openDndSettings() }
+
+        val windowSpinner = findViewById<Spinner>(R.id.diagnostics_window)
+        windowSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val visibility = if (position == CUSTOM_RANGE_POSITION) View.VISIBLE else View.GONE
+                findViewById<Button>(R.id.diagnostics_from).visibility = visibility
+                findViewById<Button>(R.id.diagnostics_to).visibility = visibility
+                updateRangeButtonLabels()
+            }
+        }
+        findViewById<Button>(R.id.diagnostics_from).setOnClickListener { chooseRangeDateTime(true) }
+        findViewById<Button>(R.id.diagnostics_to).setOnClickListener { chooseRangeDateTime(false) }
 
         findViewById<Button>(R.id.toggle_alarm_sound).setOnClickListener {
             prefs.alarmEnabled = !prefs.alarmEnabled
@@ -111,11 +137,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun exportDiagnostics(share: Boolean) {
         if (exportingDiagnostics) return
-        val windows = listOf(60 * 60 * 1000L, 24 * 60 * 60 * 1000L, 7 * 24 * 60 * 60 * 1000L, null)
+        val customRange = findViewById<Spinner>(R.id.diagnostics_window).selectedItemPosition == CUSTOM_RANGE_POSITION
+        if (customRange && rangeStartMs > rangeEndMs) {
+            Toast.makeText(this, R.string.diagnostics_range_invalid, Toast.LENGTH_LONG).show()
+            return
+        }
+        val windows = listOf(60 * 60 * 1000L, 24 * 60 * 60 * 1000L, 7 * 24 * 60 * 60 * 1000L, null, null)
         val filter = DiagnosticsFilter(
-            windowMs = windows[findViewById<Spinner>(R.id.diagnostics_window).selectedItemPosition],
+            windowMs = if (customRange) null else windows[findViewById<Spinner>(R.id.diagnostics_window).selectedItemPosition],
             category = DiagnosticsFilter.Category.values()[findViewById<Spinner>(R.id.diagnostics_category).selectedItemPosition],
-            query = findViewById<EditText>(R.id.diagnostics_search).text.toString().trim()
+            query = findViewById<EditText>(R.id.diagnostics_search).text.toString().trim(),
+            rangeStartMs = if (customRange) rangeStartMs else null,
+            rangeEndMs = if (customRange) rangeEndMs else null,
+            localZoneId = java.util.TimeZone.getDefault().id
         )
         exportingDiagnostics = true
         setDiagnosticsButtonsEnabled(false)
@@ -143,6 +177,34 @@ class MainActivity : AppCompatActivity() {
                 }, onFailure = { diagnosticsExportFailed() })
             }
         }, "diagnostics-export").start()
+    }
+
+    private fun chooseRangeDateTime(isStart: Boolean) {
+        val current = Calendar.getInstance().apply { timeInMillis = if (isStart) rangeStartMs else rangeEndMs }
+        DatePickerDialog(this, { _, year, month, day ->
+            TimePickerDialog(this, { _, hour, minute ->
+                val chosen = Calendar.getInstance().apply {
+                    set(year, month, day, hour, minute, if (isStart) 0 else 59)
+                    set(Calendar.MILLISECOND, if (isStart) 0 else 999)
+                }.timeInMillis
+                if (isStart) rangeStartMs = chosen else rangeEndMs = chosen
+                updateRangeButtonLabels()
+            }, current.get(Calendar.HOUR_OF_DAY), current.get(Calendar.MINUTE), android.text.format.DateFormat.is24HourFormat(this)).show()
+        }, current.get(Calendar.YEAR), current.get(Calendar.MONTH), current.get(Calendar.DAY_OF_MONTH)).show()
+    }
+
+    private fun updateRangeButtonLabels() {
+        val formatter = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+        findViewById<Button>(R.id.diagnostics_from).text =
+            "${getString(R.string.diagnostics_from_label)}: ${formatter.format(java.util.Date(rangeStartMs))}"
+        findViewById<Button>(R.id.diagnostics_to).text =
+            "${getString(R.string.diagnostics_to_label)}: ${formatter.format(java.util.Date(rangeEndMs))}"
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putLong(STATE_RANGE_START, rangeStartMs)
+        outState.putLong(STATE_RANGE_END, rangeEndMs)
+        super.onSaveInstanceState(outState)
     }
 
     private fun setDiagnosticsButtonsEnabled(enabled: Boolean) {
@@ -243,6 +305,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val STATE_RANGE_START = "diagnostics_range_start"
+        private const val STATE_RANGE_END = "diagnostics_range_end"
+        private const val CUSTOM_RANGE_POSITION = 4
         private val COLOR_TOGGLE_ON = 0xFF2E7D32.toInt()
         private val COLOR_TOGGLE_OFF = 0xFF757575.toInt()
     }

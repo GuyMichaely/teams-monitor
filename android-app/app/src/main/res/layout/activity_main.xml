@@ -130,6 +130,20 @@
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:entries="@array/diagnostics_windows" />
+            <Button
+                android:id="@+id/diagnostics_from"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/diagnostics_from_label"
+                android:visibility="gone"
+                android:textAllCaps="false" />
+            <Button
+                android:id="@+id/diagnostics_to"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/diagnostics_to_label"
+                android:visibility="gone"
+                android:textAllCaps="false" />
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
