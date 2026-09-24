@@ -38,6 +38,12 @@ object RecoveryControl {
         if ("ensure_fcm_registration" in normalized) {
             FcmRegistration.ensureRegistered(app, "control_push")
         }
+        if ("set_primary_fcm" in normalized) {
+            prefs.alertTransport = "fcm"
+        }
+        if ("set_primary_websocket" in normalized) {
+            prefs.alertTransport = "websocket"
+        }
         if ("start_ws" in normalized) {
             prefs.websocketRecoveryRequested = true
         }

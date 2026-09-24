@@ -182,6 +182,9 @@ class AlertService : Service() {
                 "ws_connected",
                 "http=${response.code} protocol=${response.protocol}"
             )
+            // Recheck the authoritative policy after reconnects so a missed
+            // config-change control message cannot leave an obsolete socket up.
+            NotificationTransport.sync(this@AlertService)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
