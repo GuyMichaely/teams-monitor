@@ -11,6 +11,9 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Instant
 
 /** Small rolling log kept in app-private storage for postmortem debugging. */
@@ -38,6 +41,30 @@ object AppLog {
             if (file.exists() && file.length() > MAX_CHARS) trim(file)
             file.appendText(line + "\n")
         }
+    }
+
+    /** Rewrites only diagnostics.log; the lock prevents append/delete races. */
+    fun deleteBefore(context: Context, cutoff: Instant): DiagnosticsDeletion.Result = synchronized(lock) {
+        val file = File(context.applicationContext.filesDir, FILE_NAME)
+        val result = DiagnosticsDeletion.before(if (file.exists()) file.readText() else "", cutoff)
+        if (!file.exists() || result.deletedCount == 0) return@synchronized result
+        val temp = File(file.parentFile, "$FILE_NAME.cleanup-${System.nanoTime()}.tmp")
+        try {
+            FileOutputStream(temp).use { stream ->
+                val retained = result.retainedLines.joinToString("\n", postfix = if (result.retainedLines.isEmpty()) "" else "\n")
+                stream.write(retained.toByteArray(Charsets.UTF_8))
+                stream.fd.sync()
+            }
+            Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            if (temp.exists()) temp.delete()
+        }
+        result
+    }
+
+    fun previewDeleteBefore(context: Context, cutoff: Instant): DiagnosticsDeletion.Result = synchronized(lock) {
+        val file = File(context.applicationContext.filesDir, FILE_NAME)
+        DiagnosticsDeletion.before(if (file.exists()) file.readText() else "", cutoff)
     }
 
     @Suppress("DEPRECATION")
@@ -117,6 +144,16 @@ object AppLog {
         return "${transports.ifEmpty { listOf("other") }.joinToString("+")}," +
             "validated=${caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}"
     }
+
+    fun receiptDeviceState(context: Context): String = runCatching {
+        val app = context.applicationContext
+        val pm = app.getSystemService(PowerManager::class.java)
+        val interactive = pm?.isInteractive == true
+        val idle = if (Build.VERSION.SDK_INT >= 23) pm?.isDeviceIdleMode == true else false
+        val powerSave = pm?.isPowerSaveMode == true
+        val exempt = pm?.isIgnoringBatteryOptimizations(app.packageName) == true
+        "network=${networkSummary(app)},screenOn=$interactive,deviceIdle=$idle,powerSave=$powerSave,batteryOptimizationExempt=$exempt"
+    }.getOrDefault("unavailable")
 
     private fun instantOrNever(valueMs: Long): String =
         if (valueMs > 0L) Instant.ofEpochMilli(valueMs).toString() else "never"

@@ -59,6 +59,7 @@ object AlertNotifier {
 
     private var player: MediaPlayer? = null
     private var playerOwner: String? = null
+    private var playerAlertId: String? = null
     private var playbackGeneration = 0L
     private var volumeObserver: ContentObserver? = null
     private var observerContext: Context? = null
@@ -71,7 +72,8 @@ object AlertNotifier {
         context: Context,
         volume: Float = 1f,
         durationMs: Long = 8000,
-        owner: String = OWNER_ALERT
+        owner: String = OWNER_ALERT,
+        alertId: String? = null
     ) {
         // Teams alerts outrank health-watchdog audio. A health incident may not
         // replace an already-playing Teams alert (or another health incident),
@@ -80,7 +82,7 @@ object AlertNotifier {
             AppLog.event(
                 context,
                 "alarm_suppressed",
-                "owner=$owner reason=active_higher_priority_owner:${playerOwner ?: "unknown"}"
+                "owner=$owner alertId=${alertId.orEmpty()} reason=active_higher_priority_owner:${playerOwner ?: "unknown"}"
             )
             return
         }
@@ -118,10 +120,11 @@ object AlertNotifier {
         }
         player = p
         playerOwner = owner
+        playerAlertId = alertId
         AppLog.event(
             context,
             "alarm_started",
-            "owner=$owner volume=$volume durationMs=$durationMs systemRingtone=$systemRingtone"
+            "owner=$owner alertId=${alertId.orEmpty()} volume=$volume durationMs=$durationMs systemRingtone=$systemRingtone"
         )
         val appContext = context.applicationContext
         volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
@@ -162,15 +165,17 @@ object AlertNotifier {
         val p = player ?: return
         val logContext = observerContext
         val owner = playerOwner
+        val alertId = playerAlertId
         try { p.stop() } catch (_: Exception) { /* already stopped */ }
         p.release()
         player = null
         playerOwner = null
+        playerAlertId = null
         playbackGeneration++ // invalidate any timeout belonging to the stopped player
         volumeObserver?.let { observerContext?.contentResolver?.unregisterContentObserver(it) }
         volumeObserver = null
         observerContext = null
-        logContext?.let { AppLog.event(it, "alarm_stopped", "owner=${owner ?: "unknown"} reason=$reason") }
+        logContext?.let { AppLog.event(it, "alarm_stopped", "owner=${owner ?: "unknown"} alertId=${alertId.orEmpty()} reason=$reason") }
         notifyPlaybackChanged()
     }
 
@@ -179,47 +184,48 @@ object AlertNotifier {
     }
 
     /** Applies the user's alert settings: notification on/off, alarm on/off + screen-on rule. */
-    fun alert(context: Context, chat: String, author: String, text: String) {
+    fun alert(context: Context, chat: String, author: String, text: String, alertId: String = "") {
         val prefs = Prefs(context)
         val screenOn = context.getSystemService(PowerManager::class.java)?.isInteractive == true
         val alarmWillPlay = prefs.alarmEnabled && (prefs.alarmWhenScreenOn || !screenOn)
         AppLog.event(
             context,
             "alert_dispatch",
-            "chat=$chat author=$author notifEnabled=${prefs.notifEnabled} alarmEnabled=${prefs.alarmEnabled} screenOn=$screenOn alarmWhenScreenOn=${prefs.alarmWhenScreenOn} alarmWillPlay=$alarmWillPlay"
+            "alertId=$alertId chat=$chat author=$author notifEnabled=${prefs.notifEnabled} alarmEnabled=${prefs.alarmEnabled} screenOn=$screenOn alarmWhenScreenOn=${prefs.alarmWhenScreenOn} alarmWillPlay=$alarmWillPlay"
         )
-        if (prefs.notifEnabled) show(context, chat, author, text)
-        else AppLog.event(context, "notification_suppressed", "reason=app_setting")
+        if (prefs.notifEnabled) show(context, chat, author, text, alertId)
+        else AppLog.event(context, "notification_suppressed", "alertId=$alertId reason=app_setting")
 
         if (alarmWillPlay) {
             playAlarm(
                 context,
                 volume = prefs.alarmVolume / 100f,
                 durationMs = prefs.alarmDurationSec * 1000L,
-                owner = OWNER_ALERT
+                owner = OWNER_ALERT,
+                alertId = alertId
             )
         } else {
             val reason = if (!prefs.alarmEnabled) "app_setting" else "screen_on_rule"
-            AppLog.event(context, "alarm_suppressed", "reason=$reason")
+            AppLog.event(context, "alarm_suppressed", "alertId=$alertId reason=$reason")
         }
     }
 
-    fun show(context: Context, chat: String, author: String, text: String) {
+    fun show(context: Context, chat: String, author: String, text: String, alertId: String = "") {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
-            AppLog.event(context, "notification_suppressed", "reason=permission")
+            AppLog.event(context, "notification_suppressed", "alertId=$alertId reason=permission")
             return
         }
 
         val compatManager = NotificationManagerCompat.from(context)
         if (!compatManager.areNotificationsEnabled()) {
-            AppLog.event(context, "notification_suppressed", "reason=os_disabled")
+            AppLog.event(context, "notification_suppressed", "alertId=$alertId reason=os_disabled")
             return
         }
         val nm = context.getSystemService(NotificationManager::class.java)
         if (nm?.getNotificationChannel(CHANNEL_ALERTS)?.importance == NotificationManager.IMPORTANCE_NONE) {
-            AppLog.event(context, "notification_suppressed", "reason=channel_disabled")
+            AppLog.event(context, "notification_suppressed", "alertId=$alertId reason=channel_disabled")
             return
         }
 
@@ -241,6 +247,6 @@ object AlertNotifier {
 
         val id = nextId.incrementAndGet()
         compatManager.notify(id, n)
-        AppLog.event(context, "notification_posted", "id=$id chat=$chat author=$author")
+        AppLog.event(context, "notification_posted", "id=$id alertId=$alertId chat=$chat author=$author")
     }
 }

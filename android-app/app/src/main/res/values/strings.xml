@@ -31,6 +31,24 @@
         <item>Errors and failures</item>
     </string-array>
     <string name="diagnostics_copied">Diagnostics copied to clipboard</string>
+    <string name="diagnostics_delete_scope">Delete stored diagnostics before a cutoff</string>
+    <string name="diagnostics_delete_cutoff_label">Choose cutoff date and time</string>
+    <string name="diagnostics_delete_age_hint">Age in days (for example 30)</string>
+    <string name="delete_diagnostics_before">Review and delete old log entries</string>
+    <string name="diagnostics_delete_scope_note">This permanently deletes matching records from the full diagnostics log across all categories, independent of export filters. Records exactly at or after the cutoff and malformed or undated records are kept. App settings, alert history/state, FCM registration, and exported files are not deleted.</string>
+    <string name="diagnostics_delete_confirm">Delete %1$d records strictly before %2$s from the full diagnostics log? Records added while this confirmation is open are included if they are before the cutoff.</string>
+    <string name="diagnostics_delete_done">Deleted %1$d records; retained %2$d records.</string>
+    <string name="diagnostics_delete_failed">Could not safely rewrite diagnostics. No records were deleted.</string>
+    <string-array name="diagnostics_delete_modes">
+        <item>Before selected date and time</item>
+        <item>Older than 1 day</item>
+        <item>Older than 7 days</item>
+        <item>Older than 30 days</item>
+        <item>Older than 90 days</item>
+        <item>Older than 180 days</item>
+        <item>Older than 365 days</item>
+        <item>Custom age in days</item>
+    </string-array>
     <string name="toggle_alarm_sound">Alarm sound</string>
     <string name="toggle_notifications">Notifications</string>
     <string name="toggle_screen_on">Alarm when screen is on</string>

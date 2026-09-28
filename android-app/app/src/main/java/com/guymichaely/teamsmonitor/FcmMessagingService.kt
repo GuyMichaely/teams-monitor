@@ -12,6 +12,22 @@ class FcmMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
+        val receivedAt = java.time.Instant.now()
+        val sentAtMs = message.sentTime.takeIf { it > 0L }
+        val latencyMs = sentAtMs?.let { receivedAt.toEpochMilli() - it }
+        val fcmSendStartedAt = data["fcmSendStartedAt"].orEmpty()
+        val pcStartedAtMs = runCatching { java.time.Instant.parse(fcmSendStartedAt).toEpochMilli() }.getOrNull()
+        val pcToPhoneMs = pcStartedAtMs?.let { receivedAt.toEpochMilli() - it }
+        AppLog.event(
+            this,
+            "fcm_callback_received",
+            "alertId=${data["alertId"].orEmpty()} messageId=${message.messageId.orEmpty()} kind=${data["kind"].orEmpty()} " +
+                "originalPriority=${message.originalPriority} deliveredPriority=${message.priority} " +
+                "sentTime=${sentAtMs?.let { java.time.Instant.ofEpochMilli(it) } ?: "unknown"} receivedAt=$receivedAt " +
+                "approxLatencyMs=${latencyMs?.takeIf { it >= 0 } ?: "unknown"} latencyClock=${if (latencyMs == null) "sent_time_unavailable" else if (latencyMs < 0) "negative_clock_skew" else "approximate"} " +
+                "fcmSendStartedAt=${fcmSendStartedAt.ifBlank { "unknown" }} approxPcToPhoneLatencyMs=${pcToPhoneMs?.takeIf { it >= 0 } ?: "unknown"} pcPhoneClock=${if (pcToPhoneMs == null) "send_time_unavailable" else if (pcToPhoneMs < 0) "negative_clock_skew" else "approximate_clocks"} " +
+                "device=${AppLog.receiptDeviceState(this)}"
+        )
         val kind = data["kind"].orEmpty().ifBlank { "alert" }
 
         if (kind == "control") {
@@ -87,11 +103,11 @@ class FcmMessagingService : FirebaseMessagingService() {
         AppLog.event(
             this,
             "fcm_message_received",
-            "messageId=${message.messageId ?: ""} alertId=$alertId chat=$chat author=$author serverTime=$time textLength=${text.length} priority=${message.priority}"
+            "messageId=${message.messageId ?: ""} alertId=$alertId chat=$chat author=$author messageTime=$time textLength=${text.length} priority=${message.priority}"
         )
 
         AlertState.onAlert(this, chat, author, text, time)
-        AlertNotifier.alert(this, chat, author, text)
+        AlertNotifier.alert(this, chat, author, text, alertId)
     }
 
     override fun onDeletedMessages() {

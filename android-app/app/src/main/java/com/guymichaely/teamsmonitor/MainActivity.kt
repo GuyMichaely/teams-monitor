@@ -2,6 +2,7 @@ package com.guymichaely.teamsmonitor
 
 import android.Manifest
 import android.app.NotificationManager
+import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.BroadcastReceiver
@@ -26,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import java.text.DateFormat
 import java.util.Calendar
+import java.time.Instant
 
 /** Native control panel: connection status, last alert, and action buttons. */
 class MainActivity : AppCompatActivity() {
@@ -34,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private var exportingDiagnostics = false
     private var rangeStartMs = 0L
     private var rangeEndMs = 0L
+    private var deleteCutoffMs = 0L
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) = refreshStatus()
@@ -54,6 +57,7 @@ class MainActivity : AppCompatActivity() {
         }
         rangeStartMs = savedInstanceState?.getLong(STATE_RANGE_START) ?: today.timeInMillis
         rangeEndMs = savedInstanceState?.getLong(STATE_RANGE_END) ?: System.currentTimeMillis()
+        deleteCutoffMs = savedInstanceState?.getLong(STATE_DELETE_CUTOFF) ?: System.currentTimeMillis()
 
         prefs = Prefs(this)
         AlertNotifier.createChannels(this)
@@ -73,6 +77,19 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.diagnostics_from).setOnClickListener { chooseRangeDateTime(true) }
         findViewById<Button>(R.id.diagnostics_to).setOnClickListener { chooseRangeDateTime(false) }
+        findViewById<Button>(R.id.diagnostics_delete_cutoff).setOnClickListener { chooseDeleteCutoff() }
+        val deleteMode = findViewById<Spinner>(R.id.diagnostics_delete_mode)
+        deleteMode.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                findViewById<Button>(R.id.diagnostics_delete_cutoff).visibility = if (position == 0) View.VISIBLE else View.GONE
+                findViewById<EditText>(R.id.diagnostics_delete_age).visibility = if (position == 7) View.VISIBLE else View.GONE
+            }
+        }
+        findViewById<Button>(R.id.diagnostics_delete_cutoff).visibility = if (deleteMode.selectedItemPosition == 0) View.VISIBLE else View.GONE
+        findViewById<EditText>(R.id.diagnostics_delete_age).visibility = if (deleteMode.selectedItemPosition == 7) View.VISIBLE else View.GONE
+        findViewById<Button>(R.id.btn_delete_diagnostics).setOnClickListener { reviewDiagnosticsDeletion() }
+        updateDeleteCutoffLabel()
 
         findViewById<Button>(R.id.toggle_alarm_sound).setOnClickListener {
             prefs.alarmEnabled = !prefs.alarmEnabled
@@ -193,6 +210,76 @@ class MainActivity : AppCompatActivity() {
         }, current.get(Calendar.YEAR), current.get(Calendar.MONTH), current.get(Calendar.DAY_OF_MONTH)).show()
     }
 
+    private fun chooseDeleteCutoff() {
+        val current = Calendar.getInstance().apply { timeInMillis = deleteCutoffMs }
+        DatePickerDialog(this, { _, year, month, day ->
+            TimePickerDialog(this, { _, hour, minute ->
+                deleteCutoffMs = Calendar.getInstance().apply {
+                    set(year, month, day, hour, minute, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                updateDeleteCutoffLabel()
+            }, current.get(Calendar.HOUR_OF_DAY), current.get(Calendar.MINUTE), android.text.format.DateFormat.is24HourFormat(this)).show()
+        }, current.get(Calendar.YEAR), current.get(Calendar.MONTH), current.get(Calendar.DAY_OF_MONTH)).show()
+    }
+
+    private fun updateDeleteCutoffLabel() {
+        val formatter = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+        findViewById<Button>(R.id.diagnostics_delete_cutoff).text =
+            "${getString(R.string.diagnostics_delete_cutoff_label)}: ${formatter.format(java.util.Date(deleteCutoffMs))}"
+    }
+
+    private fun reviewDiagnosticsDeletion() {
+        val ageMode = findViewById<Spinner>(R.id.diagnostics_delete_mode).selectedItemPosition
+        val cutoff = if (ageMode > 0) {
+            val days = if (ageMode == 7) findViewById<EditText>(R.id.diagnostics_delete_age).text.toString().toLongOrNull()
+                else listOf(1L, 7L, 30L, 90L, 180L, 365L).getOrNull(ageMode - 1)
+            if (days == null || days <= 0L || days > 36500L) {
+                Toast.makeText(this, R.string.diagnostics_delete_age_hint, Toast.LENGTH_LONG).show()
+                return
+            }
+            System.currentTimeMillis() - days * 24L * 60L * 60L * 1000L
+        } else deleteCutoffMs
+        setDiagnosticsDeleteEnabled(false)
+        Thread({
+            val preview = runCatching { AppLog.previewDeleteBefore(applicationContext, Instant.ofEpochMilli(cutoff)) }
+            runOnUiThread {
+                setDiagnosticsDeleteEnabled(true)
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                preview.fold(onSuccess = { result ->
+                    val label = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                        .format(java.util.Date(cutoff))
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.delete_diagnostics_before)
+                        .setMessage(getString(R.string.diagnostics_delete_confirm, result.deletedCount, label))
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(android.R.string.ok) { _, _ -> performDiagnosticsDeletion(cutoff) }
+                        .show()
+                }, onFailure = { Toast.makeText(this, R.string.diagnostics_delete_failed, Toast.LENGTH_LONG).show() })
+            }
+        }, "diagnostics-delete-preview").start()
+    }
+
+    private fun performDiagnosticsDeletion(cutoff: Long) {
+        setDiagnosticsDeleteEnabled(false)
+        Thread({
+            val result = runCatching { AppLog.deleteBefore(applicationContext, Instant.ofEpochMilli(cutoff)) }
+            runOnUiThread {
+                setDiagnosticsDeleteEnabled(true)
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                result.fold(onSuccess = {
+                    Toast.makeText(this, getString(R.string.diagnostics_delete_done, it.deletedCount, it.retainedCount), Toast.LENGTH_LONG).show()
+                }, onFailure = { Toast.makeText(this, R.string.diagnostics_delete_failed, Toast.LENGTH_LONG).show() })
+            }
+        }, "diagnostics-delete").start()
+    }
+
+    private fun setDiagnosticsDeleteEnabled(enabled: Boolean) {
+        findViewById<Button>(R.id.btn_delete_diagnostics).isEnabled = enabled
+        findViewById<Button>(R.id.diagnostics_delete_cutoff).isEnabled = enabled
+        findViewById<EditText>(R.id.diagnostics_delete_age).isEnabled = enabled
+    }
+
     private fun updateRangeButtonLabels() {
         val formatter = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
         findViewById<Button>(R.id.diagnostics_from).text =
@@ -204,6 +291,7 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putLong(STATE_RANGE_START, rangeStartMs)
         outState.putLong(STATE_RANGE_END, rangeEndMs)
+        outState.putLong(STATE_DELETE_CUTOFF, deleteCutoffMs)
         super.onSaveInstanceState(outState)
     }
 
@@ -307,6 +395,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val STATE_RANGE_START = "diagnostics_range_start"
         private const val STATE_RANGE_END = "diagnostics_range_end"
+        private const val STATE_DELETE_CUTOFF = "diagnostics_delete_cutoff"
         private const val CUSTOM_RANGE_POSITION = 4
         private val COLOR_TOGGLE_ON = 0xFF2E7D32.toInt()
         private val COLOR_TOGGLE_OFF = 0xFF757575.toInt()

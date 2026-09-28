@@ -167,6 +167,41 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/diagnostics_export_note" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/diagnostics_delete_scope"
+                android:textStyle="bold" />
+            <Spinner
+                android:id="@+id/diagnostics_delete_mode"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:entries="@array/diagnostics_delete_modes" />
+            <Button
+                android:id="@+id/diagnostics_delete_cutoff"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/diagnostics_delete_cutoff_label"
+                android:textAllCaps="false" />
+            <EditText
+                android:id="@+id/diagnostics_delete_age"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:maxLength="5"
+                android:singleLine="true"
+                android:hint="@string/diagnostics_delete_age_hint" />
+            <Button
+                android:id="@+id/btn_delete_diagnostics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/delete_diagnostics_before"
+                android:textAllCaps="false" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/diagnostics_delete_scope_note" />
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

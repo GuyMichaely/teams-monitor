@@ -227,10 +227,10 @@ class AlertService : Service() {
             AppLog.event(
                 this@AlertService,
                 "alert_received",
-                "alertId=$alertId chat=$chat author=$author serverTime=$alertTime textLength=${alertText.length}"
+                "alertId=$alertId transport=websocket chat=$chat author=$author serverTime=$alertTime textLength=${alertText.length}"
             )
             AlertState.onAlert(this@AlertService, chat, author, alertText, alertTime)
-            AlertNotifier.alert(this@AlertService, chat, author, alertText)
+            AlertNotifier.alert(this@AlertService, chat, author, alertText, alertId)
         }
 
         /** The current socket died: forget it, then schedule a reconnect. */

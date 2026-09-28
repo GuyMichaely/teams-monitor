@@ -46,7 +46,8 @@ data class DiagnosticsFilter(
                 Category.ALL -> true
                 Category.ALERTS -> event.startsWith("alert_") || event.startsWith("alarm_") ||
                     event.startsWith("notification_") || event.startsWith("health_") ||
-                    event == "fcm_message_received" || event == "fcm_health_received" || event == "ws_alert_received"
+                    event == "fcm_message_received" || event == "fcm_callback_received" ||
+                    event == "fcm_health_received" || event == "ws_alert_received"
                 Category.CONNECTIONS -> event.startsWith("ws_") || event.startsWith("fcm_") ||
                     event.startsWith("control_") || event.startsWith("service_") || event.startsWith("transport_")
                 Category.ERRORS -> event.contains("fail") || event.contains("error") ||
