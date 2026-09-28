@@ -36,10 +36,15 @@ object AppLog {
             }
         }
         Log.i(TAG, line)
-        synchronized(lock) {
-            val file = File(context.applicationContext.filesDir, FILE_NAME)
-            if (file.exists() && file.length() > MAX_CHARS) trim(file)
-            file.appendText(line + "\n")
+        try {
+            synchronized(lock) {
+                val file = File(context.applicationContext.filesDir, FILE_NAME)
+                if (file.exists() && file.length() > MAX_CHARS) trim(file)
+                file.appendText(line + "\n")
+            }
+        } catch (_: Exception) {
+            // Storage failure must not prevent an incoming alert from being handled.
+            Log.w(TAG, "Unable to persist diagnostics entry")
         }
     }
 
