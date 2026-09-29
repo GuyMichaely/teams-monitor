@@ -8,6 +8,13 @@ class Prefs(context: Context) {
     private val sp: SharedPreferences =
         context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+    init {
+        // Repair the mistaken default if it was saved before the hostname correction.
+        if (ServerUrl.normalize(sp.getString(KEY_URL, "").orEmpty()) == "https://guy.guymichaely.com") {
+            sp.edit().putString(KEY_URL, DEFAULT_URL).apply()
+        }
+    }
+
     var serverUrl: String
         // Also repairs scheme-less URLs saved by an older APK before any caller builds a request.
         get() = ServerUrl.normalize(sp.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL).orEmpty()
@@ -110,7 +117,7 @@ class Prefs(context: Context) {
         set(value) = sp.edit().putBoolean(KEY_USE_SYSTEM_RINGTONE, value).apply()
 
     companion object {
-        const val DEFAULT_URL = "https://guy.guymichaely.com"
+        const val DEFAULT_URL = "https://gui.guymichaely.com"
         const val DEFAULT_TOKEN = "h"
         private const val KEY_URL = "server_url"
         private const val KEY_TOKEN = "token"

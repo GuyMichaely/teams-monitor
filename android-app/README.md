@@ -11,7 +11,7 @@ The server has two alert-delivery capabilities: WebSocket and Firebase Cloud Mes
 For either path, configure the server/control connection:
 
 ```text
-Default server URL: https://guy.guymichaely.com
+Default server URL: https://gui.guymichaely.com
 Default access token: h
 ```
 
