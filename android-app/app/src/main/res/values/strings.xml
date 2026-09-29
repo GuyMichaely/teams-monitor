@@ -54,7 +54,8 @@
     <string name="toggle_screen_on">Alarm when screen is on</string>
     <string name="state_on">ON</string>
     <string name="state_off">OFF</string>
-    <string name="server_url_hint">https://gui.yourdomain.com</string>
+    <string name="server_url_hint">Server address (HTTPS)</string>
+    <string name="server_url_invalid">Enter a valid HTTPS server address, such as gui.guymichaely.com. Omit query parameters, fragments, and embedded credentials.</string>
     <string name="token_hint">Access token (optional)</string>
     <string name="save">Save</string>
     <string name="section_connection">Connection</string>

@@ -11,11 +11,13 @@ The server has two alert-delivery capabilities: WebSocket and Firebase Cloud Mes
 For either path, configure the server/control connection:
 
 ```text
-Server URL: https://gui.guymichaely.com
-Access token: same value as GUI_TOKEN on the laptop
+Default server URL: https://guy.guymichaely.com
+Default access token: h
 ```
 
-The app converts that URL to the WSS alert endpoint when WebSocket is wanted and supplies the token as the WebSocket access token. Plain HTTP is intentionally unsupported.
+These defaults apply when no settings are saved; existing saved settings remain in place. Both fields can be edited. The access token must match GUI_TOKEN on the laptop. A hostname entered without a scheme is normalized to HTTPS, including addresses saved by older versions. Invalid URLs show a field error before saving. Plain HTTP is intentionally unsupported.
+
+The app converts the HTTPS URL to the WSS alert endpoint when WebSocket is wanted and supplies the token as the WebSocket access token.
 
 Alerts can show a notification and/or play the alarm stream. Do Not Disturb bypass requires notification-policy access. There is deliberately no boot receiver; after reboot, open the app once.
 

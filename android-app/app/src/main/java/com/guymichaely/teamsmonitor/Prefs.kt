@@ -9,11 +9,12 @@ class Prefs(context: Context) {
         context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     var serverUrl: String
-        get() = sp.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
-        set(value) = sp.edit().putString(KEY_URL, value).apply()
+        // Also repairs scheme-less URLs saved by an older APK before any caller builds a request.
+        get() = ServerUrl.normalize(sp.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL).orEmpty()
+        set(value) = sp.edit().putString(KEY_URL, ServerUrl.normalize(value).orEmpty()).apply()
 
     var token: String
-        get() = sp.getString(KEY_TOKEN, "") ?: ""
+        get() = sp.getString(KEY_TOKEN, DEFAULT_TOKEN) ?: DEFAULT_TOKEN
         set(value) = sp.edit().putString(KEY_TOKEN, value).apply()
 
     var alertTransport: String
@@ -73,9 +74,9 @@ class Prefs(context: Context) {
         get() = sp.getLong(KEY_TUNNEL_INCIDENT_AT, 0L)
         set(value) = sp.edit().putLong(KEY_TUNNEL_INCIDENT_AT, value).apply()
 
-    /** False until the user has saved settings once. */
+    /** Defaults are usable immediately; an invalid saved URL requires correction. */
     val configured: Boolean
-        get() = sp.contains(KEY_URL)
+        get() = serverUrl.isNotBlank()
 
     /** One-shot flag: auto-open the DND-access settings screen only once. */
     var dndPromptShown: Boolean
@@ -109,7 +110,8 @@ class Prefs(context: Context) {
         set(value) = sp.edit().putBoolean(KEY_USE_SYSTEM_RINGTONE, value).apply()
 
     companion object {
-        const val DEFAULT_URL = ""
+        const val DEFAULT_URL = "https://guy.guymichaely.com"
+        const val DEFAULT_TOKEN = "h"
         private const val KEY_URL = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_ALERT_TRANSPORT = "alert_transport"

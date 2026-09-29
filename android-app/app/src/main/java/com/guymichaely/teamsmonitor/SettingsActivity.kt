@@ -66,7 +66,13 @@ class SettingsActivity : AppCompatActivity() {
         })
 
         findViewById<Button>(R.id.save).setOnClickListener {
-            prefs.serverUrl = urlField.text.toString().trim()
+            val serverUrl = ServerUrl.normalize(urlField.text.toString())
+            if (serverUrl == null) {
+                urlField.error = getString(R.string.server_url_invalid)
+                urlField.requestFocus()
+                return@setOnClickListener
+            }
+            prefs.serverUrl = serverUrl
             prefs.token = tokenField.text.toString().trim()
             prefs.alarmEnabled = alarmEnabled.isChecked
             prefs.notifEnabled = notifEnabled.isChecked
