@@ -207,6 +207,8 @@ class AlertService : Service() {
                 } ?: msg.optString("actions").split(',')
                 AppLog.event(this@AlertService, "ws_control_received", "actions=${actions.joinToString("|")}")
                 RecoveryControl.handleControlMessage(this@AlertService, actions)
+                // The control actions describe immediate socket behavior, not fallback configuration.
+                NotificationTransport.sync(this@AlertService)
                 return
             }
             if (kind != "alert") {

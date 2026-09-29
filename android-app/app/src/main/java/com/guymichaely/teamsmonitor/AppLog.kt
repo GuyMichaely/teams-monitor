@@ -107,6 +107,8 @@ object AppLog {
             appendLine("server=${redact(prefs.serverUrl).ifBlank { "(not set)" }}")
             appendLine("tokenConfigured=${prefs.token.isNotBlank()}")
             appendLine("preferredTransport=${prefs.alertTransport}")
+            appendLine("fallbackTransport=${prefs.fallbackTransport}")
+            appendLine("fcmRegistrationStatus=${prefs.fcmRegistrationStatus}")
             appendLine("websocketRecoveryRequested=${prefs.websocketRecoveryRequested}")
             appendLine("fcmFidPresent=${prefs.fcmFid.isNotBlank()}")
             appendLine("fcmFidLength=${prefs.fcmFid.length}")

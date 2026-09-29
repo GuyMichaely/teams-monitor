@@ -242,7 +242,10 @@ object NotificationTransport {
             websocketWanted = websocketWanted,
             fcmRegistrationStatus = fcmStatus,
             workerEnabled = workerEnabled,
-            workerUrl = workerUrl
+            workerUrl = workerUrl,
+            fallbackTransport = if (!state.has("fallbackTransport")) null
+                else if (state.isNull("fallbackTransport")) "none"
+                else state.optString("fallbackTransport")
         )
         AppLog.event(
             context,

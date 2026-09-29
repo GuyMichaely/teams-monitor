@@ -177,6 +177,10 @@ For WebSocket testing, run the GUI and tunnel, set the app's server URL to `http
 
 Saving connection settings immediately runs a control synchronization and applies the current WebSocket policy. The dashboard WebView uses the same server URL.
 
+The phone status panel always shows both transports: WebSocket primary/fallback/standby/disabled plus its observed connection, and FCM primary/fallback/control-only plus registration state. FCM registration does not prove message receipt. Fallback configuration is fetched from the server, not inferred from whether a socket is open.
+
+Dashboard delivery saves broadcast to connected WebSockets and send a silent FCM `sync_policy` wake-up. The phone fetches the current server policy rather than applying settings embedded in a potentially delayed push. FCM control remains available even when it is not selected for Teams-alert delivery. Opening the app and periodic WorkManager reconciliation also fetch policy; FCM delays or Android background restrictions can delay a switch.
+
 FCM testing requires both Firebase configuration files:
 
 - `android-app/app/google-services.json` — Android Firebase project configuration;

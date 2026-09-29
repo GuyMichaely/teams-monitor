@@ -10,7 +10,8 @@ object RecoveryControl {
         websocketWanted: Boolean,
         fcmRegistrationStatus: String? = null,
         workerEnabled: Boolean? = null,
-        workerUrl: String? = null
+        workerUrl: String? = null,
+        fallbackTransport: String? = null
     ) {
         val app = context.applicationContext
         val prefs = Prefs(app)
@@ -19,6 +20,8 @@ object RecoveryControl {
             prefs.alertTransport = primaryTransport
         }
         prefs.websocketRecoveryRequested = websocketWanted
+        if (fallbackTransport != null) prefs.fallbackTransport = fallbackTransport
+        if (fcmRegistrationStatus != null) prefs.fcmRegistrationStatus = fcmRegistrationStatus
         if (workerEnabled != null) prefs.controlWorkerEnabled = workerEnabled
         if (workerUrl != null) prefs.controlWorkerUrl = workerUrl
         prefs.lastControlSyncAtMs = System.currentTimeMillis()

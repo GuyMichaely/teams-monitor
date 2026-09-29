@@ -121,10 +121,9 @@ async function saveAlertConfig(req) {
   cfg.alerts.fcm = nextFcm;
   delete cfg.alerts.fcm.deviceToken;
   await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
-  if (transport === "websocket") {
-    // Saving must not wait on Google or imply that the phone has reconnected.
-    void requestPhonePolicySync(cfg).catch(() => logDiagnostic("phone_policy_sync_failed", { code: "internal_error" }));
-  }
+  // Also wake FCM-only phones when fallback settings change without an open socket.
+  // Saving must not wait on Google or imply that the phone has reconnected.
+  void requestPhonePolicySync(cfg).catch(() => logDiagnostic("phone_policy_sync_failed", { code: "internal_error" }));
   return await runtimeConfig();
 }
 

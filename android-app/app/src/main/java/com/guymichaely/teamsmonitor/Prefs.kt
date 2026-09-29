@@ -8,6 +8,12 @@ class Prefs(context: Context) {
     private val sp: SharedPreferences =
         context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+    fun observe(listener: SharedPreferences.OnSharedPreferenceChangeListener) =
+        sp.registerOnSharedPreferenceChangeListener(listener)
+
+    fun stopObserving(listener: SharedPreferences.OnSharedPreferenceChangeListener) =
+        sp.unregisterOnSharedPreferenceChangeListener(listener)
+
     init {
         // Repair the mistaken default if it was saved before the hostname correction.
         if (ServerUrl.normalize(sp.getString(KEY_URL, "").orEmpty()) == "https://guy.guymichaely.com") {
@@ -31,6 +37,15 @@ class Prefs(context: Context) {
     var fcmFid: String
         get() = sp.getString(KEY_FCM_FID, "") ?: ""
         set(value) = sp.edit().putString(KEY_FCM_FID, value).apply()
+
+    /** unknown until an authoritative control sync; none means explicitly disabled. */
+    var fallbackTransport: String
+        get() = sp.getString("fallback_transport", "unknown") ?: "unknown"
+        set(value) = sp.edit().putString("fallback_transport", value).apply()
+
+    var fcmRegistrationStatus: String
+        get() = sp.getString("fcm_registration_status", "unknown") ?: "unknown"
+        set(value) = sp.edit().putString("fcm_registration_status", value).apply()
 
     var fcmSyncPending: Boolean
         get() = sp.getBoolean(KEY_FCM_SYNC_PENDING, false)

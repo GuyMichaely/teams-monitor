@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private var rangeStartMs = 0L
     private var rangeEndMs = 0L
     private var deleteCutoffMs = 0L
+    private val settingsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> refreshStatus() }
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) = refreshStatus()
@@ -314,6 +315,7 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
         NotificationTransport.sync(this)
+        prefs.observe(settingsListener)
         refreshStatus()
         refreshTestButton()
         refreshToggles()
@@ -329,6 +331,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        prefs.stopObserving(settingsListener)
         AlertNotifier.onPlaybackChanged = null
         unregisterReceiver(statusReceiver)
         super.onPause()
@@ -359,14 +362,10 @@ class MainActivity : AppCompatActivity() {
             AlertState.Connection.CONNECTING -> "connecting…"
             AlertState.Connection.DISCONNECTED -> "disconnected"
         }
-        findViewById<TextView>(R.id.conn_status).text = when (prefs.alertTransport) {
-            "fcm" -> if (prefs.websocketRecoveryRequested) {
-                "Alerts: FCM primary · WebSocket fallback $conn"
-            } else {
-                "Alerts: FCM primary · WebSocket standby"
-            }
-            else -> "Alerts: WebSocket primary · $conn"
-        }
+        findViewById<TextView>(R.id.conn_status).text = DeliveryStatus.render(
+            prefs.alertTransport, prefs.fallbackTransport, prefs.websocketRecoveryRequested,
+            conn, prefs.fcmFid.isNotBlank(), prefs.fcmSyncPending, prefs.fcmRegistrationStatus
+        )
         findViewById<TextView>(R.id.server).text =
             "Server: ${prefs.serverUrl.ifBlank { "(not set)" }}"
         findViewById<TextView>(R.id.last_alert).text =
