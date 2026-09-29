@@ -1,3 +1,5 @@
+import { requestPhonePolicySync } from "./alerts.mjs";
+import { logDiagnostic } from "./gui-diagnostics.mjs";
 // Thin runtime-control layer around the dashboard server.
 // The dashboard implementation lives in gui-server-core.mjs; this module adds
 // local start/stop/status controls for the already-provisioned `teams-gui`
@@ -119,6 +121,10 @@ async function saveAlertConfig(req) {
   cfg.alerts.fcm = nextFcm;
   delete cfg.alerts.fcm.deviceToken;
   await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  if (transport === "websocket") {
+    // Saving must not wait on Google or imply that the phone has reconnected.
+    void requestPhonePolicySync(cfg).catch(() => logDiagnostic("phone_policy_sync_failed", { code: "internal_error" }));
+  }
   return await runtimeConfig();
 }
 

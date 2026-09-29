@@ -10,11 +10,8 @@
 
 import { readFile, writeFile, mkdir, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DATA_DIR = join(ROOT, "data");
+import { join } from "node:path";
+import { DATA_DIR } from "./local-paths.mjs";
 const STATE_FILE = join(DATA_DIR, "state.json");
 const ACTIVITY_LOG = join(DATA_DIR, "activity.jsonl");
 

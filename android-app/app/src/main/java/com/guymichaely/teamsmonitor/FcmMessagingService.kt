@@ -42,6 +42,11 @@ class FcmMessagingService : FirebaseMessagingService() {
             )
 
             val primary = data["primaryTransport"].orEmpty()
+            if ("sync_policy" in actions) {
+                // Fetch the current policy: a delayed wake-up must not restore old settings.
+                NotificationTransport.sync(this)
+                return
+            }
             val websocketWanted = data["websocketWanted"]?.toBooleanStrictOrNull()
             if ((primary == "fcm" || primary == "websocket") && websocketWanted != null) {
                 RecoveryControl.applyServerState(

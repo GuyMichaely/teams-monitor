@@ -14,6 +14,7 @@ import {
   requestWebSocket,
 } from "./alert-runtime.mjs";
 import { resolveFcmConfig } from "./fcm-config.mjs";
+import { logDiagnostic } from "./gui-diagnostics.mjs";
 import { publishWorkerEvent, workerEnabled } from "./worker-control.mjs";
 
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
@@ -529,7 +530,7 @@ async function sendViaFcm(body, fcm) {
   };
 }
 
-async function sendFcmControl(config, data) {
+async function sendFcmControl(config, data, android = {}) {
   const resolved = await resolveFcmConfig(config?.alerts?.fcm || {});
   if (!resolved.serviceAccountValid || !resolved.projectId) {
     throw Object.assign(new Error("FCM recovery control is not configured"), { code: "FCM_CONFIG" });
@@ -538,12 +539,38 @@ async function sendFcmControl(config, data) {
   const payload = Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v ?? "")]));
   const sent = await requestCurrentFcmRegistration(resolved.projectId, accessToken, () => ({
     data: payload,
-    android: { priority: "HIGH" },
+    android: { priority: "HIGH", ...android },
   }));
   return {
     ...sent.response,
     registrationGeneration: sent.registrationGeneration,
   };
+}
+
+/** Wake a cold phone without embedding settings that could be stale on arrival. */
+export async function requestPhonePolicySync(config) {
+  const primary = config?.alerts?.transport || "websocket";
+  try {
+    const runtime = await readAlertRuntime(primary);
+    const retryInMs = fcmBackoffRemainingMs(runtime);
+    if (retryInMs > 0) {
+      logDiagnostic("phone_policy_sync_deferred", { reason: "fcm_backoff", retryInMs });
+      return { accepted: false, reason: "fcm_backoff" };
+    }
+    const result = await sendFcmControl(config, { kind: "control", actions: "sync_policy" }, {
+      ttl: "60s", collapse_key: "delivery-policy-sync",
+    });
+    // FCM acceptance is neither a WebSocket connection nor proof of receipt.
+    logDiagnostic("phone_policy_sync_accepted", { messageId: result.name || null });
+    return { accepted: true };
+  } catch (error) {
+    if (error.retryAfterMs > 0) {
+      await recordFcmBackoff(null, { error: errorSummary(error), delayMs: error.retryAfterMs,
+        ...transportResultOptions("fcm", error) });
+    }
+    logDiagnostic("phone_policy_sync_failed", { code: error.code || "unknown" });
+    return { accepted: false, reason: error.code || "unknown" };
+  }
 }
 
 function retryAfterMs(header, httpStatus) {
