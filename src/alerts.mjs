@@ -445,7 +445,7 @@ async function fcmAccessToken(sa) {
   return cachedToken.accessToken;
 }
 
-async function requestCurrentFcmRegistration(projectId, accessToken, buildMessage) {
+export async function requestCurrentFcmRegistration(projectId, accessToken, buildMessage) {
   let lastError = null;
   for (let attemptNo = 0; attemptNo < 2; attemptNo++) {
     const registration = await readFcmRegistration();
@@ -463,16 +463,33 @@ async function requestCurrentFcmRegistration(projectId, accessToken, buildMessag
     const target = registration.kind === "fid"
       ? { fid: registration.value }
       : { token: registration.value };
+    const message = buildMessage();
+    const fcmSendStartedAt = new Date().toISOString();
+    const started = performance.now();
+    const trace = {
+      alertId: message.data?.alertId || null,
+      messageKind: message.data?.kind || null,
+      attempt: attemptNo + 1,
+      registrationGeneration: registration.generation,
+      priority: message.android?.priority || null,
+      fcmSendStartedAt,
+    };
+    logDiagnostic("fcm_send_started", trace);
     try {
       const response = await fcmRequest(projectId, accessToken, {
-        message: { ...target, ...buildMessage() },
+        message: { ...target, ...message, data: { ...message.data, fcmSendStartedAt } },
       });
+      const timing = { fcmSendStartedAt, fcmAcceptedAt: new Date().toISOString(), requestDurationMs: Math.round(performance.now() - started) };
+      // API acceptance is not proof of phone delivery. The same alertId joins phone logs.
+      logDiagnostic("fcm_send_accepted", { ...trace, ...timing, messageId: response.name || null });
       return {
         response,
+        ...timing,
         registrationKind: registration.kind,
         registrationGeneration: registration.generation,
       };
     } catch (error) {
+      logDiagnostic("fcm_send_failed", { ...trace, requestDurationMs: Math.round(performance.now() - started), code: error.code || null, httpStatus: error.httpStatus || null });
       error.registrationGeneration = registration.generation;
       lastError = error;
       // If the phone updated its registration while this request was in flight,
@@ -527,6 +544,9 @@ async function sendViaFcm(body, fcm) {
     messageId: sent.response.name || null,
     registrationKind: sent.registrationKind,
     registrationGeneration: sent.registrationGeneration,
+    fcmSendStartedAt: sent.fcmSendStartedAt,
+    fcmAcceptedAt: sent.fcmAcceptedAt,
+    requestDurationMs: sent.requestDurationMs,
   };
 }
 

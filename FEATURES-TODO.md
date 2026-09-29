@@ -103,3 +103,6 @@ The current GUI already exposes the monitoring/decision/action pipeline and conn
 `tfs-agent/` is a separate experimental integration for executing TFS operations from an outbound-only VM. It is not part of Teams monitoring or phone-alert delivery and is not required for the current system.
 
 No TFS work is currently treated as a blocker here. If that integration is no longer wanted, it can be removed separately rather than mixed into the alert-system backlog.
+# Deferred: scheduled action indicators
+
+The dashboard shows 🗣️ only after a recorded Teams reply and 🚨 after a phone alert is accepted for delivery; 🙈 means a completed flow with no external action. When scheduling is implemented, emit explicit successful scheduling effects (separate from execution effects) and show ⏳🗣️ / ⏳🚨 alongside immediate-action icons. Do not infer scheduling from model text or show placeholder successes.

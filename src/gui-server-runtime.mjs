@@ -1,5 +1,4 @@
-import { requestPhonePolicySync } from "./alerts.mjs";
-import { logDiagnostic } from "./gui-diagnostics.mjs";
+import { loadConfig, saveConfig } from "./context.mjs";
 // Thin runtime-control layer around the dashboard server.
 // The dashboard implementation lives in gui-server-core.mjs; this module adds
 // local start/stop/status controls for the already-provisioned `teams-gui`
@@ -7,18 +6,19 @@ import { logDiagnostic } from "./gui-diagnostics.mjs";
 
 import { timingSafeEqual } from "node:crypto";
 import { closeSync, existsSync, openSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { startGui as startCoreGui } from "./gui-server-core.mjs";
+import { applyAlertDeliveryPolicy, startGui as startCoreGui } from "./gui-server-core.mjs";
+import { requestPhonePolicySync } from "./alerts.mjs";
+import { logDiagnostic } from "./gui-diagnostics.mjs";
 import { DATA_DIR } from "./state.mjs";
-import { registrationFileExists, saveFcmRegistration } from "./alert-runtime.mjs";
+import { controlState, registrationFileExists, saveFcmRegistration } from "./alert-runtime.mjs";
 import { DEFAULT_FCM_SERVICE_ACCOUNT_FILE, resolveFcmConfig } from "./fcm-config.mjs";
 import { TUNNEL_HOST, TUNNEL_NAME } from "./tunnel-config.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const CONFIG_FILE = join(ROOT, "config", "config.json");
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
 
@@ -57,13 +57,12 @@ function configuredFallbackTransport(alerts, primary) {
 }
 
 async function runtimeConfig() {
-  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  const cfg = await loadConfig();
   const fcm = cfg.alerts?.fcm || {};
   const resolvedFcm = await resolveFcmConfig(fcm);
   const transport = cfg.alerts?.transport || "websocket";
   return {
     pollIntervalMs: cfg.pollIntervalMs || 15000,
-    mode: cfg.automation?.mode || "respond",
     alerts: {
       transport,
       fallbackTransport: configuredFallbackTransport(cfg.alerts, transport),
@@ -82,7 +81,7 @@ async function saveAlertConfig(req) {
     throw Object.assign(new Error("transport must be websocket or fcm"), { httpCode: 400 });
   }
 
-  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  const cfg = await loadConfig();
   cfg.alerts = cfg.alerts || {};
   const hasRequestedFallback = Object.prototype.hasOwnProperty.call(body, "fallbackTransport");
   const hadExplicitFallback = Object.prototype.hasOwnProperty.call(cfg.alerts, "fallbackTransport");
@@ -120,7 +119,9 @@ async function saveAlertConfig(req) {
   cfg.alerts.fallbackTransport = fallbackTransport;
   cfg.alerts.fcm = nextFcm;
   delete cfg.alerts.fcm.deviceToken;
-  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  await saveConfig(cfg);
+  const state = await controlState(cfg);
+  applyAlertDeliveryPolicy(state);
   // Also wake FCM-only phones when fallback settings change without an open socket.
   // Saving must not wait on Google or imply that the phone has reconnected.
   void requestPhonePolicySync(cfg).catch(() => logDiagnostic("phone_policy_sync_failed", { code: "internal_error" }));
@@ -149,9 +150,9 @@ async function savePollInterval(req) {
   if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 1000 || pollIntervalMs > 300000) {
     throw Object.assign(new Error("pollIntervalMs must be an integer from 1000 to 300000"), { httpCode: 400 });
   }
-  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  const cfg = await loadConfig();
   cfg.pollIntervalMs = pollIntervalMs;
-  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  await saveConfig(cfg);
   return { pollIntervalMs };
 }
 
@@ -254,257 +255,6 @@ function stopTunnel() {
   };
 }
 
-const TUNNEL_HTML = `
-  <h2>Runtime</h2>
-  <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <div class="row">
-        <span id="statusDot" class="dot" style="background:var(--dim)"></span>
-        <strong>Teams orchestrator</strong>
-        <span id="statusText" style="color:var(--dim)">checking…</span>
-      </div>
-      <div class="row">
-        <button id="btnStart" onclick="startOrch()" disabled>Start</button>
-        <button id="btnStop" class="danger" onclick="stopOrch()" disabled>Stop</button>
-      </div>
-    </div>
-
-    <div class="row" style="justify-content:space-between;border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
-      <div class="row">
-        <span id="tunnelDot" class="dot" style="background:var(--dim)"></span>
-        <strong>Cloudflare tunnel</strong>
-        <span id="tunnelText" style="color:var(--dim)">checking…</span>
-      </div>
-      <div class="row">
-        <button id="btnTunnelStart" onclick="startCloudflareTunnel()" disabled>Start</button>
-        <button id="btnTunnelStop" class="danger" onclick="stopCloudflareTunnel()" disabled>Stop</button>
-      </div>
-    </div>
-
-    <div class="row" style="justify-content:space-between;border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
-      <div>
-        <strong>Polling interval</strong>
-        <div style="color:var(--dim);font-size:12px">Applies live; no orchestrator restart required.</div>
-      </div>
-      <div class="row">
-        <input id="pollIntervalSec" type="number" min="1" max="300" step="0.5"
-          style="width:90px;background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
-        <span style="color:var(--dim)">seconds</span>
-        <button class="secondary" onclick="savePollInterval()">Save</button>
-      </div>
-    </div>
-
-    <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
-      <div>
-        <strong>Phone notification delivery</strong>
-        <div style="color:var(--dim);font-size:12px">The primary transport is tried first. Fallback is optional.</div>
-      </div>
-      <div class="row" style="margin-top:10px;align-items:flex-end">
-        <label style="display:flex;flex-direction:column;gap:4px;color:var(--dim);font-size:12px">
-          Primary
-          <select id="alertTransport" onchange="renderAlertTransportFields()"
-            style="background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
-            <option value="websocket">WebSocket</option>
-            <option value="fcm">Firebase Cloud Messaging</option>
-          </select>
-        </label>
-        <label style="display:flex;flex-direction:column;gap:4px;color:var(--dim);font-size:12px">
-          Fallback
-          <select id="alertFallbackTransport" onchange="renderAlertTransportFields(this.value)"
-            style="background:#0c0e12;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px">
-          </select>
-        </label>
-        <button class="secondary" onclick="saveAlertTransport()">Save</button>
-      </div>
-      <div id="fcmFields" style="margin-top:10px">
-        <div id="fcmStatus" style="display:flex;flex-direction:column;gap:6px"></div>
-      </div>
-    </div>
-  </div>
-`;
-
-const TUNNEL_SCRIPT = `<script>
-async function tunnelApi(path, opts = {}) {
-  const tunnelToken = localStorage.guiToken || "";
-  const res = await fetch(path, { ...opts,
-    headers: { ...(tunnelToken ? { "Authorization": "Bearer " + tunnelToken } : {}), ...(opts.headers || {}) } });
-  if (res.status === 401) { if (typeof showLogin === "function") showLogin(); throw new Error("unauthorized"); }
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || res.status);
-  return body;
-}
-function renderTunnelStatus(s) {
-  const dot = document.getElementById("tunnelDot");
-  const text = document.getElementById("tunnelText");
-  if (!dot || !text) return;
-  dot.style.background = s.running ? "var(--ok)" : "var(--bad)";
-  text.textContent = s.running ? "running · pid " + s.pids.join(", ") : "stopped";
-  document.getElementById("btnTunnelStart").disabled = s.running;
-  document.getElementById("btnTunnelStop").disabled = !s.running;
-}
-function transportName(value) {
-  return value === "fcm" ? "Firebase Cloud Messaging" : "WebSocket";
-}
-function renderFcmConfigStatus(c) {
-  const status = document.getElementById("fcmStatus");
-  if (!status) return;
-  const rows = [
-    {
-      label: "Firebase project",
-      value: c.alerts?.fcmProjectId || "missing",
-      ok: !!c.alerts?.fcmProjectId,
-      detail: "Identifies the Firebase project this PC sends through.",
-    },
-    {
-      label: "Service account",
-      value: c.alerts?.fcmServiceAccountValid ? "valid" : c.alerts?.fcmServiceAccountPresent ? "invalid" : "missing",
-      ok: !!c.alerts?.fcmServiceAccountValid,
-      detail: "Credentials used by this PC to authenticate to Firebase Cloud Messaging.",
-    },
-    {
-      label: "Phone registration",
-      value: c.alerts?.fcmRegistrationPresent ? "present" : "missing",
-      ok: !!c.alerts?.fcmRegistrationPresent,
-      detail: "A stored phone registration identifier tells FCM which app instance to target.",
-    },
-  ];
-  status.replaceChildren();
-  for (const row of rows) {
-    const line = document.createElement("div");
-    line.style.cssText = "display:grid;grid-template-columns:130px minmax(90px,auto) 1fr;gap:8px;align-items:baseline;font-size:12px";
-    const label = document.createElement("strong");
-    label.textContent = row.label;
-    const value = document.createElement("span");
-    value.textContent = row.value;
-    value.style.color = row.ok ? "var(--ok)" : "var(--bad)";
-    const detail = document.createElement("span");
-    detail.textContent = row.detail;
-    detail.style.color = "var(--dim)";
-    line.append(label, value, detail);
-    status.appendChild(line);
-  }
-}
-function applyRuntimeConfig(c) {
-  const input = document.getElementById("pollIntervalSec");
-  if (input && document.activeElement !== input) input.value = String(c.pollIntervalMs / 1000);
-  const transport = c.alerts?.transport || "websocket";
-  const transportSelect = document.getElementById("alertTransport");
-  if (transportSelect && document.activeElement !== transportSelect) transportSelect.value = transport;
-  renderAlertTransportFields(c.alerts?.fallbackTransport == null ? "none" : c.alerts.fallbackTransport);
-  renderFcmConfigStatus(c);
-
-  const alertOnly = c.mode === "alert-only";
-  const whitelistHeading = [...document.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Auto-send whitelist");
-  if (whitelistHeading) {
-    whitelistHeading.style.display = alertOnly ? "none" : "";
-    if (whitelistHeading.nextElementSibling) whitelistHeading.nextElementSibling.style.display = alertOnly ? "none" : "";
-  }
-  const alarmHeading = [...document.querySelectorAll("h2")].find((h) => ["Escalations", "Alarms"].includes(h.textContent.trim()));
-  if (alarmHeading) alarmHeading.textContent = alertOnly ? "Alarms" : "Escalations";
-}
-async function refreshTunnelStatus() {
-  try { renderTunnelStatus(await tunnelApi("/api/tunnel/status")); } catch { /* transient */ }
-}
-async function refreshRuntimeConfig() {
-  try { applyRuntimeConfig(await tunnelApi("/api/runtime/config")); } catch { /* transient */ }
-}
-async function refreshRuntimeStatus() {
-  await Promise.all([refreshTunnelStatus(), refreshRuntimeConfig()]);
-}
-function renderAlertTransportFields(preferredFallback) {
-  const primary = document.getElementById("alertTransport")?.value || "websocket";
-  const fallbackSelect = document.getElementById("alertFallbackTransport");
-  if (!fallbackSelect) return;
-  const other = primary === "fcm" ? "websocket" : "fcm";
-  const previous = preferredFallback === undefined
-    ? (fallbackSelect.value || other)
-    : (preferredFallback || "none");
-  const fallbackEnabled = previous !== "none";
-
-  fallbackSelect.replaceChildren();
-  const none = document.createElement("option");
-  none.value = "none";
-  none.textContent = "None";
-  const alternate = document.createElement("option");
-  alternate.value = other;
-  alternate.textContent = transportName(other);
-  fallbackSelect.append(none, alternate);
-  fallbackSelect.value = fallbackEnabled ? other : "none";
-
-  const fields = document.getElementById("fcmFields");
-  if (fields) fields.style.display = (primary === "fcm" || fallbackSelect.value === "fcm") ? "block" : "none";
-}
-async function saveAlertTransport() {
-  const transport = document.getElementById("alertTransport").value;
-  const fallbackValue = document.getElementById("alertFallbackTransport").value;
-  const fallbackTransport = fallbackValue === "none" ? null : fallbackValue;
-  try {
-    const result = await tunnelApi("/api/config/alerts", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ transport, fallbackTransport }),
-    });
-    applyRuntimeConfig(result);
-    toast("Phone delivery policy saved");
-  } catch (e) { toast(e.message); }
-}
-async function savePollInterval() {
-  const seconds = Number(document.getElementById("pollIntervalSec").value);
-  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) {
-    toast("Polling interval must be 1–300 seconds");
-    return;
-  }
-  try {
-    const result = await tunnelApi("/api/config/poll-interval", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pollIntervalMs: Math.round(seconds * 1000) }),
-    });
-    document.getElementById("pollIntervalSec").value = String(result.pollIntervalMs / 1000);
-    toast("Polling interval saved");
-  } catch (e) { toast(e.message); }
-}
-async function startCloudflareTunnel() {
-  try {
-    await tunnelApi("/api/tunnel/start", { method:"POST" });
-    toast("Cloudflare tunnel starting…");
-  } catch (e) { toast(e.message); }
-  setTimeout(refreshRuntimeStatus, 1200);
-}
-async function stopCloudflareTunnel() {
-  const remote = location.hostname === "${TUNNEL_HOST}";
-  if (remote && !confirm("Stop the Cloudflare tunnel? This page will disconnect, and you cannot restart the tunnel from this remote URL until it is reachable again locally.")) return;
-  try {
-    const r = await tunnelApi("/api/tunnel/stop", { method:"POST" });
-    toast(r.killed ? "Cloudflare tunnel stopped" : "Tunnel is not running");
-  } catch (e) {
-    toast(remote ? "Tunnel stop sent; remote connection may now be offline" : e.message);
-  }
-  setTimeout(refreshRuntimeStatus, 1200);
-}
-refreshRuntimeStatus();
-setInterval(refreshRuntimeStatus, 5000);
-</script>`;
-
-function injectTunnelControls(page) {
-  if (page.includes('id="btnTunnelStart"')) return page;
-  const oldHeader = `  <div class="row" style="justify-content:space-between">
-    <div class="row">
-      <span id="statusDot" class="dot" style="background:var(--dim)"></span>
-      <h1>Teams Automation</h1>
-      <span id="statusText" style="color:var(--dim)">…</span>
-    </div>
-    <div class="row">
-      <button id="btnStart" onclick="startOrch()" disabled>Start</button>
-      <button id="btnStop" class="danger" onclick="stopOrch()" disabled>Stop</button>
-    </div>
-  </div>`;
-  const titleOnly = `  <div class="row"><h1>Teams Automation</h1></div>`;
-  return page
-    .replace(oldHeader, titleOnly)
-    .replace("  <h2>Overview</h2>", TUNNEL_HTML + "\n  <h2>Overview</h2>")
-    .replace("</body>", TUNNEL_SCRIPT + "\n</body>");
-}
 
 export function startGui(config) {
   const result = startCoreGui(config);
@@ -548,15 +298,6 @@ export function startGui(config) {
       }
     }
 
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-      const coreEnd = res.end.bind(res);
-      res.end = (chunk, encoding, callback) => {
-        let body = chunk;
-        if (typeof chunk === "string") body = injectTunnelControls(chunk);
-        else if (Buffer.isBuffer(chunk)) body = Buffer.from(injectTunnelControls(chunk.toString("utf8")));
-        return coreEnd(body, encoding, callback);
-      };
-    }
     return coreHandler(req, res);
   });
 

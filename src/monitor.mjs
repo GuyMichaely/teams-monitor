@@ -57,16 +57,20 @@ export async function getAllChats(port) {
  */
 export async function readChat(name, limit = 20, port) {
   const session = await getChatSession(port);
-  let filterToggled = false;
+  let restoreFilter = null;
   try {
     let opened = await openChat(session, name);
     if (!opened) {
-      // Some chats (e.g. untitled meeting chats shown by numeric id) only appear
-      // in the rail under the "Unread" filter, not the default view. Enable it and retry.
-      const r = await setUnreadFilter(session, true);
-      filterToggled = r.ok && !r.wasOn;
+      // A reaction-only revisit may target a chat that no longer appears as unread.
+      const r = await setUnreadFilter(session, false);
+      if (r.ok) restoreFilter = r.wasOn;
       await settle(500);
       opened = await openChat(session, name);
+      if (!opened) {
+        await setUnreadFilter(session, true);
+        await settle(500);
+        opened = await openChat(session, name);
+      }
     }
     if (!opened) throw new Error(`Chat not found in rail: "${name}"`);
     // Wait until the message pane reflects the newly opened chat.
@@ -82,8 +86,8 @@ export async function readChat(name, limit = 20, port) {
     return { chat: name, messages };
   } finally {
     // Restore the rail filter if we changed it, so we don't leave the user's UI filtered.
-    if (filterToggled) {
-      try { await setUnreadFilter(session, false); } catch { /* ignore */ }
+    if (restoreFilter !== null) {
+      try { await setUnreadFilter(session, restoreFilter); } catch { /* ignore */ }
     }
     session.close();
   }

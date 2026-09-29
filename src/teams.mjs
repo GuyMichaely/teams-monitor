@@ -227,27 +227,42 @@ export async function openChat(session, name) {
   );
 }
 
+/** Read message metadata from the page's DOM (also serialized into the CDP page). */
+export function readOpenChatFromDocument(doc, limit = 15) {
+  const nodes = [...doc.querySelectorAll('[data-tid="chat-pane-message"]')];
+  const count = Number.isFinite(Number(limit)) ? Math.max(0, Math.trunc(Number(limit))) : 15;
+  return (count ? nodes.slice(-count) : []).map((n) => {
+    const author = n.querySelector('[data-tid="message-author-name"]')?.innerText?.trim() || null;
+    const time = n.querySelector('time')?.getAttribute('datetime') || null;
+    const id = n.getAttribute('data-mid') || null;
+    const reactions = [...n.querySelectorAll('[data-tid="diverse-reaction-pill-button"]')].flatMap(el => {
+      const emoji = el.querySelector('[itemtype="http://schema.skype.com/Emoji"]');
+      const label = (el.innerText || '').trim();
+      const count = Number(label.match(/^(\d+)\s/)?.[1]);
+      const key = emoji?.getAttribute('itemid');
+      if (!key || !Number.isInteger(count) || count < 1) return [];
+      return [{ key, emoji: emoji.getAttribute('alt') || key, count, self: el.getAttribute('aria-pressed') === 'true' }];
+    });
+    // Teams uses this schema.org-style marker for a real mention. Plain text,
+    // including names prefixed with @, is deliberately not interpreted as one.
+    const mentions = [...n.querySelectorAll('[itemtype="http://schema.skype.com/Mention"]')]
+      .map((el) => (el.innerText || '').trim().replace(/^@\s*/, ''))
+      .filter(Boolean);
+    const clone = n.cloneNode(true);
+    clone.querySelectorAll('[data-tid="message-author-name"], time, [data-tid="diverse-reaction-summary"]').forEach((el) => el.remove());
+    const text = (clone.innerText || '').trim();
+    return { id, author, time, text, mentions, reactions };
+  });
+}
+
 /**
  * Read the most recent messages from the currently-open chat.
- * Returns [{ author, time (ISO), text }]. The author/timestamp header is stripped
- * from `text` so it holds only the message body.
+ * Returns [{ author, time (ISO), text, mentions }]. Mentions contains display
+ * names found on Teams' explicit mention nodes; plain body text is not inferred.
  */
 export async function readOpenChat(session, limit = 15) {
-  return await evalOnPage(
-    session,
-    `(() => {
-      const nodes = [...document.querySelectorAll('[data-tid="chat-pane-message"]')];
-      return nodes.slice(-${limit}).map((n) => {
-        const author = n.querySelector('[data-tid="message-author-name"]')?.innerText?.trim() || null;
-        const time = n.querySelector('time')?.getAttribute('datetime') || null;
-        // Clone the node and remove the header bits so text = body only.
-        const clone = n.cloneNode(true);
-        clone.querySelectorAll('[data-tid="message-author-name"], time').forEach((el) => el.remove());
-        const text = (clone.innerText || '').trim();
-        return { author, time, text };
-      });
-    })()`
-  );
+  const reader = readOpenChatFromDocument.toString();
+  return await evalOnPage(session, `(${reader})(document, ${JSON.stringify(limit)})`);
 }
 
 export async function readMessages(limit = 15, port = DEFAULT_PORT) {

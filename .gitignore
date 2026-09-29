@@ -3,6 +3,9 @@
 !.env.example
 data/
 config/config.json
+config/config.yaml
+config/config.yaml.*.tmp
+config/*.json.migrated.bak
 config/fcm-service-account.json
 context/user-profile.md
 android-app/app/google-services.json

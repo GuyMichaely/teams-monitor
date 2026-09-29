@@ -1,22 +1,21 @@
 // Diagnostics layer around the runtime GUI/tunnel server.
 // Logs connection behavior without logging GUI_TOKEN/access_token values.
 
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
 import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
-import { injectObservability } from "./gui-observability-ui.mjs";
-import { injectPolicyUi } from "./gui-policy-ui.mjs";
-import { injectAbsoluteLogTime } from "./gui-absolute-log-time-ui.mjs";
-import { injectDashboardLayout } from "./gui-dashboard-layout.mjs";
+import { DASHBOARD_PAGE } from "./dashboard-page.mjs";
+import { readPoll } from "./poll-status.mjs";
+import { replyPolicy, validateReplyPolicy } from "./reply-policy.mjs";
+import { dashboardHealth } from "./dashboard-health.mjs";
 import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
-import { loadConfig } from "./context.mjs";
-import { validateDeterministicRules } from "./deterministic-rules.mjs";
+import { loadConfig, saveConfig } from "./context.mjs";
+import { validateAutomation } from "./deterministic-rules.mjs";
+import { parseConfigYaml, configYaml } from './config-format.mjs';
+import { getTeamsPresence, setTeamsPresence } from "./teams-presence.mjs";
+import { activityView, clearActivityThrough, restoreActivity } from "./activity-view.mjs";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const CONFIG_FILE = join(ROOT, "config", "config.json");
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
 
@@ -59,30 +58,24 @@ async function diagnostics(limit) {
 
 async function getPolicyRules() {
   const cfg = await loadConfig();
-  try { return validateDeterministicRules(cfg.automation?.rules || []); }
-  catch { return []; }
+  return validateAutomation(cfg.automation);
 }
 
 async function putPolicyRules(body) {
-  const rules = validateDeterministicRules(body?.rules);
-  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
-  cfg.automation = { ...(cfg.automation || {}), rules };
-  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
-  return rules;
+  const automation = validateAutomation(body);
+  const cfg = await loadConfig();
+  cfg.automation = automation;
+  await saveConfig(cfg);
+  return automation;
 }
 
-function decoratePage(page) {
-  return injectDashboardLayout(injectAbsoluteLogTime(injectPolicyUi(injectObservability(page))));
-}
-
-export function startGui(config) {
+export function startGui(config, presence = { get: getTeamsPresence, set: setTeamsPresence }) {
   const result = startRuntimeGui(config);
   const { server } = result;
   const runtimeHandler = server.listeners("request")[0];
   server.removeListener("request", runtimeHandler);
   const g = config?.gui || {};
   const token = process.env[g.authTokenEnv || "GUI_TOKEN"] || null;
-  const primaryTransport = config?.alerts?.transport || "websocket";
 
   logDiagnostic("gui_started", {
     pid: process.pid,
@@ -112,7 +105,8 @@ export function startGui(config) {
     }
 
     logDiagnostic("ws_connected", { ...meta, tokenConfigured: !!token, tokenSupplied });
-    recordTransportSuccess("websocket", primaryTransport).catch((e) => {
+    // A GUI can outlive delivery-setting changes; never restore startup policy.
+    loadConfig().then(live => recordTransportSuccess("websocket", live?.alerts?.transport || "websocket")).catch((e) => {
       logDiagnostic("ws_state_update_failed", { ...meta, error: e.message });
     });
     socket.on("error", (e) => logDiagnostic("ws_socket_error", { ...meta, error: e.message }));
@@ -128,17 +122,79 @@ export function startGui(config) {
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
 
-    if (url.pathname === "/api/policy/rules") {
+    if (url.pathname === "/api/activity/view") {
       try {
+        if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: "unauthorized" });
+        if (req.method === "GET" && url.pathname === "/api/activity/view") return sendJson(res, 200, activityView());
+        if (req.method === "PUT") {
+          const { through } = await readJsonBody(req);
+          const result = through === null ? restoreActivity() : clearActivityThrough(through);
+          logDiagnostic("activity_filter_changed", result);
+          return sendJson(res, 200, result);
+        }
+        return sendJson(res, 405, { error: "method not allowed" });
+      } catch (e) { return sendJson(res, e.httpCode || 500, { error: e.message }); }
+    }
+
+    if (url.pathname === "/api/teams/presence") {
+      try {
+        if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: "unauthorized" });
+        if (req.method === "GET") return sendJson(res, 200, await presence.get());
+        if (req.method === "PUT") {
+          const body = await readJsonBody(req);
+          const result = await presence.set(body.status);
+          logDiagnostic(result.superseded ? "teams_presence_superseded" : "teams_presence_changed", { requested: result.requested, previous: result.previous, status: result.status, verified: result.verified });
+          return sendJson(res, 200, result);
+        }
+        return sendJson(res, 405, { error: "method not allowed" });
+      } catch (e) {
+        logDiagnostic("teams_presence_failed", { error: e.message });
+        return sendJson(res, e.httpCode || 503, { ok: false, error: e.message });
+      }
+    }
+
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(DASHBOARD_PAGE);
+    }
+
+    if (["/api/reply-policy", "/api/poll", "/api/health/status"].includes(url.pathname)) {
+      try {
+        if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: "unauthorized" });
+        if (url.pathname === "/api/poll" && req.method === "GET") return sendJson(res, 200, await readPoll());
+        if (url.pathname === "/api/health/status" && req.method === "GET") return sendJson(res, 200, await dashboardHealth(await loadConfig()));
+        if (url.pathname === "/api/reply-policy") {
+          if (req.method === "GET") return sendJson(res, 200, replyPolicy(await loadConfig()));
+          if (req.method === "PUT") {
+            const policy = validateReplyPolicy(await readJsonBody(req));
+            const cfg = await loadConfig();
+            cfg.replyPolicy = policy;
+            // Legacy readers must never interpret blacklist entries as permission.
+            cfg.whitelist = { ...(cfg.whitelist || {}), autoSend: policy.mode === "whitelist" ? policy.entries : [] };
+            await saveConfig(cfg);
+            return sendJson(res, 200, policy);
+          }
+        }
+        return sendJson(res, 405, { error: "method not allowed" });
+      } catch (e) { return sendJson(res, e.httpCode || 500, { error: e.message }); }
+    }
+
+
+    if (["/api/policy/automation", "/api/policy/automation/yaml"].includes(url.pathname)) {
+      try {
+        const yamlFormat = url.pathname.endsWith('/yaml');
         if (token && !authOk(req.headers.authorization, token)) {
           return sendJson(res, 401, { ok: false, error: "unauthorized" });
         }
         if (req.method === "GET") {
-          return sendJson(res, 200, { ok: true, rules: await getPolicyRules() });
+          const automation = await getPolicyRules();
+          return sendJson(res, 200, yamlFormat ? { yaml: configYaml(automation) } : automation);
         }
         if (req.method === "PUT") {
-          const rules = await putPolicyRules(await readJsonBody(req));
-          return sendJson(res, 200, { ok: true, rules });
+          const body = await readJsonBody(req);
+          if (yamlFormat && typeof body?.yaml !== 'string') throw new Error('yaml must be a string');
+          const automation = await putPolicyRules(yamlFormat ? parseConfigYaml(body.yaml) : body);
+          return sendJson(res, 200, yamlFormat ? { yaml: configYaml(automation) } : automation);
         }
         return sendJson(res, 405, { ok: false, error: "method not allowed" });
       } catch (e) {
@@ -219,16 +275,6 @@ export function startGui(config) {
       } catch (e) {
         return sendJson(res, e.httpCode || 500, { ok: false, error: e.message });
       }
-    }
-
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-      const runtimeEnd = res.end.bind(res);
-      res.end = (chunk, encoding, callback) => {
-        let body = chunk;
-        if (typeof chunk === "string") body = decoratePage(chunk);
-        else if (Buffer.isBuffer(chunk)) body = Buffer.from(decoratePage(chunk.toString("utf8")));
-        return runtimeEnd(body, encoding, callback);
-      };
     }
 
     return runtimeHandler(req, res);

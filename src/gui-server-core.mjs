@@ -1,3 +1,4 @@
+import { loadConfig, saveConfig } from "./context.mjs";
 // Monitoring/management GUI — a single-page dashboard + JSON API served from
 // this machine. Zero-dependency (node:http), same style as the TFS dispatcher.
 //
@@ -15,22 +16,26 @@
 // layer (e.g. Cloudflare Access) adds.
 
 import { createServer } from "node:http";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { logDiagnostic } from "./gui-diagnostics.mjs";
+import { controlState } from "./alert-runtime.mjs";
 import { open, readFile, writeFile } from "node:fs/promises";
 import { existsSync, rmSync, openSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR, STATE_FILE, ACTIVITY_LOG } from "./state.mjs";
+import { visibleActivity } from "./activity-view.mjs";
 import { hardStop } from "./orchestrator.mjs";
+import { DASHBOARD_PAGE } from "./dashboard-page.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const CONFIG_FILE = join(ROOT, "config", "config.json");
+import { PROFILE_FILE } from "./local-paths.mjs";
+import { replyPolicy } from "./reply-policy.mjs";
 const STOP_FILE = join(DATA_DIR, "STOP");
 const HEARTBEAT_FILE = join(DATA_DIR, "heartbeat.json");
 const ORCH_LOG = join(DATA_DIR, "orchestrator.log");
-const APK_FILE = join(ROOT, "android-app", "app", "build", "outputs", "apk", "debug", "app-debug.apk");
-const PROFILE_FILE = join(ROOT, "context", "user-profile.md");
+const APK_RELEASE_URL = "https://github.com/GuyMichaely/teams-monitor/releases/download/android-latest/teams-monitor.apk";
 
 // ---- small helpers --------------------------------------------------------
 
@@ -108,6 +113,7 @@ function startOrchestrator() {
   const out = openSync(ORCH_LOG, "a");
   const child = spawn(process.execPath, [join(ROOT, "src", "cli.mjs"), "run"], {
     detached: true,
+    windowsHide: true,
     stdio: ["ignore", out, out],
     cwd: ROOT,
   });
@@ -118,7 +124,7 @@ function startOrchestrator() {
 // ---- API ------------------------------------------------------------------
 
 async function apiOverview(config) {
-  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  const cfg = await loadConfig();
   const orchestrator = await orchestratorStatus(cfg.pollIntervalMs);
   // Rough 24h counters from the activity tail.
   const cutoff = Date.now() - 24 * 3600 * 1000;
@@ -141,6 +147,7 @@ async function apiOverview(config) {
       model: cfg.brain?.model || "",
       pollIntervalMs: cfg.pollIntervalMs,
       whitelist: cfg.whitelist?.autoSend || [],
+      replyPolicy: replyPolicy(cfg),
       holdMessage: cfg.holdMessage || "",
       echoLoop: !!cfg.debug?.echoLoop,
       tfsEnabled: !!cfg.integrations?.tfs?.enabled,
@@ -156,9 +163,9 @@ async function apiActivity(limit) {
   const lines = await tailLines(ACTIVITY_LOG, 2_097_152);
   const parsed = [];
   for (const line of lines) {
-    try { parsed.push(JSON.parse(line)); } catch { /* skip */ }
+    try { parsed.push(JSON.parse(line)); } catch { parsed.push({ kind: "invalid_log", error: "Invalid log format" }); }
   }
-  return parsed.slice(-limit).reverse();
+  return visibleActivity(parsed).slice(-limit).reverse();
 }
 
 async function apiWhitelistPut(body) {
@@ -169,9 +176,10 @@ async function apiWhitelistPut(body) {
   if (!Array.isArray(list) || !list.every((s) => typeof s === "string" && s.length)) {
     throw Object.assign(new Error("autoSend must be an array of non-empty strings"), { httpCode: 400 });
   }
-  const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+  const cfg = await loadConfig();
   cfg.whitelist = { ...(cfg.whitelist || {}), autoSend: [...new Set(list)] };
-  await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n");
+  cfg.replyPolicy = { mode: "whitelist", entries: cfg.whitelist.autoSend };
+  await saveConfig(cfg);
   return { ok: true, autoSend: cfg.whitelist.autoSend };
 }
 
@@ -179,10 +187,74 @@ async function apiWhitelistPut(body) {
 //
 // Companion apps (and any test client) subscribe on /ws/alerts; POST /api/alerts
 // broadcasts to every connected socket. Hand-rolled RFC6455, zero-dependency —
-// we only ever SEND text frames, so the parser just handles ping/close.
+// We send text and ping frames; clients return pong or close frames.
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const alertClients = new Set();
+const clientLifecycle = new WeakMap();
+export const alertClientCount = () => alertClients.size;
+
+function trackClient(socket, { pingIntervalMs = 30_000, pongTimeoutMs = 10_000 } = {}) {
+  let pendingPing = null;
+  let timeout = null;
+  let policyTimeout = null;
+  let dropped = false;
+  const drop = (reason) => {
+    if (dropped) return;
+    dropped = true;
+    clearInterval(interval);
+    clearTimeout(timeout);
+    clearTimeout(policyTimeout);
+    alertClients.delete(socket);
+    clientLifecycle.delete(socket);
+    logDiagnostic('ws_connection_removed', { reason, remainingClients: alertClients.size });
+    socket.destroy();
+  };
+  const interval = setInterval(() => {
+    if (pendingPing) return;
+    if (socket.destroyed || !socket.writable || socket.readableEnded) return drop('socket_ended');
+    pendingPing = randomBytes(12);
+    timeout = setTimeout(() => drop('pong_timeout'), pongTimeoutMs);
+    timeout.unref?.();
+    try { socket.write(wsFrame(0x9, pendingPing)); } catch { drop('ping_write_failed'); }
+  }, pingIntervalMs);
+  interval.unref?.();
+  const pong = (payload) => {
+    if (!pendingPing || !payload.equals(pendingPing)) return;
+    pendingPing = null;
+    clearTimeout(timeout);
+    timeout = null;
+  };
+  const policy = (state) => {
+    if (dropped) return;
+    clearTimeout(policyTimeout);
+    const actions = [`set_primary_${state.primaryTransport}`, state.websocketWanted ? 'start_ws' : 'stop_ws'];
+    try { socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ kind: 'control', actions })))); }
+    catch { return drop('policy_write_failed'); }
+    logDiagnostic('ws_delivery_policy_sent', { primaryTransport: state.primaryTransport, websocketWanted: state.websocketWanted });
+    if (!state.websocketWanted) {
+      // Give the phone time to stop its service. A live but noncompliant socket
+      // must not remain usable indefinitely merely because it answers pings.
+      policyTimeout = setTimeout(async () => {
+        try {
+          const current = await controlState(await loadConfig());
+          if (dropped) return;
+          if (current.websocketWanted) return policy(current);
+          drop('delivery_policy_disabled');
+        } catch (error) {
+          logDiagnostic('ws_policy_check_failed', { error: error.message });
+        }
+      }, 1000);
+      policyTimeout.unref?.();
+    }
+  };
+  alertClients.add(socket);
+  clientLifecycle.set(socket, { drop, pong, policy });
+  // Upgraded HTTP sockets can remain half-open after peer FIN; close is not enough.
+  socket.once('end', () => drop('peer_end'));
+  socket.once('close', () => drop('socket_closed'));
+  socket.once('error', () => drop('socket_error'));
+}
 
 /** Unmasked server->client frame. opcode 0x1 = text, 0x8 = close, 0xA = pong. */
 function wsFrame(opcode, payload = Buffer.alloc(0)) {
@@ -207,10 +279,14 @@ function wsFrame(opcode, payload = Buffer.alloc(0)) {
 function broadcastAlert(obj) {
   const frame = wsFrame(0x1, Buffer.from(JSON.stringify(obj), "utf8"));
   for (const sock of alertClients) {
+    if (sock.destroyed || !sock.writable || sock.readableEnded) {
+      clientLifecycle.get(sock)?.drop('socket_ended');
+      continue;
+    }
     try {
       sock.write(frame);
     } catch {
-      alertClients.delete(sock);
+      clientLifecycle.get(sock)?.drop('broadcast_write_failed');
     }
   }
   return alertClients.size;
@@ -233,6 +309,11 @@ function wsOnData(sock, buf) {
       off = 10;
     }
     const masked = buf[1] & 0x80;
+    if (!masked || !Number.isSafeInteger(len) || len > 1_048_576 ||
+        (opcode >= 8 && (len > 125 || !(buf[0] & 0x80)))) {
+      clientLifecycle.get(sock)?.drop('invalid_frame');
+      return Buffer.alloc(0);
+    }
     const maskOff = off;
     if (masked) off += 4;
     if (buf.length < off + len) return buf;
@@ -244,15 +325,18 @@ function wsOnData(sock, buf) {
     }
     if (opcode === 0x8) {
       try { sock.write(wsFrame(0x8)); } catch { /* ignore */ }
-      sock.destroy();
+      clientLifecycle.get(sock)?.drop('peer_close');
+      return Buffer.alloc(0);
     } else if (opcode === 0x9) {
       try { sock.write(wsFrame(0xA, payload)); } catch { /* ignore */ }
+    } else if (opcode === 0xA) {
+      clientLifecycle.get(sock)?.pong(payload);
     }
     buf = buf.subarray(off + len);
   }
 }
 
-function handleUpgrade(req, socket, token) {
+function handleUpgrade(req, socket, token, options, head) {
   const url = new URL(req.url, "http://x");
   if (url.pathname !== "/ws/alerts") return socket.destroy();
   // Browsers/clients can't set headers on WebSocket handshakes, so the token
@@ -276,23 +360,32 @@ function handleUpgrade(req, socket, token) {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
   socket.setNoDelay(true);
-  alertClients.add(socket);
+  trackClient(socket, options);
   let buf = Buffer.alloc(0);
-  socket.on("data", (d) => {
+  const onData = (d) => {
     try {
       buf = wsOnData(socket, Buffer.concat([buf, d]));
     } catch {
-      socket.destroy();
+      clientLifecycle.get(socket)?.drop('frame_parse_error');
     }
+  };
+  socket.on("data", onData);
+  if (head?.length) onData(head);
+  // Catch reconnects and connection/setup races that missed a settings broadcast.
+  controlStateFromDisk().then(state => clientLifecycle.get(socket)?.policy(state)).catch(error => {
+    logDiagnostic('ws_policy_check_failed', { error: error.message });
   });
-  const drop = () => alertClients.delete(socket);
-  socket.on("close", drop);
-  socket.on("error", drop);
+}
+
+async function controlStateFromDisk() { return controlState(await loadConfig()); }
+
+export function applyAlertDeliveryPolicy(state) {
+  for (const socket of alertClients) clientLifecycle.get(socket)?.policy(state);
 }
 
 // ---- server ---------------------------------------------------------------
 
-export function startGui(config) {
+export function startGui(config, websocketOptions) {
   const g = config?.gui || {};
   const token = process.env[g.authTokenEnv || "GUI_TOKEN"] || null;
   const port = g.port || 8090;
@@ -304,25 +397,17 @@ export function startGui(config) {
 
       if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        return res.end(PAGE);
+        return res.end(DASHBOARD_PAGE);
       }
 
-      // Latest companion-app build, straight from the Gradle output dir — every
-      // rebuild is immediately downloadable. Deliberately NOT token-gated: the
-      // APK holds no secrets (the token is entered in the app's Settings), and
-      // a phone browser can just open the URL.
-      if (req.method === "GET" && url.pathname === "/app-debug.apk") {
-        try {
-          const apk = await readFile(APK_FILE);
-          res.writeHead(200, {
-            "Content-Type": "application/vnd.android.package-archive",
-            "Content-Disposition": 'attachment; filename="teams-monitor-debug.apk"',
-            "Content-Length": apk.length,
-          });
-          return res.end(apk);
-        } catch {
-          return sendJson(res, 404, { ok: false, error: "APK not built yet" });
-        }
+      // Public download alias; never forward request tokens or cache a release asset URL.
+      if (["GET", "HEAD"].includes(req.method) && url.pathname === "/app-debug.apk") {
+        res.writeHead(302, {
+          Location: APK_RELEASE_URL,
+          "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+        });
+        return res.end();
       }
 
       if (!url.pathname.startsWith("/api/")) {
@@ -355,7 +440,7 @@ export function startGui(config) {
         return sendJson(res, 200, { ok: true, ...result });
       }
       if (req.method === "POST" && url.pathname === "/api/start") {
-        const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf8"));
+        const cfg = await loadConfig();
         const status = await orchestratorStatus(cfg.pollIntervalMs);
         if (status.running || status.stale) {
           return sendJson(res, 409, { ok: false, error: `already running (pid ${status.pid})` });
@@ -405,7 +490,12 @@ export function startGui(config) {
     }
   });
 
-  server.on("upgrade", (req, socket) => handleUpgrade(req, socket, token));
+  const ownedSockets = new Set();
+  server.on("upgrade", (req, socket, head) => {
+    ownedSockets.add(socket);
+    socket.once('close', () => ownedSockets.delete(socket));
+    handleUpgrade(req, socket, token, websocketOptions, head);
+  });
 
   server.listen(port, host, () =>
     console.error(
@@ -414,246 +504,15 @@ export function startGui(config) {
                : `(OPEN — no ${g.authTokenEnv || "GUI_TOKEN"} set; gate it at the tunnel layer)`)
     )
   );
-  return { server, close: () => new Promise((r) => server.close(r)) };
+  return { server, close: () => {
+    for (const socket of ownedSockets) {
+      clientLifecycle.get(socket)?.drop('server_shutdown');
+      socket.destroy();
+    }
+    return new Promise((r) => server.close(r));
+  } };
 }
 
-// ---- the page -------------------------------------------------------------
-
-const PAGE = /* html */ `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Teams Automation</title>
-<style>
-  :root { --bg:#0f1115; --card:#171a21; --line:#262b36; --fg:#d7dae0; --dim:#8b93a1;
-          --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#4c8dff; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.45 system-ui, "Segoe UI", sans-serif; }
-  main { max-width:900px; margin:0 auto; padding:16px; }
-  h1 { font-size:17px; margin:0; }
-  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:22px 0 8px; }
-  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
-  .kv .k { color:var(--dim); font-size:12px; }
-  .kv .v { font-size:16px; margin-top:2px; word-break:break-word; }
-  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:8px;
-           padding:7px 14px; font-size:13px; cursor:pointer; }
-  button.secondary { background:#2a3040; }
-  button.danger { background:var(--bad); }
-  button:disabled { opacity:.45; cursor:default; }
-  input[type=text] { background:#0c0e12; color:var(--fg); border:1px solid var(--line);
-           border-radius:8px; padding:7px 10px; font-size:13px; min-width:220px; }
-  .chip { display:inline-flex; align-items:center; gap:6px; background:#222735;
-          border:1px solid var(--line); border-radius:999px; padding:3px 6px 3px 12px; margin:3px 4px 3px 0; }
-  .chip b { font-weight:500; }
-  .chip button { background:none; color:var(--dim); padding:0 6px; font-size:15px; }
-  .feed { display:flex; flex-direction:column; gap:8px; }
-  .item { border-left:3px solid var(--line); padding:6px 10px; background:var(--card);
-          border-radius:0 8px 8px 0; }
-  .item.escalation { border-left-color:var(--bad); }
-  .item.send { border-left-color:var(--ok); }
-  .item .meta { color:var(--dim); font-size:12px; }
-  .item .body { margin-top:2px; white-space:pre-wrap; word-break:break-word; }
-  pre { background:#0c0e12; border:1px solid var(--line); border-radius:8px; padding:10px;
-        overflow:auto; max-height:320px; font-size:12px; }
-  #login { position:fixed; inset:0; background:rgba(10,12,16,.92); display:flex;
-           align-items:center; justify-content:center; }
-  #login .card { width:min(360px, 90vw); }
-  .hidden { display:none !important; }
-  .toast { position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
-           background:#222735; border:1px solid var(--line); padding:8px 16px;
-           border-radius:8px; opacity:0; transition:opacity .2s; }
-  .toast.show { opacity:1; }
-</style>
-</head>
-<body>
-<div id="login" class="hidden"><div class="card">
-  <h1>Dashboard token</h1>
-  <p style="color:var(--dim)">Paste the GUI token to connect.</p>
-  <div class="row"><input id="tokenInput" type="text" placeholder="token">
-  <button onclick="saveToken()">Connect</button></div>
-</div></div>
-
-<main>
-  <div class="row" style="justify-content:space-between">
-    <div class="row">
-      <span id="statusDot" class="dot" style="background:var(--dim)"></span>
-      <h1>Teams Automation</h1>
-      <span id="statusText" style="color:var(--dim)">…</span>
-    </div>
-    <div class="row">
-      <button id="btnStart" onclick="startOrch()" disabled>Start</button>
-      <button id="btnStop" class="danger" onclick="stopOrch()" disabled>Stop</button>
-    </div>
-  </div>
-
-  <h2>Overview</h2>
-  <div class="grid" id="cards"></div>
-
-  <h2>Auto-send whitelist</h2>
-  <div class="card">
-    <div id="chips"></div>
-    <div class="row" style="margin-top:8px">
-      <input id="wlInput" type="text" placeholder="Exact chat display name">
-      <button class="secondary" onclick="addChip()">Add</button>
-      <button id="wlSave" onclick="saveWhitelist()" disabled>Save</button>
-    </div>
-    <p style="color:var(--dim);font-size:12px;margin:8px 0 0">
-      Empty = nothing ever auto-sends; every chat holds + escalates. Changes apply within one poll tick.
-    </p>
-  </div>
-
-  <h2>Brain context (user-profile.md)</h2>
-  <div class="card">
-    <textarea id="profile" rows="14" spellcheck="false"
-      oninput="profDirty=true;document.getElementById('profSave').disabled=false"
-      style="width:100%;box-sizing:border-box;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px;font:13px/1.4 monospace;resize:vertical"></textarea>
-    <div class="row" style="margin-top:8px">
-      <button id="profSave" onclick="saveProfile()" disabled>Save</button>
-    </div>
-    <p style="color:var(--dim);font-size:12px;margin:8px 0 0">
-      Everything here is sent to the model with every decision — keep it focused.
-      The orchestrator re-reads it each tick, so saving applies within seconds.
-    </p>
-  </div>
-
-  <h2>Escalations</h2>
-  <div class="feed" id="escalations"><span style="color:var(--dim)">none yet</span></div>
-
-  <h2>Recent activity</h2>
-  <div class="feed" id="activity"><span style="color:var(--dim)">none yet</span></div>
-
-  <h2>Orchestrator log</h2>
-  <pre id="log">(empty)</pre>
-</main>
-<div class="toast" id="toast"></div>
-
-<script>
-let token = localStorage.guiToken || "";
-let wl = [], wlDirty = false, profDirty = false;
-
-function showLogin() { document.getElementById("login").classList.remove("hidden"); }
-function saveToken() {
-  token = document.getElementById("tokenInput").value.trim();
-  localStorage.guiToken = token;
-  document.getElementById("login").classList.add("hidden");
-  refresh(true);
+export function broadcastControl(actions) {
+  return broadcastAlert({ kind: "control", actions });
 }
-function toast(msg) {
-  const t = document.getElementById("toast");
-  t.textContent = msg; t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 2500);
-}
-async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts,
-    headers: { ...(token ? { "Authorization": "Bearer " + token } : {}), ...(opts.headers || {}) } });
-  if (res.status === 401) { showLogin(); throw new Error("unauthorized"); }
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || res.status);
-  return body;
-}
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const ago = (iso) => {
-  if (!iso) return "?";
-  const s = Math.round((Date.now() - Date.parse(iso)) / 1000);
-  if (s < 60) return s + "s ago";
-  if (s < 3600) return Math.round(s/60) + "m ago";
-  if (s < 86400) return Math.round(s/3600) + "h ago";
-  return Math.round(s/86400) + "d ago";
-};
-
-function renderOverview(o) {
-  const st = o.orchestrator;
-  const dot = document.getElementById("statusDot");
-  const txt = document.getElementById("statusText");
-  if (st.running) { dot.style.background = "var(--ok)"; txt.textContent = "running · tick " + ago(st.lastTickAt); }
-  else if (st.stale) { dot.style.background = "var(--warn)"; txt.textContent = "stale — pid " + st.pid + " alive but not ticking"; }
-  else { dot.style.background = "var(--bad)"; txt.textContent = "stopped"; }
-  if (o.stopRequested) txt.textContent += " · stop requested";
-  document.getElementById("btnStart").disabled = st.running || st.stale;
-  document.getElementById("btnStop").disabled = !(st.running || st.stale);
-
-  const c = o.config, n = o.counts24h;
-  document.getElementById("cards").innerHTML = [
-    ["Brain", esc(c.provider + (c.model ? " · " + c.model : ""))],
-    ["Poll", (c.pollIntervalMs/1000) + "s" + (c.echoLoop ? " · echoLoop!" : "")],
-    ["Whitelisted chats", c.whitelist.length],
-    ["Escalations 24h", n.escalations],
-    ["Auto-sends 24h", n.sends],
-    ["Decisions 24h", n.decisions],
-  ].map(([k,v]) => '<div class="card kv"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>').join("");
-
-  if (!wlDirty) { wl = [...c.whitelist]; renderChips(); }
-}
-function renderChips() {
-  document.getElementById("chips").innerHTML = wl.length
-    ? wl.map((name,i) => '<span class="chip"><b>'+esc(name)+'</b><button onclick="rmChip('+i+')">×</button></span>').join("")
-    : '<span style="color:var(--dim)">empty — fully silent mode</span>';
-  document.getElementById("wlSave").disabled = !wlDirty;
-}
-function addChip() {
-  const v = document.getElementById("wlInput").value.trim();
-  if (!v || wl.includes(v)) return;
-  wl.push(v); wlDirty = true; document.getElementById("wlInput").value = ""; renderChips();
-}
-function rmChip(i) { wl.splice(i,1); wlDirty = true; renderChips(); }
-async function saveWhitelist() {
-  await api("/api/whitelist", { method:"PUT", body: JSON.stringify({ autoSend: wl }),
-    headers: {"Content-Type":"application/json"} });
-  wlDirty = false; renderChips(); toast("Whitelist saved");
-}
-
-async function loadProfile() {
-  const p = await api("/api/profile");
-  document.getElementById("profile").value = p.text;
-}
-async function saveProfile() {
-  await api("/api/profile", { method:"PUT", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ text: document.getElementById("profile").value }) });
-  profDirty = false;
-  document.getElementById("profSave").disabled = true;
-  toast("Brain context saved — applies within one tick");
-}
-
-function renderActivity(items) {
-  const escFeed = document.getElementById("escalations");
-  const actFeed = document.getElementById("activity");
-  const escItems = items.filter(r => r.kind === "escalation").slice(0, 20);
-  escFeed.innerHTML = escItems.length ? escItems.map(r =>
-    '<div class="item escalation"><div class="meta">'+esc(r.payload?.chat)+' · '+ago(r.at)+'</div>' +
-    '<div class="body">'+esc(r.payload?.latest?.author ?? "?")+': '+esc(r.payload?.latest?.text ?? "")+'</div>' +
-    '<div class="meta">'+esc(r.payload?.reason ?? "")+'</div></div>').join("")
-    : '<span style="color:var(--dim)">none yet</span>';
-  actFeed.innerHTML = items.length ? items.slice(0, 40).map(r => {
-    if (r.kind === "decision") return '<div class="item"><div class="meta">'+esc(r.chat)+' · '+ago(r.at)+' · <b>'+esc(r.action)+'</b></div><div class="body">'+esc(r.reason ?? "")+'</div></div>';
-    if (r.kind === "send") return '<div class="item send"><div class="meta">'+esc(r.chat)+' · '+ago(r.at)+' · sent'+(r.hold ? " (hold msg)" : "")+'</div><div class="body">'+esc(r.text ?? "")+'</div></div>';
-    if (r.kind === "escalation") return '<div class="item escalation"><div class="meta">'+esc(r.payload?.chat)+' · '+ago(r.at)+' · escalation</div></div>';
-    return '<div class="item"><div class="meta">'+esc(r.kind)+' · '+ago(r.at)+'</div><div class="body">'+esc(JSON.stringify(r).slice(0,200))+'</div></div>';
-  }).join("") : '<span style="color:var(--dim)">none yet</span>';
-}
-
-async function startOrch() { try { await api("/api/start", {method:"POST"}); toast("Orchestrator starting…"); } catch(e){ toast(e.message);} setTimeout(refresh, 1500); }
-async function stopOrch()  { try { const r = await api("/api/stop",  {method:"POST"}); toast(r.killed ? "Orchestrator killed" : "Stop requested (" + (r.reason || "not running") + ")"); } catch(e){ toast(e.message);} setTimeout(refresh, 1500); }
-
-async function refresh(first) {
-  // No pre-check for a token: if the server runs open, everything just works;
-  // if it wants auth, the first 401 pops the login prompt.
-  try {
-    renderOverview(await api("/api/overview"));
-    renderActivity(await api("/api/activity?limit=100"));
-    if (first && !profDirty) await loadProfile();
-    const log = await api("/api/log?limit=200");
-    const pre = document.getElementById("log");
-    pre.textContent = log.lines.length ? log.lines.join("\\n") : "(empty)";
-    if (first) pre.scrollTop = pre.scrollHeight;
-  } catch (e) { /* login shown on 401; transient errors just skip a cycle */ }
-}
-refresh(true);
-setInterval(refresh, 5000);
-</script>
-</body>
-</html>`;

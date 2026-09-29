@@ -13,12 +13,15 @@
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { reactionMessages } from "./reaction-messages.mjs";
 import { join } from "node:path";
 import { getUnreadChats, readChat } from "./monitor.mjs";
 import { sendMessage } from "./teams.mjs";
 import { createBrain } from "./brain.mjs";
-import { escalate, runActions } from "./actions.mjs";
-import { matchDeterministicRule } from "./deterministic-rules.mjs";
+import { runActions } from "./actions.mjs";
+import { decideWithRules } from "./rule-policy.mjs";
+import { isReplyAllowed, replyPolicy } from "./reply-policy.mjs";
+import { createPoll } from "./poll-status.mjs";
 import { startDispatcher } from "./integrations/tfs-server.mjs";
 import { loadConfig, loadUserProfile } from "./context.mjs";
 import { loadState, saveState, markFirstRead, logActivity, DATA_DIR } from "./state.mjs";
@@ -29,6 +32,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Chats that failed to open this run — skipped on later ticks to avoid log spam.
 const unopenable = new Set();
+let reactionChatCursor = 0;
 
 export function requestStop() {
   writeFileSync(STOP_FILE, `stop requested ${new Date().toISOString()}\n`);
@@ -72,6 +76,7 @@ export function hardStop({ maxHeartbeatAgeMs = 120_000 } = {}) {
 }
 
 export async function run() {
+  const activatedAt = new Date().toISOString();
   let config = await loadConfig();
   let userProfile = await loadUserProfile();
   const brain = createBrain(config);
@@ -115,7 +120,8 @@ export async function run() {
     try { config = await loadConfig(); } catch { /* keep last good config */ }
     // Same for the brain's user context (editable from the GUI's profile section).
     try { userProfile = await loadUserProfile(); } catch { /* keep last good profile */ }
-    const whitelist = new Set(config.whitelist?.autoSend || []);
+    const policy = replyPolicy(config);
+    const whitelist = new Set(policy.mode === "whitelist" ? policy.entries : []);
     const echoLoop = !!config?.debug?.echoLoop;
     // Heartbeat for the GUI: proves the loop is actually ticking. Guarded — a
     // transient file-lock blip (AV scan etc.) must not kill the loop.
@@ -126,7 +132,7 @@ export async function run() {
       );
     } catch { /* try again next tick */ }
     try {
-      await tick({ config, brain, userProfile, whitelist, echoLoop });
+      await tick({ config, brain, userProfile, whitelist, echoLoop, activatedAt });
     } catch (e) {
       console.error("tick error:", e.message);
     }
@@ -141,84 +147,97 @@ export async function run() {
   console.error("✔  Orchestrator halted.");
 }
 
-async function tick({ config, brain, userProfile, whitelist, echoLoop }) {
-  // In echoLoop mode we don't rely on unread state — we re-examine whitelisted
-  // chats every tick so a self-reply keeps the loop going.
-  const targets = echoLoop
-    ? [...whitelist]
-    : await getUnreadChats(config.port);
-
-  if (!targets.length) return;
-
-  const state = await loadState();
-
-  for (const chat of targets) {
-    // Skip chats we've already found unopenable this run, so one bad chat (e.g. an
-    // untitled meeting chat that isn't reachable) doesn't spam every tick.
-    if (unopenable.has(chat)) continue;
-    try {
-      await processChat({ chat, config, brain, userProfile, whitelist, state, echoLoop });
-    } catch (e) {
-      console.error(`[${chat}] skipped: ${e.message}`);
-      if (/not found in rail/.test(e.message)) unopenable.add(chat);
+export async function tick({ config, brain, userProfile, whitelist = new Set(), echoLoop, activatedAt, io = { getUnreadChats, readChat, sendMessage } }) {
+  const poll = createPoll(config.pollIntervalMs || 15000);
+  await poll.update();
+  let failure = null;
+  try {
+    // Echo mode only revisits explicitly allowed chats, never the complement of a blacklist.
+    const targets = echoLoop ? [...whitelist] : await io.getUnreadChats(config.port);
+    const state = await loadState();
+    let reactionRevisit = null;
+    // Revisit one chat observed during this activation: reactions need not mark it unread.
+    // Bounded work keeps unread messages first and avoids walking historical chats.
+    if (!echoLoop && activatedAt) {
+      const observed = Object.keys(state.chats || {}).filter(chat => state.chats[chat]?.reactionSnapshot?.activationId === activatedAt && !targets.includes(chat) && !unopenable.has(chat));
+      if (observed.length) {
+        reactionRevisit = observed[reactionChatCursor++ % observed.length];
+        targets.push(reactionRevisit);
+      }
     }
-  }
-
-  await saveState(state);
-}
-
-/** Word-boundary, case-insensitive match of any configured name against text. */
-export function isAddressed(text, mentionNames) {
-  return (mentionNames || []).some(
-    (n) =>
-      n &&
-      new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text || "")
-  );
+    await poll.update({ targets: targets.length, status: "processing", stage: "Reading chats" });
+    if (!targets.length) return;
+    for (const chat of targets) {
+      if (unopenable.has(chat)) { poll.state.skipped++; continue; }
+      await poll.update({ currentChat: chat, stage: "Reading message" });
+      try {
+        const result = await processChat({ chat, config, brain, userProfile, state, echoLoop, activatedAt, poll, io });
+        poll.state.examined++;
+        if (result === "duplicate") poll.state.duplicates++;
+        else if (["empty", "self", "before_activation", "invalid_time"].includes(result)) poll.state.skipped++;
+        else poll.state.handled++;
+      } catch (e) {
+        poll.state.errors++;
+        await logActivity({ kind: "poll_error", pollId: poll.state.id, chat, error: e.message });
+        console.error(`[${chat}] skipped: ${e.message}`);
+        if (chat !== reactionRevisit && /not found in rail/.test(e.message)) unopenable.add(chat);
+      }
+    }
+    await saveState(state);
+  } catch (e) {
+    failure = e;
+    poll.state.errors++;
+    throw e;
+  } finally { await poll.finish(failure); }
 }
 
 function normalizeIdentity(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function isSelfAuthored(author, mentionNames) {
+export function isSelfAuthored(author, mentionNames) {
   const normalized = normalizeIdentity(author);
   return normalized === "you" || (mentionNames || []).some((name) => normalizeIdentity(name) === normalized);
 }
 
-function looksLikeDirectChat(chat, author) {
-  const chatName = normalizeIdentity(chat);
-  const authorName = normalizeIdentity(author);
-  return !!chatName && chatName === authorName;
+export async function processChat({ chat, config, brain, userProfile, state, echoLoop, activatedAt, poll, io = { readChat, sendMessage } }) {
+  const { messages } = await io.readChat(chat, 15, config.port);
+  if (!messages?.length) return "empty";
+  const mentionNames = config.alerts?.mentionNames || [];
+  const selfChatName = normalizeIdentity(chat).replace(/\s*\(you\)$/, "");
+  const selfChat = isSelfAuthored(selfChatName, mentionNames);
+  state.chats ||= {};
+  state.chats[chat] ||= {};
+  const reactions = reactionMessages(messages, state.chats[chat], activatedAt || 'test-session');
+  // Keep self-chat/echo testing. In other chats an outgoing post or edit must
+  // neither invoke the brain nor mask a newly received message immediately before it.
+  const candidates = echoLoop || selfChat ? messages : messages.filter(m => !isSelfAuthored(m.author, mentionNames));
+  const latest = candidates[candidates.length - 1];
+  const prevSeen = state.chats?.[chat]?.lastSeen;
+  let skipped = latest ? null : 'self';
+  if (latest && !echoLoop) {
+    if (prevSeen && prevSeen.time === latest.time && prevSeen.author === latest.author && prevSeen.text === latest.text) skipped = 'duplicate';
+    if (!selfChat && prevSeen && isSelfAuthored(prevSeen.author, mentionNames) && Date.parse(prevSeen.time) >= Date.parse(latest.time)) skipped = 'duplicate';
+    if (activatedAt && !Number.isFinite(Date.parse(latest.time))) skipped = 'invalid_time';
+    else if (activatedAt && Date.parse(latest.time) < Date.parse(activatedAt)) skipped = 'before_activation';
+  }
+  if (latest) await markFirstRead(state, chat, latest);
+  if (['before_activation', 'invalid_time'].includes(skipped) && (!prevSeen || prevSeen.time !== latest.time || prevSeen.text !== latest.text)) {
+    await logActivity({ kind: 'message_skipped', chat, reason: skipped, messageTime: latest.time, activatedAt });
+  }
+  if (!skipped) await processMessage({ chat, config, brain, userProfile, state, echoLoop, poll, io, latest, messages });
+  // Separate handling traces, without replacing lastSeen for the original message.
+  for (const reaction of reactions) await processMessage({ chat, config, brain, userProfile, state, echoLoop, poll, io, latest: reaction, messages });
+  return reactions.length || !skipped ? 'handled' : skipped;
 }
 
-async function processChat({ chat, config, brain, userProfile, whitelist, state, echoLoop }) {
-  const { messages } = await readChat(chat, 15, config.port);
-  if (!messages?.length) return;
-  const latest = messages[messages.length - 1];
-
-  // Capture before markFirstRead overwrites it — the dedupe below needs the
-  // PREVIOUS lastSeen.
-  const prevSeen = state.chats?.[chat]?.lastSeen;
-  await markFirstRead(state, chat, latest);
-
-  // Dedupe: some chats never clear Teams' unread flag when the monitor opens
-  // them (the self-chat, some group chats), so the same "latest" would be
-  // re-processed — and re-sent to the LLM — every tick. Skip anything we've
-  // already handled. echoLoop mode is exempt: re-processing is its point.
-  if (
-    !echoLoop &&
-    prevSeen &&
-    prevSeen.time === latest.time &&
-    prevSeen.author === latest.author &&
-    prevSeen.text === latest.text
-  ) {
-    return;
-  }
-
+async function processMessage({ chat, config, brain, userProfile, state, echoLoop, poll, io, latest, messages }) {
   const flowId = randomUUID();
+  const flowStartedAt = new Date().toISOString();
   let effectCount = 0;
   const flow = async (stage, fields = {}) => {
-    await logActivity({ kind: "flow", flowId, stage, chat, ...fields });
+    await logActivity({ kind: "flow", flowId, flowStartedAt, pollId: poll?.state.id, stage, chat, ...fields });
+    await poll?.update({ stage, currentChat: chat });
   };
   const recordEffect = async (effect, status, fields = {}) => {
     effectCount++;
@@ -236,7 +255,7 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
     if ((config.alerts?.ignoreAuthors || []).includes(latest.author)) {
       const reason = `author ignored: ${latest.author}`;
       await flow("decision", { action: "ignore", reason });
-      await logActivity({ kind: "alert", flowId, chat, latest, skipped: reason });
+      await logActivity({ kind: "alert", flowId, flowStartedAt, chat, latest, skipped: reason });
       await recordEffect("ignored", "ignored", { reason });
       return;
     }
@@ -246,16 +265,18 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
       [{ name: "alert_phone", args: { chat, author: latest.author, text: latest.text, time: latest.time } }],
       { chat, latest }
     );
-    await logActivity({ kind: "alert", flowId, chat, latest, results });
+    await logActivity({ kind: "alert", flowId, flowStartedAt, chat, latest, results });
     await recordEffect("phone_alert", actionStatus(results), { reason, results });
     console.error(`[${chat}] alert — ${results[0]?.error || "sent"}`);
     return;
   }
 
-  const whitelisted = whitelist.has(chat);
+  const whitelisted = isReplyAllowed(config, chat);
+  await flow("policy", { action: whitelisted ? "allowed" : "blocked", reason:
+    `Teams reply ${whitelisted ? "allowed" : "blocked"} by ${replyPolicy(config).mode}. Phone alerts are unaffected.` });
   let decision;
   try {
-    decision = await brain.decide(
+    decision = await decideWithRules(
       {
         chat,
         latest,
@@ -264,7 +285,9 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
         whitelisted,
         config,
       },
-      {
+      brain, {
+        onRules: (result) => flow("policy", { source: "rules", reason: `Matched rules: ${result.matchedRuleIds.join(', ')}`, ruleEvaluations: result.evaluations }),
+        onReviewError: (payload) => flow("error", { source: "rule_review", ...payload }),
         onInput: (payload) => flow("brain_input", payload),
         onOutput: (payload) => flow("brain_output", payload),
         onDecision: ({ decision: d }) => flow("decision", {
@@ -272,6 +295,8 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
           reason: d.reason,
           reply: d.reply || null,
           invokeActions: d.invokeActions || [],
+          ruleActions: d.ruleActions,
+          ruleEvaluations: d.ruleEvaluations,
         }),
       }
     );
@@ -285,6 +310,7 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
   await logActivity({
     kind: "decision",
     flowId,
+    flowStartedAt,
     chat,
     whitelisted,
     latest,
@@ -294,120 +320,45 @@ async function processChat({ chat, config, brain, userProfile, whitelist, state,
   });
   console.error(`[${chat}] ${decision.action} — ${decision.reason}`);
 
-  // Alert-only mode: the brain classifies alarm vs ignore, and the orchestrator
-  // performs the phone alert deterministically. Whitelists and reply text cannot
-  // cause a Teams send while this mode is active.
-  if (config.automation?.mode === "alert-only") {
-    const deterministicRule = matchDeterministicRule(
-      { chat, latest },
-      config.automation?.rules || []
-    );
-    const mentionNames = config.alerts?.mentionNames || [];
-    const ignoredAuthor =
-      (config.alerts?.ignoreAuthors || []).includes(latest.author) ||
-      isSelfAuthored(latest.author, mentionNames);
-    const directChat = !ignoredAuthor && looksLikeDirectChat(chat, latest.author);
-    const addressed = !ignoredAuthor && isAddressed(latest.text, mentionNames);
-    const shouldAlarm = deterministicRule
-      ? deterministicRule.action === "alarm"
-      : !ignoredAuthor && (decision.action === "alarm" || directChat || addressed);
-
-    if (shouldAlarm) {
-      const reason = decision.action === "alarm"
-        ? decision.reason
-        : directChat
-          ? "direct chat backstop"
-          : "addressed backstop (name match)";
-      await escalate({ chat, latest, reason, flowId });
-      await recordEffect("escalation_log", "ok", { reason });
-      const results = await runActions(
-        [{ name: "alert_phone", args: { chat, author: latest.author, text: latest.text, time: latest.time } }],
-        { chat, latest }
-      );
-      await logActivity({ kind: "alert", flowId, chat, latest, reason, results });
-      await recordEffect("phone_alert", actionStatus(results), { reason, results });
-      console.error(`[${chat}] alarm — ${reason} (${results[0]?.error || "sent"})`);
-    } else {
-      const reason = deterministicRule
-        ? decision.reason
-        : ignoredAuthor
-          ? "message authored by user/ignored author"
-          : decision.reason;
-      await recordEffect("ignored", "ignored", { reason });
-      console.error(`[${chat}] no alarm — ${reason}`);
+  if (decision.action === "rule_actions") {
+    const executed = new Set();
+    for (const proposal of decision.ruleActions) {
+      const { action, ruleId, outcome, reason } = proposal;
+      if (['cancelled', 'blocked_reply_policy'].includes(outcome) || action.type === 'ignore') {
+        await recordEffect('rule_skipped', 'ignored', { ruleId, reason, outcome }); continue;
+      }
+      const key = JSON.stringify(action);
+      if (executed.has(key)) {
+        await recordEffect('rule_duplicate', 'ignored', { ruleId, reason: 'Identical action already attempted for this message' }); continue;
+      }
+      // Recheck at execution time: a permission change while awaiting review wins.
+      if (action.type === 'reply') {
+        let currentConfig;
+        try { currentConfig = await (io.loadConfig || loadConfig)(); }
+        catch (error) {
+          await recordEffect('rule_skipped', 'error', { ruleId, reason: 'Cannot verify current reply permission', detail: error.message }); continue;
+        }
+        if (!whitelisted || !isReplyAllowed(currentConfig, chat)) {
+          await recordEffect('rule_skipped', 'ignored', { ruleId, reason: 'Teams reply policy blocks this reply', outcome: 'blocked_reply_policy' }); continue;
+        }
+      }
+      executed.add(key);
+      if (action.type === 'alert_phone') {
+        const results = await runActions([{ name: 'alert_phone', args: { chat, author: latest.author, text: action.text || latest.text, time: latest.time } }], { chat, latest });
+        await logActivity({ kind: 'alert', flowId, flowStartedAt, chat, latest, ruleId, reason, results });
+        await recordEffect('phone_alert', actionStatus(results), { ruleId, reason, results });
+      } else if (action.type === 'reply') {
+        try {
+          const result = await io.sendMessage(action.text, config.port);
+          await logActivity({ kind: 'send', flowId, flowStartedAt, chat, text: action.text, ruleId, result });
+          await recordEffect('teams_reply', result === 'sent' ? 'ok' : 'error', { ruleId, text: action.text, result });
+        } catch (error) {
+          await recordEffect('teams_reply', 'error', { ruleId, text: action.text, detail: error.message });
+        }
+      }
     }
+    if (!effectCount) await recordEffect('none', 'ignored', { reason: 'No configured or permitted agent action' });
     return;
   }
 
-  // Carry out the decision. readChat() above already navigated to `chat`, so the
-  // compose box targets it — no re-open needed.
-  if (decision.action === "respond" && whitelisted && decision.reply) {
-    try {
-      const result = await sendMessage(decision.reply, config.port);
-      await logActivity({ kind: "send", flowId, chat, text: decision.reply, result });
-      await recordEffect("teams_reply", result === "sent" ? "ok" : "error", {
-        text: decision.reply,
-        result,
-      });
-      console.error(`   ↳ sent: ${decision.reply}  (${result})`);
-    } catch (e) {
-      await recordEffect("teams_reply", "error", { text: decision.reply, detail: e.message });
-      throw e;
-    }
-  } else if (decision.action === "respond" && !whitelisted) {
-    await holdAndEscalate(config, chat, latest, "respond requested in non-whitelisted chat", flowId, recordEffect);
-  } else if (decision.action === "hold") {
-    await holdAndEscalate(config, chat, latest, decision.reason, flowId, recordEffect);
-  } else if (decision.action === "escalate") {
-    await escalate({ chat, latest, reason: decision.reason, flowId });
-    await recordEffect("escalation_log", "ok", { reason: decision.reason });
-  }
-
-  // Brain-requested actions. Only actions registered in actions.mjs run.
-  if (decision.invokeActions?.length) {
-    const results = await runActions(decision.invokeActions, { chat, latest });
-    await logActivity({ kind: "actions", flowId, chat, results });
-    await recordEffect("brain_actions", actionStatus(results), { results });
-  }
-
-  // Addressed backstop: the brain is prompted to invoke alert_phone when the
-  // user is addressed, but a name ping shouldn't depend on model consistency —
-  // if a configured name matches and the brain didn't alert, fire it anyway.
-  const mentionNames = config.alerts?.mentionNames || [];
-  if (mentionNames.length && !(config.alerts?.ignoreAuthors || []).includes(latest.author)) {
-    const addressed = isAddressed(latest.text, mentionNames);
-    const alreadyAlerted = (decision.invokeActions || []).some((a) => a.name === "alert_phone");
-    if (addressed && !alreadyAlerted) {
-      const results = await runActions(
-        [{ name: "alert_phone", args: { chat, author: latest.author, text: latest.text, time: latest.time } }],
-        { chat, latest }
-      );
-      const reason = "addressed backstop (name match)";
-      await logActivity({ kind: "alert", flowId, chat, latest, reason, results });
-      await recordEffect("phone_alert_backstop", actionStatus(results), { reason, results });
-      console.error(`[${chat}] alert — addressed backstop (${results[0]?.error || "sent"})`);
-    }
-  }
-
-  if (!effectCount) {
-    await recordEffect("none", "ignored", { reason: "decision produced no side effect" });
-  }
-}
-
-async function holdAndEscalate(config, chat, latest, reason, flowId, recordEffect) {
-  if (config.holdMessage && (config.whitelist?.autoSend || []).includes(chat)) {
-    try {
-      const result = await sendMessage(config.holdMessage, config.port);
-      await logActivity({ kind: "send", flowId, chat, text: config.holdMessage, hold: true, result });
-      await recordEffect("hold_message", result === "sent" ? "ok" : "error", {
-        text: config.holdMessage,
-        result,
-      });
-    } catch (e) {
-      await recordEffect("hold_message", "error", { text: config.holdMessage, detail: e.message });
-      throw e;
-    }
-  }
-  await escalate({ chat, latest, reason, flowId });
-  await recordEffect("escalation_log", "ok", { reason });
 }

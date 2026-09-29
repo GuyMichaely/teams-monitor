@@ -10,6 +10,16 @@ It provides:
 - a rendezvous path when the home tunnel/direct control path is unavailable;
 - high-priority FCM recovery/control/health pushes when the Worker has a usable phone FID.
 
+## Local validation
+
+With Node.js 24 and npm installed, run from `cloudflare-worker`:
+
+```powershell
+npx --yes wrangler@4.127.1 deploy --dry-run --config wrangler.toml.example --outdir ../data/worker-dry-run
+```
+
+This compiles the Worker without deploying it. Generated output goes into the repository's ignored `data/` directory.
+
 ## Deploy
 
 1. Copy `wrangler.toml.example` to `wrangler.toml`.
@@ -19,7 +29,7 @@ It provides:
    - `FIREBASE_CLIENT_EMAIL`
    - `FIREBASE_PRIVATE_KEY`
 3. Deploy with Wrangler.
-4. Set the PC's gitignored `config/config.json`:
+4. Set the PC's gitignored `config/config.yaml`:
 
 ```json
 {

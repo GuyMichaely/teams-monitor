@@ -1,0 +1,53 @@
+{
+    messages: [{
+        id: "some arbitrary message id",
+        author: "name of author",
+        text: "the text of the message"
+        reacts: [
+            {
+                author1: "author's name",
+                react: either the emoji itself or a sentinel value to indicate removal of an emoji,
+                id: "arbitrary id
+            } // do we get react removal notifications?,
+            ...
+        ]
+    },
+    ...],
+    notification: "a message or react id",
+    // heuristic classifiers
+    variables: Variables
+}
+Variables:
+{
+    chatName: "name of the groupchat or just the person's name if it's a DM",
+    isDM: bool,
+    reacts: emoji|false,
+    removes: emoji|false,
+    users: User[],
+    whitelist or blacklist, depending on which is active: User[],
+    isFirstMessageInChat: bool,
+    chat@s: User|false,
+    chatMentions: User|false,
+}
+
+PrimitiveFunction:
+    message(chatName: string, message: string): bool |
+    alert(): void
+PrimitiveCall: <PrimitiveFunction, args>
+PrimitiveCalls: PrimitiveCall[]
+HeuristicActions:
+    execute(primitiveCalls: PrimitiveCalls) |
+    delay(heuristicActions: HeuristicActions, delayMinutes: number)
+GeneralAction:
+    HeuristicAction |
+    allowVeto(heuristicActions: HeuristicActions)
+
+action functions:
+    delay(Action, delayMinutes)
+    registerAction(lambda) // 
+    llm()
+
+
+
+code example:
+if (!is_group_chat)

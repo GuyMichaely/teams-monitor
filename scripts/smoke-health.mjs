@@ -1,3 +1,4 @@
+import "./smoke-env.mjs";
 import { rm } from "node:fs/promises";
 import {
   TUNNEL_HEALTH_FILE,

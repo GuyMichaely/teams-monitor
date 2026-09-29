@@ -11,8 +11,11 @@ A personal Microsoft Teams monitoring/alerting system. It drives the new Teams d
 ```text
 src/
   teams.mjs         Teams WebView2/CDP core on port 9222.
+  teams-presence.mjs Profile-menu presence control; no keyboard/search commands. Reads back status before confirming success.
   monitor.mjs       Unread detection + chat reading.
   brain.mjs         Gemini decision layer.
+  deterministic-rules.mjs Unified config validation and rule evaluation with condition evidence.
+  rule-policy.mjs    Configured actions plus bounded, permission-checked agent cancellation/modification/initiation.
   orchestrator.mjs  Poll → read → dedupe → decide → act → log. Writes real tick heartbeat.
   actions.mjs       Action registry including alert_phone.
   alerts.mjs        Configurable primary FCM/WebSocket delivery, optional fallback, and recovery.
@@ -21,6 +24,9 @@ src/
   tunnel-health.mjs PC-side public tunnel probe when Worker is disabled.
   phone-health.mjs  Direct high-priority FCM health-transition sender.
   gui-server*.mjs   Dashboard, API, WebSocket alert hub and diagnostics.
+  dashboard-page.mjs Single dashboard UI: controls, settings, message traces, logs.
+  poll-status.mjs   Actual poll progress in data/poll.json (separate from heartbeat).
+  reply-policy.mjs  Teams reply whitelist/blacklist, default deny-all whitelist.
   state.mjs         Gitignored runtime state/activity under data/.
   context.mjs       Loads ignored live config/profile, bootstraps from examples.
 android-app/        Kotlin companion: FID, FCM, WS fallback, WorkManager, health policy.
@@ -87,7 +93,7 @@ A live-but-wedged CLI process must not keep Worker heartbeat alive; only a fresh
 
 If Worker is disabled, `src/tunnel-health.mjs` self-probes `publicHealthUrl` from the PC and sends tunnel transition messages over FCM when possible. This preserves tunnel diagnosis but is less independent than the outside Worker probe.
 
-Worker secrets: `CONTROL_TOKEN`, `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. CI performs only a Wrangler dry run and never deploys.
+Worker secrets: `CONTROL_TOKEN`, `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Validate Worker changes with a local Wrangler dry run; deployment is a separate operational step.
 
 ## Android health behavior
 
@@ -104,9 +110,20 @@ Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker 
 
 ## Current operating decisions
 
-- Automation mode is alert-only: Gemini decides alarm vs ignore; orchestrator does not send Teams replies in this mode.
-- Direct 1:1 chats and name-addressed messages have deterministic alarm backstops.
+- There is no separate alert-only mode. Teams replies (including hold messages) are controlled solely by replyPolicy; the live policy is an empty whitelist, so nobody may receive replies. Phone alerts and deterministic alarm/ignore rules remain independent of reply permission.
+- Keep Gemini for now; a local-model replacement is deferred. Direct access to OpenCode's free Muse Spark endpoint returned a client-restriction 403; do not add an OpenCode harness workaround.
+- Heuristics and deterministic rules share `automation.rules`: each rule has id, optional enabled, when, action, and optional agent.cancel/modify permissions (both default false). All enabled matching rules propose actions; identical resulting actions are attempted once. Conditions support direct_message, mention, field/match/value, and nested all/any. Direct matching uses normalized chat/author equality; mentions use semantic names or explicit @name text against alerts.mentionNames, not bare name references. Actions are alert_phone, reply (required text), or ignore (no-op for its own rule, not cancellation of other rules).
+- `automation.agent.initiate` grants new-action authority with when never/unmatched/always and explicit actions alert_phone/reply; missing authority defaults to never/empty. The live/example config explicitly permits unmatched Gemini triage, while direct/@mention rules permit neither cancellation nor modification. Modification changes text only, never action type or destination. Review receives all evaluated definitions, tested values/results, proposals and permissions. Code validates the entire plan atomically; invalid/unauthorized output, provider error or timeout retains original configured actions (including permitted canned replies), adds nothing, aborts the request and ignores late output. timeoutMs defaults 5000 (1..30000). Valid cancellations are final. Teams sends always recheck current replyPolicy immediately before execution; review cannot override it.
+- Reply permission applies only to outgoing Teams replies (including hold messages), never phone alerts. `replyPolicy` defaults to an empty whitelist; legacy `whitelist.autoSend` is read only when the new policy is absent. Blacklist mode permits all chats except listed exact names. Matching is case-insensitive.
+- Dashboard copy should be practical and literal; dark mode is the default.
+- The dashboard's Advanced alert rules section is always visible, not collapsible. One YAML editor edits the complete automation object through authenticated `/api/policy/automation/yaml`. Saves apply next poll; invalid config leaves the saved file unchanged. Live refresh preserves unsaved input. There is no legacy heuristic/override config adapter.
+- Dashboard Teams availability uses the profile menu over CDP, with bounded target discovery and no search-box focus dependency. Presence reads do not open menus; changes never type into Teams. `bun scripts/smoke-presence.mjs` uses an isolated mock CDP server.
+- Message activity uses an optional, editable date cutoff in `data/activity-view.json`. Hide-through-selected sets that same cutoff; moving it earlier or disabling it restores retained records. Audit JSONL and dedupe state are never deleted; `flowStartedAt` prevents late handling stages from reviving hidden messages. The dashboard accepts current flow traces only and labels malformed/incompatible entries as invalid log format.
+- Teams presence selections apply immediately through a serialized latest-wins queue. Superseded requests must not overwrite the latest UI selection, including during Teams verification.
+- Delivery-setting saves broadcast primary transport and WebSocket policy together to connected phones. Android reconciles policy on socket connection to recover missed updates; FCM without fallback must not retain an obsolete WebSocket service.
 - Runtime is Bun 1.4+.
+- Application settings use `config/config.yaml` and tracked `config/config.example.yaml`, parsed with built-in Bun.YAML. All config saves go through context.saveConfig (validated atomic replacement). Dashboard automation YAML is parsed server-side; API envelopes and state remain JSON. One-time `scripts/migrate-config-yaml.mjs` verifies exact values and retains ignored `.json.migrated.bak` originals. No runtime JSON-config fallback. Firebase/Android vendor JSON formats stay unchanged. YAML formatting/comments are normalized on save.
+- Development and validation are local, with one explicit exception: the Android APK GitHub Action builds and publishes the signed APK to the `android-latest` release. Keep other hosted build/test/publishing workflows removed unless the user requests them.
 - Normal startup: `bun run gui`; direct orchestrator: `bun start`; all-in-one: `scripts/start-stack.ps1`.
 - `GUI_TOKEN` is the selected GUI/WS/control auth layer; Cloudflare Access was rejected.
 - Task Scheduler/autostart was blocked/rejected. Do not add it back without a new decision.
@@ -114,8 +131,17 @@ Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker 
 
 ## Hard-won gotchas
 
+- Reactions are synthetic messages, not a separate event framework. `src/reaction-messages.mjs` compares bounded per-message badge snapshots per activation. Badges expose emoji/count/self state, not actor identities: use “Unknown reactor,” never the original author. Exclude badge text from body dedupe; `type: reaction` is supported, while direct_message/mention never match synthetic reactions. First observation/restarts baseline reactions without replay; one already-observed chat is revisited per tick after unread chats. Visible 15-message tails and net count changes only (no claim of complete reaction history).
+- Ordinary messages before orchestrator activation or with invalid timestamps are skipped (echoLoop excepted). New observed reaction changes on old messages remain eligible after baseline.
+- FCM attempt diagnostics include alertId, generation, send start, API acceptance/failure and duration; PC sends `fcmSendStartedAt`. Android records callback receipt before reconciliation, approximate cross-clock latency and receipt device state, with alertId across notification/alarm stages. Diagnostic persistence failures must not block delivery.
+- Android log deletion is confirmed, strictly before a selected local date/time or age cutoff, independent of export filters. It serializes with append using AppLog's lock and atomically rewrites only diagnostics.log; malformed/undated/boundary records survive. No runtime state is deleted.
+- GUI WebSocket connections are removed on peer TCP end, close/error, or missed matching pong. Server pings every 30s with a 10s deadline; cleanup records `ws_connection_removed` with a reason and clears timers. No Cloudflare changes or phone update are required. Connection-time transport bookkeeping reads current config rather than GUI startup config. Validate with `scripts/smoke-websocket-lifecycle.mjs`.
+- GUI sends the current delivery policy on every WebSocket connection and settings save. If WebSocket is not wanted, it gives the phone 1s to stop, rechecks live policy, then closes any remaining socket (`delivery_policy_disabled`) even if it answers pings. Changing back to WebSocket cancels pending shutdown. Phone updates are still needed to fix obsolete reconnect/service behavior; server cleanup alone does not prove the installed app obeys policy.
+- Message activity shows action emojis only for recorded actions; no-action entries have no emoji (the ignore outcome/filter remains).
+
 1. Teams unread often does not clear; `processChat` dedupes latest message against prior `lastSeen`.
 2. Self-chat is a test harness; `alerts.ignoreAuthors` is intentionally empty.
+   Outgoing messages/edits in other chats are excluded before brain processing using `alerts.mentionNames` (and Teams' "You" author label). Incoming messages immediately before them remain eligible; self-chat and explicit echoLoop testing are preserved.
 3. Heartbeat freshness exists because the orchestrator has died/wedged silently before.
 4. Android notification channels are immutable; `alerts2` is deliberately silent and app alarm audio uses MediaPlayer.
 5. `ACCESS_NOTIFICATION_POLICY` must remain for DND behavior.
@@ -136,7 +162,8 @@ Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker 
 - `.env`: `GUI_TOKEN`, `GEMINI_API_KEY`.
 - `config/fcm-service-account.json`: PC Firebase service account.
 - `android-app/app/google-services.json`: Android Firebase config.
-- GitHub Actions: `ANDROID_DEBUG_KEYSTORE_BASE64`, `FIREBASE_GOOGLE_SERVICES_JSON_BASE64`.
+- `%USERPROFILE%\.android\debug.keystore`: local Android signing key; preserve it for compatible APK updates.
+- Android Actions secrets: `ANDROID_DEBUG_KEYSTORE_BASE64` (the same stable signing key) and `FIREBASE_GOOGLE_SERVICES_JSON_BASE64` (Android Firebase config).
 - optional Worker secrets listed above.
 - `~/.cloudflared/`: local tunnel credentials.
 
@@ -144,7 +171,9 @@ Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker 
 
 - Main server intentionally has zero npm dependencies; use Bun/Node-compatible built-ins.
 - ESM `.mjs`, terse WHY-comments; Android uses Views/appcompat + OkHttp + WorkManager.
-- Keep Bun, Android and Worker smoke workflows green when touching their domains.
+- Android diagnostics exports support time/category/search filters (default last hour), with side-by-side Copy and Share file actions. Both bound output to newest matching entries; FileProvider exposes only the diagnostics cache with temporary read grants. Filter unit tests run in the Android APK workflow.
+- Run the local Bun smoke scripts, Android build, or Worker dry run when touching their respective domains; commands are documented in the relevant README.
+- All smoke scripts must import `scripts/smoke-env.mjs` before application modules. It supplies a temporary `TEAMS_MONITOR_HOME` for state/config/profile; tests must never clean or overwrite live `data/` files.
 - FID + hybrid FCM/WS fallback/recovery, generation isolation, separate heartbeat/tunnel health and optional Worker are implemented.
-- Worker live deployment and real-device FCM/failover tests are operational steps, not CI-proven behavior.
+- Worker live deployment and real-device FCM/failover tests are operational steps, not behavior proven by local smoke checks.
 - TFS integration remains disabled/un-deployed.

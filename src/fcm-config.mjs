@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join } from "node:path";
+import { LOCAL_HOME } from "./local-paths.mjs";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_FCM_SERVICE_ACCOUNT_FILE = "config/fcm-service-account.json";
 
 export async function resolveFcmConfig(fcm = {}) {
@@ -11,7 +10,7 @@ export async function resolveFcmConfig(fcm = {}) {
   ).trim() || DEFAULT_FCM_SERVICE_ACCOUNT_FILE;
   const serviceAccountPath = isAbsolute(serviceAccountFile)
     ? serviceAccountFile
-    : join(ROOT, serviceAccountFile);
+    : join(LOCAL_HOME, serviceAccountFile);
 
   let serviceAccount = null;
   let serviceAccountPresent = false;

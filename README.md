@@ -30,10 +30,12 @@ Bun loads it explicitly through the package scripts. Runtime state and logs stay
 
 The live configuration and brain profile are also machine-local and gitignored:
 
-- `config/config.json` — runtime settings changed by the GUI, including polling interval and preferred alert transport.
+- `config/config.yaml` — runtime settings changed by the GUI, including polling interval and preferred alert transport.
 - `context/user-profile.md` — freeform context/instructions supplied to the brain.
 
-On first run, missing local files are automatically copied from `config/config.example.json` and `context/user-profile.example.md`. Edit the live files, not the tracked examples, for machine-specific settings that should survive `git pull`.
+On first run, missing local files are automatically copied from `config/config.example.yaml` and `context/user-profile.example.md`. Edit the live files, not the tracked examples, for machine-specific settings that should survive `git pull`.
+
+For an existing JSON installation, stop the GUI/monitor, run `bun scripts/migrate-config-yaml.mjs` once, then restart. It converts only `config/config.json` and `config/config.example.json`, verifies equal parsed values, and retains originals as ignored `.json.migrated.bak` files. It refuses to overwrite an existing YAML destination or backup. Firebase credential/Android configuration JSON, package manifests, and runtime JSON/JSONL keep their required formats. Normal startup reads YAML only.
 
 ## Normal startup
 
@@ -43,7 +45,7 @@ From the repo root:
 bun run gui
 ```
 
-This starts the management GUI on the port configured in the local `config/config.json` (8090 in the example). From the dashboard you can start/stop the monitor and start/stop the existing `teams-gui` Cloudflare tunnel.
+This starts the management GUI on the port configured in the local `config/config.yaml` (8090 in the example). From the dashboard you can start/stop the monitor and start/stop the existing `teams-gui` Cloudflare tunnel.
 
 To run the monitor directly without the GUI:
 
@@ -121,8 +123,8 @@ src/worker-control.mjs         optional Cloudflare Worker control-plane client
 src/tunnel-health.mjs          public tunnel self-check when Worker is disabled
 src/gui-server*.mjs            dashboard, API, WebSocket alert hub, diagnostics
 src/state.mjs                  runtime state/activity under data/
-config/config.example.json     tracked configuration template
-config/config.json             gitignored live configuration
+config/config.example.yaml     tracked configuration template
+config/config.yaml             gitignored live configuration
 context/user-profile.example.md tracked brain-profile template
 context/user-profile.md        gitignored live brain context
 android-app/                   Android companion app
@@ -165,23 +167,85 @@ See `cloudflare-worker/README.md` for deployment/secrets. `controlWorker.enabled
 
 ## GUI diagnostics
 
-The dashboard has **Connection diagnostics** with Refresh/Copy controls plus a live pipeline timeline. It records WebSocket connection/rejection/disconnection events and includes redacted Cloudflare tunnel logs. Alert diagnostics include preferred/active transport, fallback state, FCM registration state/generation, failure counts and retry backoff. `access_token`/`GUI_TOKEN` values are not intentionally exposed by the diagnostics API.
+The dark dashboard includes process controls, phone delivery selection with optional fallback, system health, reply permissions, and editable brain context. Firebase configuration details are collapsed under phone delivery.
+
+Enable **Hide messages at or before** and choose a date/time to filter retained activity. **Hide through selected message** updates that same date. Move the date earlier or uncheck the filter to see older retained messages again. The cutoff persists across reloads without deleting diagnostic files or resetting deduplication. Outgoing messages and edits in other chats are filtered before the brain runs; self-chat and explicit echo-loop testing remain supported.
+
+Teams availability selections apply immediately, even with the monitor stopped. The label shows **Setting status…** while pending; changing your selection supersedes earlier requests, including during verification. It uses Teams' profile menu over CDP, never types slash commands, and confirms the status by reading it back. Teams must already be reachable on port 9222; this control does not restart Teams. Multiple profile windows are rejected rather than choosing an account arbitrarily. The polling interval under Teams orchestrator controls the delay between Teams message polls, not Cloudflare tunnel checks.
+
+**Message activity** shows recent messages and a selectable handling trace: message, reply permissions, brain input/output, decision, and action results. Messages and actual poll progress refresh every two seconds; health and system logs refresh every ten seconds. Poll progress records unread chats, handled messages, duplicates, errors, and the current stage in `data/poll.json`. Pausing updates affects this browser view only. Unsaved settings are preserved during refreshes.
+
+**Teams reply permissions** uses `replyPolicy: { mode: "whitelist", entries: [] }` by default. An empty whitelist permits replies to nobody. Blacklist mode permits replies to all chats except the listed names; an empty blacklist permits all chats. Names are matched exactly, ignoring case. Existing `whitelist.autoSend` entries remain supported when `replyPolicy` is absent. The policy covers both replies and hold messages; phone alerts are unaffected. There is no separate alert-only mode: use the empty whitelist to prevent all replies.
+
+**Automation rules and agent permissions** share one config in the always-visible **Advanced alert rules** YAML editor. It edits the `automation` mapping directly through authenticated `/api/policy/automation/yaml`; saves apply next poll, preserve unrelated settings, and reject invalid config without changing the saved file. HTTP envelopes and runtime state/logs remain JSON. Saves normalize YAML formatting and do not retain comments. Quote numeric-looking string values, such as `"1234"`. Example for the editor (the file nests this under `automation:`):
+
+```yaml
+rules:
+  - id: mention-alert
+    when: { type: mention }
+    action: { type: alert_phone }
+    agent: { cancel: false, modify: false }
+  - id: number-reply-example
+    enabled: false
+    when: { field: text, match: contains_number, value: "1234" }
+    action: { type: reply, text: "I will check that reference." }
+    agent: { cancel: true, modify: true }
+agent:
+  initiate:
+    when: unmatched
+    actions: [alert_phone, reply]
+  timeoutMs: 5000
+```
+
+Conditions support `type: "direct_message"` or `"mention"`, or `field: "text" | "author" | "chat"` with `match: "exact" | "contains"` and a string `value`. Text additionally supports `contains_number` for standalone unsigned integer/decimal tokens (not digits embedded in another number/word). Combine conditions with `all: [...]` or `any: [...]`. Matching is case-insensitive. Direct-message detection compares normalized chat and author names; renamed 1:1 chats may not match. Mentions use `alerts.mentionNames` against semantic Teams mention names or explicit `@name` text, not plain name references. Self/ignored authors do not trigger direct/mention conditions.
+
+All matching enabled rules propose actions; this is not first-match-wins. Actions are `alert_phone` (optional summary `text`), `reply` (required `text`), or `ignore` (no action for that rule, not cancellation of other rules). Identical resulting actions are attempted once per message. The disabled number rule above is documentation only; choose your own number/reply before enabling it.
+
+Per-rule `agent.cancel` and `agent.modify` default false. Modification permits changing text only, never action type or destination. Global `agent.initiate` controls independent model actions: `when` is `never`, `unmatched` (no enabled rule matched), or `always`; `actions` explicitly lists allowed action types. Missing initiation config defaults to `never` and no types. The live/example config explicitly allows phone alerts and whitelist-permitted replies on unmatched messages, retaining Gemini triage there. Live direct-message and mention rules permit neither cancellation nor modification, so those matches bypass the LLM unless another matching rule needs review.
+
+The model sees every evaluated rule, tested values, condition results, proposed actions and permissions. One bounded request proposes changes/additions, which code validates before applying any. Protected/unknown targets, unauthorized additions, invalid responses, errors or timeout retain **all original rule actions**, including configured replies if permitted; no model additions run. `timeoutMs` is an integer from 1 to 30000; requests are aborted at the deadline and late outputs cannot change the result. Valid cancellations are final. Reply policy is checked again immediately before sending; the agent cannot bypass it. Traces include rule evidence, model input/output, retained/cancelled/modified/initiated actions, and execution results.
+
+Reactions use ordinary synthetic messages in the same rules/LLM pipeline, with `when: { type: reaction }` available for dedicated rules. The original message body excludes Teams reaction badges, so a reaction does not replay a direct-message/mention alert. Badges currently expose reaction type/count but not the reactor's identity: synthetic text says “Someone added 👍 to Alex's message …” rather than guessing a name. Metadata includes the original author/text/time and observation time. Own reaction count changes are excluded. Existing reactions are baselined on first observation each activation. One previously observed chat is revisited per poll after unread chats; this only covers the visible 15-message tail, not every historic reaction, and count-preserving swaps between people cannot be detected. New reactions to older messages can be handled after a baseline, but ordinary messages predating orchestrator activation (or missing a valid time) are skipped. Explicit echo-loop testing bypasses that cutoff.
+
+**System logs** includes orchestrator output, connection/delivery events, tunnel output, and raw message activity. `access_token`/`GUI_TOKEN` values are not intentionally exposed by the diagnostics API. Each FCM HTTP attempt logs its start, Firebase acceptance/failure, duration, generation and alertId, without message contents or credentials. The phone logs receipt before reconciliation, SDK sent time/original and delivered priority, receipt device state, and the same alertId through notification/alarm decisions. Cross-device latency is approximate because clocks may differ; Firebase acceptance is not delivery confirmation. Android diagnostics supports confirmed deletion before a local date/time or older than a selected age, independently of export filters; malformed/undated records are retained.
 
 ## Android app
 
 See `android-app/README.md` for FID registration, fallback behavior, health policy, diagnostics, and local builds.
 
-The repository also has `.github/workflows/android-apk.yml`. Android changes automatically build a signed APK and publish it to the stable GitHub Release tag `android-latest`, while also retaining an Actions artifact when the signing secret is configured.
+Download the [latest published Android APK](https://github.com/GuyMichaely/teams-monitor/releases/download/android-latest/teams-monitor.apk) on the phone. The Android APK GitHub Action builds and publishes on Android changes pushed to `main`, or when run manually. It is the only retained GitHub Actions workflow.
 
-## CI guards
+The public download URL [gui.guymichaely.com/app-debug.apk](https://gui.guymichaely.com/app-debug.apk) redirects to the latest GitHub APK; no local build is required. Local builds remain supported for USB installation; see `android-app/README.md`.
 
-- `.github/workflows/bun-smoke.yml` runs on Windows, exercises the persisted alert-delivery and health state machines, and performs a real authenticated GUI/WebSocket handshake under Bun.
-- `.github/workflows/android-apk.yml` compiles and publishes the Android companion app.
-- `.github/workflows/cloudflare-worker-smoke.yml` performs a Wrangler dry-run of the optional control Worker without deploying it.
+## Local validation
+
+Development and validation are local; Android APK publishing is the GitHub Actions exception. From the repository root:
+
+```powershell
+bun scripts/smoke-alert-state.mjs
+bun scripts/smoke-config-yaml.mjs
+bun scripts/smoke-health.mjs
+bun scripts/smoke-gui.mjs
+bun scripts/smoke-dashboard.mjs
+bun scripts/smoke-presence.mjs
+bun scripts/smoke-self-messages.mjs
+bun scripts/smoke-activity-view.mjs
+bun scripts/smoke-dashboard-activity.mjs
+bun scripts/smoke-brain-policy.mjs
+bun scripts/smoke-rule-evaluation.mjs
+bun scripts/smoke-rule-policy.mjs
+bun scripts/smoke-rule-execution.mjs
+bun scripts/smoke-message-metadata.mjs
+bun scripts/smoke-reactions.mjs
+bun scripts/smoke-fcm-timing.mjs
+bun scripts/smoke-websocket-lifecycle.mjs
+```
+
+These checks exercise persisted alert delivery, health transitions, an authenticated GUI/WebSocket handshake, reply permission enforcement, and poll reporting. Each script creates its own temporary configuration and data directory; live registrations and runtime state are untouched. `bun scripts/smoke-dashboard.mjs --serve` keeps an isolated preview with fictional messages on port 18091 for browser checks. For Android changes, run the local build described in `android-app/README.md`. For optional Worker changes, use the local dry-run instructions in `cloudflare-worker/README.md`.
 
 ## Safety / operational notes
 
-- `config/config.json`, `context/user-profile.md`, `.env`, Firebase credentials, and `data/` are ignored local/runtime state.
+- `config/config.yaml`, `context/user-profile.md`, `.env`, Firebase credentials, and `data/` are ignored local/runtime state.
 - Keep reusable non-secret defaults in the tracked `*.example.*` files.
 - The monitor can restart Teams to expose its debugging port.
 - The Cloudflare GUI uses `GUI_TOKEN`; stopping the tunnel while using `gui.guymichaely.com` disconnects that remote session and WebSocket alert path.
