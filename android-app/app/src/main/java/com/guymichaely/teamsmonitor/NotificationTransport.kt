@@ -247,6 +247,12 @@ object NotificationTransport {
                 else if (state.isNull("fallbackTransport")) "none"
                 else state.optString("fallbackTransport")
         )
+        // Apply after policy, which clears observations superseded by control pushes.
+        prefs.deliveryStatusSnapshot = JSONObject()
+            .put("primary", primary)
+            .put("delivery", state.optJSONObject("delivery") ?: JSONObject())
+            .put("at", System.currentTimeMillis())
+            .toString()
         AppLog.event(
             context,
             "control_synced",

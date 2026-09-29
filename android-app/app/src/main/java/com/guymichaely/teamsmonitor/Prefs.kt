@@ -51,6 +51,15 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_FCM_SYNC_PENDING, false)
         set(value) = sp.edit().putBoolean(KEY_FCM_SYNC_PENDING, value).apply()
 
+    // Observed server delivery state is presentation-only, never recovery policy.
+    var deliveryStatusSnapshot: String
+        get() = sp.getString("delivery_status_snapshot", "") ?: ""
+        set(value) = sp.edit().putString("delivery_status_snapshot", value).apply()
+
+    var lastFcmReceiptAtMs: Long
+        get() = sp.getLong("last_fcm_receipt_at_ms", 0L)
+        set(value) = sp.edit().putLong("last_fcm_receipt_at_ms", value).apply()
+
     var fcmRegistrationUpdatedAtMs: Long
         get() = sp.getLong(KEY_FCM_UPDATED_AT, 0L)
         set(value) = sp.edit().putLong(KEY_FCM_UPDATED_AT, value).apply()

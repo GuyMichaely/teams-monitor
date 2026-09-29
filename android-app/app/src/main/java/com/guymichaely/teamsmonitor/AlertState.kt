@@ -11,7 +11,7 @@ object AlertState {
 
     const val ACTION_STATUS = "com.guymichaely.teamsmonitor.STATUS"
 
-    enum class Connection { DISCONNECTED, CONNECTING, CONNECTED }
+    enum class Connection { DISCONNECTED, CONNECTING, RECONNECTING, CONNECTED }
 
     @Volatile var connection = Connection.DISCONNECTED
         private set

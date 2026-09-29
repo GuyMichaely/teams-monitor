@@ -16,6 +16,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -61,6 +64,17 @@ class MainActivity : AppCompatActivity() {
         deleteCutoffMs = savedInstanceState?.getLong(STATE_DELETE_CUTOFF) ?: System.currentTimeMillis()
 
         prefs = Prefs(this)
+        findViewById<TextView>(R.id.conn_status).setOnClickListener {
+            fun timestamp(value: Long) = if (value > 0) DateFormat.getDateTimeInstance().format(java.util.Date(value)) else "Not observed"
+            AlertDialog.Builder(this)
+                .setTitle("Alert delivery status")
+                .setMessage("Last control update: ${timestamp(prefs.lastControlSyncAtMs)}\n" +
+                    "Last FCM receipt (alert or control): ${timestamp(prefs.lastFcmReceiptAtMs)}\n\n" +
+                    "FCM ready means registration is synced with no known registration problem, not a verified live connection. " +
+                    "Off means not used for alert delivery; FCM can still receive control messages. " +
+                    "Server delivery health is the last observed state. See diagnostics for errors.")
+                .setPositiveButton("Close", null).show()
+        }
         AlertNotifier.createChannels(this)
         AppLog.event(this, "main_create", "network=${AppLog.networkSummary(this)}")
 
@@ -359,13 +373,33 @@ class MainActivity : AppCompatActivity() {
     private fun refreshStatus() {
         val conn = when (AlertState.connection) {
             AlertState.Connection.CONNECTED -> "connected"
-            AlertState.Connection.CONNECTING -> "connecting…"
+            AlertState.Connection.CONNECTING -> "connecting"
+            AlertState.Connection.RECONNECTING -> "reconnecting"
             AlertState.Connection.DISCONNECTED -> "disconnected"
         }
-        findViewById<TextView>(R.id.conn_status).text = DeliveryStatus.render(
+        val snapshot = runCatching { org.json.JSONObject(prefs.deliveryStatusSnapshot) }.getOrNull()
+        val delivery = snapshot?.takeIf { it.optString("primary") == prefs.alertTransport }?.optJSONObject("delivery")
+        val parts = DeliveryStatus.parts(
             prefs.alertTransport, prefs.fallbackTransport, prefs.websocketRecoveryRequested,
-            conn, prefs.fcmFid.isNotBlank(), prefs.fcmSyncPending, prefs.fcmRegistrationStatus
+            conn, prefs.fcmFid.isNotBlank(), prefs.fcmSyncPending, prefs.fcmRegistrationStatus,
+            delivery?.optString("state") ?: "unknown", delivery?.optString("activeTransport") ?: "unknown",
+            fcmAvailable = com.google.firebase.FirebaseApp.getApps(this).isNotEmpty()
         )
+        val status = SpannableStringBuilder("Alerts: ")
+        val dark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        parts.forEachIndexed { index, part ->
+            if (index > 0) status.append(" • ")
+            val start = status.length
+            status.append(part.text)
+            val color = when (part.tone) {
+                DeliveryStatus.Tone.GOOD -> if (dark) 0xFF81C784.toInt() else 0xFF256029.toInt()
+                DeliveryStatus.Tone.WAITING -> if (dark) 0xFFFFC107.toInt() else 0xFF805500.toInt()
+                DeliveryStatus.Tone.ERROR -> if (dark) 0xFFEF9A9A.toInt() else 0xFFB71C1C.toInt()
+                DeliveryStatus.Tone.MUTED -> if (dark) 0xFFAAAAAA.toInt() else 0xFF666666.toInt()
+            }
+            status.setSpan(ForegroundColorSpan(color), start, status.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        findViewById<TextView>(R.id.conn_status).text = status
         findViewById<TextView>(R.id.server).text =
             "Server: ${prefs.serverUrl.ifBlank { "(not set)" }}"
         findViewById<TextView>(R.id.last_alert).text =

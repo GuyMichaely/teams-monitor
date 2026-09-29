@@ -13,6 +13,7 @@ class FcmMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
         val receivedAt = java.time.Instant.now()
+        runCatching { Prefs(this).lastFcmReceiptAtMs = receivedAt.toEpochMilli() }
         val sentAtMs = message.sentTime.takeIf { it > 0L }
         val latencyMs = sentAtMs?.let { receivedAt.toEpochMilli() - it }
         val fcmSendStartedAt = data["fcmSendStartedAt"].orEmpty()

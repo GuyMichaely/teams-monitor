@@ -97,6 +97,7 @@ class AlertService : Service() {
     override fun onDestroy() {
         AppLog.event(this, "service_destroy")
         stopped = true
+        AlertState.onConnection(this, AlertState.Connection.DISCONNECTED)
         unregisterReceiver(screenOnReceiver)
         webSocket?.cancel()
         executor.shutdownNow()
@@ -119,7 +120,7 @@ class AlertService : Service() {
             AppLog.event(this, "ws_connect_skipped", "reason=server_not_configured")
             return
         }
-        AlertState.onConnection(this, AlertState.Connection.CONNECTING)
+        AlertState.onConnection(this, if (retries > 0) AlertState.Connection.RECONNECTING else AlertState.Connection.CONNECTING)
         AppLog.event(
             this,
             "ws_connecting",
@@ -147,6 +148,7 @@ class AlertService : Service() {
         if (stopped) return
         val delay = minOf(1L shl retries.coerceAtMost(6), MAX_BACKOFF_S)
         retries++
+        AlertState.onConnection(this, AlertState.Connection.RECONNECTING)
         AppLog.event(this, "ws_reconnect_scheduled", "delaySeconds=$delay attempt=$retries")
         executor.schedule({ connect() }, delay, TimeUnit.SECONDS)
     }

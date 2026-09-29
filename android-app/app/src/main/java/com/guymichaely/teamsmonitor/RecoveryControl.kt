@@ -16,6 +16,9 @@ object RecoveryControl {
         val app = context.applicationContext
         val prefs = Prefs(app)
 
+        // A push can supersede a polled health snapshot (especially recovery).
+        prefs.deliveryStatusSnapshot = ""
+
         if (primaryTransport == "fcm" || primaryTransport == "websocket") {
             prefs.alertTransport = primaryTransport
         }
