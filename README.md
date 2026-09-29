@@ -45,7 +45,32 @@ From the repo root:
 bun run gui
 ```
 
-This starts the management GUI on the port configured in the local `config/config.yaml` (8090 in the example). From the dashboard you can start/stop the monitor and start/stop the existing `teams-gui` Cloudflare tunnel.
+This starts a **GUI-only supervisor** and the management GUI on the port configured in local `config/config.yaml` (8090 in the example). It does not start the orchestrator or tunnel. From the dashboard you can start/stop those separately.
+
+```powershell
+bun run gui:status
+bun run gui:stop
+# After stopping, start again with bun run gui.
+```
+
+For a manual production launch, run `bun run gui` in a separately opened Windows Terminal/PowerShell window and leave it open. Ctrl+C or `gui:stop` stops supervision and its GUI child without restarting either. `bun run gui:direct` runs without supervision for debugging. Do not stop the managed child with Task Manager as an intentional stop: that is an unexpected termination and will be restarted.
+
+Operational check, September 28: the tool-launched supervisor and GUI both tested positive for Windows job membership. A WMI independent-launch experiment returned Windows result 2 (Access denied), including without breakaway flags, so no WMI launcher is shipped and no OS permissions were changed. This is not evidence that a job kill caused the earlier incidents. Launch from your own terminal to avoid relying on the tool's job lifetime. See [Windows job documentation](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+
+The supervisor is a separate process, not an installed service. A hidden window or detached launch does **not** prove independence from the launcher's Windows job object. Closing a controlling terminal, a job-wide kill, supervisor failure, Windows shutdown or power loss can still stop both. There is no boot startup/Task Scheduler integration.
+
+### GUI exit diagnostics and recovery
+
+- Authenticated `/api/liveness` verifies the child PID and unique run ID without Teams/CDP, disk reads, Firebase or the public tunnel. Checks run every 5 seconds with a 2-second timeout. After a 15-second startup grace, three consecutive failures are recorded as **unresponsive**, not a proven crash, then the owned child is terminated and replaced.
+- Unexpected exits after successful startup restart with 2/4/8/... second backoff (30-second cap). At most five restarts in ten minutes; reaching the limit leaves supervision blocked for inspection. A healthy run lasting a minute resets backoff, not the rolling restart budget. Normal exit (0), handled SIGINT/SIGTERM (130/143), initial application/spawn failure and an occupied GUI port do not restart. Use `gui:status`, inspect logs, then `gui:stop` and `gui` after resolving the problem.
+- A loopback-only control listener on **GUI port + 1** prevents duplicate supervisors and authenticates status/stop with a random local token. Do not tunnel that port. Stale PID files are never used to kill or adopt another process; an occupied GUI port blocks startup.
+- `data/supervisor/status.json` contains current state, run directory, PID and latest successful health timestamp/latency. `data/supervisor/session-*/supervisor.jsonl` records health transitions, requested kills, exit status/signal, uptime, last successful health and restart decisions. Numeric exit codes also get an unsigned Windows hex representation when the runtime supplies a number; a signal-only report is not fabricated into a native crash code.
+- Each session has `run-*/stdout.log`, `stderr.log` and `run-*.jsonl` lifecycle evidence. Lifecycle logs record version/revision, runtime, run ID, PID/parent PID, fatal error type/code/call sites and normal exits. Fatal records are synchronous and flushed; exceptions/rejections terminate with failure, not continued execution. Arbitrary error messages/source excerpts are omitted from structured lifecycle records to avoid including credentials or message bodies. Unsupervised CLI lifecycle logs are in `data/lifecycle/`.
+- New logs rotate at 256 KiB with two backups; retain five supervisor sessions and ten child runs per session. Standalone lifecycle files are also bounded. Rotation only affects these new diagnostic locations; existing activity/audit logs are untouched. stdout/stderr may contain sensitive application output: all evidence stays ignored/local, and nothing is uploaded automatically. Native Windows crash dumps are **not enabled**.
+
+If both processes disappear, the last persisted health timestamp helps bound the incident, but there may be no final exit record. External forced kills and native failures cannot always be distinguished without OS evidence. Revision records identify the base commit; uncommitted working-tree changes are not captured in that revision.
+
+Validate with `bun scripts/smoke-supervisor.mjs` (isolated state and disposable child processes), plus `bun scripts/smoke-gui.mjs` and `bun scripts/smoke-websocket-lifecycle.mjs`.
 
 To run the monitor directly without the GUI:
 

@@ -28,8 +28,9 @@ function Test-Port($port) {
 
 # GUI server (port 8090). Bun loads GUI_TOKEN/GEMINI_API_KEY from .env.
 if (-not (Test-Port 8090)) {
-  Start-Process $bun -ArgumentList '--env-file=.env src/cli.mjs gui' -WorkingDirectory $root -WindowStyle Hidden `
-    -RedirectStandardError "$data\gui.log" -RedirectStandardOutput "$data\gui.out.log"
+  $supervisorStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+  Start-Process $bun -ArgumentList '--env-file=.env scripts/gui-supervisor.mjs start' -WorkingDirectory $root -WindowStyle Hidden `
+    -RedirectStandardError "$data\supervisor-$supervisorStamp.log" -RedirectStandardOutput "$data\supervisor-$supervisorStamp.out.log"
 }
 
 # Orchestrator (fresh heartbeat = alive; hard-stop kills the pid and removes it)

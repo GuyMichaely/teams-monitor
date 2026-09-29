@@ -9,6 +9,7 @@ import { DASHBOARD_PAGE } from "./dashboard-page.mjs";
 import { readPoll } from "./poll-status.mjs";
 import { replyPolicy, validateReplyPolicy } from "./reply-policy.mjs";
 import { dashboardHealth } from "./dashboard-health.mjs";
+import { supervisorStatus } from './supervisor-status.mjs';
 import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
 import { loadConfig, saveConfig } from "./context.mjs";
 import { validateAutomation } from "./deterministic-rules.mjs";
@@ -158,9 +159,13 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
       return res.end(DASHBOARD_PAGE);
     }
 
-    if (["/api/reply-policy", "/api/poll", "/api/health/status"].includes(url.pathname)) {
+    if (["/api/reply-policy", "/api/poll", "/api/health/status", "/api/supervisor/status"].includes(url.pathname)) {
       try {
         if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: "unauthorized" });
+        if (url.pathname === '/api/supervisor/status' && req.method === 'GET') {
+          res.setHeader('Cache-Control', 'no-store');
+          return sendJson(res, 200, await supervisorStatus());
+        }
         if (url.pathname === "/api/poll" && req.method === "GET") return sendJson(res, 200, await readPoll());
         if (url.pathname === "/api/health/status" && req.method === "GET") return sendJson(res, 200, await dashboardHealth(await loadConfig()));
         if (url.pathname === "/api/reply-policy") {

@@ -34,6 +34,23 @@ function dashboardClient() {
   }
   function status(id, text, tone) { $(id).textContent = text; $(id).className = "badge " + tone; }
   function setText(id, text) { $(id).textContent = text; }
+  let supervisorBusy = false, supervisorCheckedAt = 0;
+  async function refreshSupervisor() {
+    if (supervisorBusy) return;
+    if ($('login').open) {
+      status('supervisorHealth', 'Sign in to check', 'neutral');
+      return;
+    }
+    supervisorBusy = true;
+    try {
+      const value = await api('/api/supervisor/status');
+      supervisorCheckedAt = Date.now();
+      status('supervisorHealth', value.label, value.tone);
+    } catch {
+      supervisorCheckedAt = 0;
+      status('supervisorHealth', 'Unavailable', 'warn');
+    } finally { supervisorBusy = false; }
+  }
   async function perform(button, work, message) {
     button.disabled = true;
     try { await work(); notify(message); slowAt = 0; await refresh(true); }
@@ -212,7 +229,7 @@ function dashboardClient() {
   $('accountButton').onclick = () => { $('login').showModal(); $('tokenInput').focus(); };
   $('login').addEventListener('cancel', (e) => e.preventDefault());
   $('pauseUpdates').onclick = () => { paused = !paused; updateLiveLabel(); if (!paused) refresh(true); };
-  $('refreshButton').onclick = () => refresh(true);
+  $('refreshButton').onclick = () => { refresh(true); refreshSupervisor(); };
   function localDateTime(at) { const d = new Date(at); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, -1); }
   function syncDateFilter() { $('hideOlder').checked = !!clearedThrough; if (clearedThrough) $('activitySince').value = localDateTime(clearedThrough); }
   async function changeActivityView(through) {
@@ -290,6 +307,14 @@ function dashboardClient() {
   $('copyLog').onclick = async () => { try { await navigator.clipboard.writeText($($('logSource').value).textContent); notify('Log copied'); } catch { notify('Could not copy. Select the log text to copy it manually.', true); } };
   window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty) { e.preventDefault(); e.returnValue = ''; } });
   policySummary(); refresh(true);
+  refreshSupervisor();
+  // Supervisor safety status stays live even while message/log tailing is paused.
+  setInterval(refreshSupervisor, 5000);
+  setInterval(() => {
+    if (supervisorCheckedAt && Date.now() - supervisorCheckedAt > 15000) {
+      status('supervisorHealth', 'Status stale', 'warn');
+    }
+  }, 1000);
   setInterval(() => refresh(), 2000);
   setInterval(() => { if (!paused) renderPoll(); }, 1000);
 }
@@ -317,7 +342,9 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <hr class="divider"><div class="runtime-name">Teams availability</div><label id="presenceLabel" for="presenceSelect" aria-live="polite">Set status</label><select id="presenceSelect"><option value="available">Available</option><option value="away">Appear away</option><option value="offline">Appear offline</option><option value="busy">Busy</option><option value="dnd">Do not disturb</option><option value="brb">Be right back</option><option value="" disabled>Unknown / unavailable</option></select>
 <hr class="divider"><div class="runtime-row"><div class="runtime-name">Cloudflare tunnel</div><span id="tunnelStatus" class="badge neutral">Checking</span></div><p id="tunnelDetail" class="runtime-detail">Remote access to this laptop</p><div class="button-row"><button id="startTunnel" class="small" disabled>Start tunnel</button><button id="stopTunnel" class="small danger" disabled>Stop</button></div></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Phone delivery</h2></div><form id="deliveryForm"><label for="deliveryMethod">Preferred delivery method</label><select id="deliveryMethod"><option value="fcm">FCM</option><option value="websocket">Websocket</option></select><label class="check"><input id="fallbackEnabled" type="checkbox">Use the other method if delivery fails</label><div class="form-footer"><span id="deliverySaveState" class="save-state"></span><button id="saveDelivery" class="small">Save delivery</button></div></form><p id="deliveryHint" class="hint">Checking phone delivery…</p><p id="activeTransport" class="hint"></p><details><summary>Setup & recovery details</summary><div id="setupDetails"></div></details></div></section>
-<section class="card"><div class="card-body"><div class="section-title"><h2>System health</h2></div><div class="health-row"><span class="health-name"><span class="health-symbol">◈</span>Teams connection</span><span id="teamsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◎</span>Phone delivery</span><span id="phoneHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◇</span>Brain</span><span id="brainHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Phone WebSocket</span><span id="wsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Public tunnel probe</span><span id="publicHealth" class="badge neutral">Checking</span></div><p id="brainModel" class="hint"></p><p class="hint">Teams can connect when the monitor starts. FCM send acceptance does not confirm phone receipt.</p></div></section>
+<section class="card"><div class="card-body"><div class="section-title"><h2>System health</h2></div>
+<div class="health-row"><span>GUI supervisor</span><span id="supervisorHealth" class="badge neutral" aria-live="polite">Checking</span></div>
+<div class="health-row"><span class="health-name"><span class="health-symbol">◈</span>Teams connection</span><span id="teamsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◎</span>Phone delivery</span><span id="phoneHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◇</span>Brain</span><span id="brainHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Phone WebSocket</span><span id="wsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Public tunnel probe</span><span id="publicHealth" class="badge neutral">Checking</span></div><p id="brainModel" class="hint"></p><p class="hint">Teams can connect when the monitor starts. FCM send acceptance does not confirm phone receipt.</p></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Teams reply permissions</h2></div><p class="hint">Controls outgoing Teams replies, including holding messages. Phone alerts are unaffected.</p><form id="policyForm"><label for="replyMode">Permission mode</label><select id="replyMode"><option value="whitelist">Whitelist · only listed chats</option><option value="blacklist">Blacklist · all except listed chats</option></select><label for="replyEntries">Chat names, one per line</label><textarea id="replyEntries" rows="4" placeholder="e.g. Project chat&#10;Alex Morgan"></textarea><p class="hint">Exact chat names, case-insensitive. No wildcards.</p><p id="policyHint" class="hint"></p><div class="form-footer"><span id="policySaveState" class="save-state"></span><button id="savePolicy" class="small">Save permissions</button></div></form><p class="hint">Default: an empty whitelist allows replies to nobody.</p></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Brain context</h2></div><p class="hint">Instructions used by the brain for phone alerts and permitted Teams replies.</p><form id="profileForm"><label for="brainContext">Context & instructions</label><textarea id="brainContext" class="brain-text" rows="8" placeholder="Enter monitoring context and alert instructions…"></textarea><div class="form-footer"><span id="profileSaveState" class="save-state"></span><button id="saveProfile" class="small">Save context</button></div></form><p class="hint">Saved locally and picked up on the next poll.</p></div></section>
 <section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">Advanced alert rules</h2></div>

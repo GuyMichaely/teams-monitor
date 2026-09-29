@@ -16,6 +16,7 @@ import { loadConfig, saveConfig } from "./context.mjs";
 // layer (e.g. Cloudflare Access) adds.
 
 import { createServer } from "node:http";
+import { processRunId } from './process-diagnostics.mjs';
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { logDiagnostic } from "./gui-diagnostics.mjs";
 import { controlState } from "./alert-runtime.mjs";
@@ -415,6 +416,12 @@ export function startGui(config, websocketOptions) {
       }
       if (token && !authOk(req.headers.authorization, token)) {
         return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      // Independent of CDP, disk/config reads and tunnel health.
+      if (req.method === 'GET' && url.pathname === '/api/liveness') {
+        res.setHeader('Cache-Control', 'no-store');
+        return sendJson(res, 200, { ok: true, pid: process.pid, runId: processRunId });
       }
 
       if (req.method === "GET" && url.pathname === "/api/overview") {
