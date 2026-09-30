@@ -141,7 +141,7 @@ namespace TeamsMonitorDesktop {
             status.AutoSize = false; window.Controls.Add(status);
             AddButton("Open dashboard", 20, 150, delegate { Open(dashboard); });
             AddButton("Open logs", 235, 150, delegate { Open(Path.Combine(root, "data")); });
-            start.Text = "Start system"; start.ForeColor = Color.Black; start.SetBounds(20, 195, 200, 34); start.Click += async delegate { await Start(); }; window.Controls.Add(start);
+            start.Text = "Start system"; StyleButton(start); start.SetBounds(20, 195, 200, 34); start.Click += async delegate { await Start(); }; window.Controls.Add(start);
             AddButton("Hide to tray", 235, 195, delegate { window.Hide(); });
             var menu = new ContextMenuStrip();
             menu.Items.Add("Show status", null, delegate { Show(); });
@@ -161,7 +161,17 @@ namespace TeamsMonitorDesktop {
             };
         }
         void AddButton(string label, int x, int y, EventHandler action) {
-            var button = new Button { Text = label, ForeColor = Color.Black }; button.SetBounds(x, y, 200, 34); button.Click += action; window.Controls.Add(button);
+            var button = new Button { Text = label }; StyleButton(button); button.SetBounds(x, y, 200, 34); button.Click += action; window.Controls.Add(button);
+        }
+        static void StyleButton(Button button) {
+            // Own both colors; themed rendering can otherwise mix dark fill with black text.
+            button.FlatStyle = FlatStyle.Flat;
+            button.UseVisualStyleBackColor = false;
+            button.BackColor = SystemInformation.HighContrast ? SystemColors.Control : Color.FromArgb(48, 54, 64);
+            button.ForeColor = SystemInformation.HighContrast ? SystemColors.ControlText : Color.WhiteSmoke;
+            button.FlatAppearance.BorderColor = SystemInformation.HighContrast ? SystemColors.ControlText : Color.FromArgb(113, 124, 140);
+            button.FlatAppearance.MouseOverBackColor = SystemInformation.HighContrast ? SystemColors.Control : Color.FromArgb(65, 74, 87);
+            button.FlatAppearance.MouseDownBackColor = SystemInformation.HighContrast ? SystemColors.Control : Color.FromArgb(79, 90, 106);
         }
         void Open(string target) { try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); } catch { status.Text = "Could not open " + (target == dashboard ? "dashboard." : "logs."); } }
         public void Show() { window.Show(); window.WindowState = FormWindowState.Normal; window.Activate(); }
