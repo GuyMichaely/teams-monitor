@@ -39,7 +39,7 @@ For an existing JSON installation, stop the GUI/monitor, run `bun scripts/migrat
 
 ## Normal startup
 
-On Windows, use the **Teams Monitor** desktop shortcut. It opens a small status window and adds a tray icon. Closing the window hides it; double-clicking the tray icon (or desktop shortcut again) reopens it. Right-click the tray icon and choose **Quit Teams Monitor** to stop the monitor, tunnel, GUI and supervisor.
+On Windows, use the **Teams Monitor** desktop shortcut. It opens a small status window and adds a tray icon. Closing the window hides it; double-clicking the tray icon (or desktop shortcut again) reopens it. **Stop system** stops the monitor, tunnel, GUI and supervisor while keeping the tray app open; **Start system** starts them again. Right-click the tray icon and choose **Quit Teams Monitor** to stop the system and exit the tray app.
 
 Install/rebuild the shortcut and native tray app after pulling changes (quit the current tray app before rebuilding):
 

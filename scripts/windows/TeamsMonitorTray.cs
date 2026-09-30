@@ -123,9 +123,10 @@ namespace TeamsMonitorDesktop {
         readonly TrayWindow window = new TrayWindow();
         readonly Label status = new Label();
         readonly Button start = new Button();
+        readonly Button stop = new Button();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
         Process supervisor;
-        bool busy, quitting;
+        bool busy, quitting, systemStopped;
         int observedExitPid;
         string dashboard = "http://127.0.0.1:8090/";
         public TrayApplication(string project, string runtime, EventWaitHandle showEvent) {
@@ -133,7 +134,7 @@ namespace TeamsMonitorDesktop {
             logs = Path.Combine(root, "data", "desktop"); Directory.CreateDirectory(logs);
             session = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff");
             Log("started pid=" + Process.GetCurrentProcess().Id + " parentPid=" + OwnedJob.ParentPid() + " inheritedJob=" + OwnedJob.InAnyJob());
-            window.Text = "Teams Monitor"; window.Size = new Size(480, 300); window.MinimumSize = new Size(480, 300);
+            window.Text = "Teams Monitor"; window.Size = new Size(480, 340); window.MinimumSize = new Size(480, 340);
             window.StartPosition = FormStartPosition.CenterScreen; window.BackColor = Color.FromArgb(24, 27, 32);
             window.ForeColor = Color.WhiteSmoke; window.Font = new Font("Segoe UI", 10);
             window.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -142,7 +143,8 @@ namespace TeamsMonitorDesktop {
             AddButton("Open dashboard", 20, 150, delegate { Open(dashboard); });
             AddButton("Open logs", 235, 150, delegate { Open(Path.Combine(root, "data")); });
             start.Text = "Start system"; StyleButton(start); start.SetBounds(20, 195, 200, 34); start.Click += async delegate { await Start(); }; window.Controls.Add(start);
-            AddButton("Hide to tray", 235, 195, delegate { window.Hide(); });
+            stop.Text = "Stop system"; StyleButton(stop); stop.SetBounds(235, 195, 200, 34); stop.Click += async delegate { await Stop(); }; window.Controls.Add(stop);
+            var hide = AddButton("Hide to tray", 20, 240, delegate { window.Hide(); }); hide.Width = 415;
             var menu = new ContextMenuStrip();
             menu.Items.Add("Show status", null, delegate { Show(); });
             menu.Items.Add("Open dashboard", null, delegate { Open(dashboard); });
@@ -160,8 +162,9 @@ namespace TeamsMonitorDesktop {
                 if (e.CloseReason != CloseReason.UserClosing) { Log("windows_session_ending"); job.Dispose(); }
             };
         }
-        void AddButton(string label, int x, int y, EventHandler action) {
+        Button AddButton(string label, int x, int y, EventHandler action) {
             var button = new Button { Text = label }; StyleButton(button); button.SetBounds(x, y, 200, 34); button.Click += action; window.Controls.Add(button);
+            return button;
         }
         static void StyleButton(Button button) {
             // Own both colors; themed rendering can otherwise mix dark fill with black text.
@@ -203,7 +206,7 @@ namespace TeamsMonitorDesktop {
         }
         async Task Start() {
             if (busy || quitting) return;
-            busy = true; start.Enabled = false; status.Text = "Starting system…";
+            busy = true; start.Enabled = false; stop.Enabled = false; systemStopped = false; status.Text = "Starting system…";
             try {
                 if (supervisor != null && !supervisor.HasExited) {
                     await Control("resume-components"); Log("components_resumed"); return;
@@ -240,12 +243,40 @@ namespace TeamsMonitorDesktop {
                     code == "EXISTING_MONITOR" ? "An external monitor is already running.\nStop it from its terminal or dashboard before starting here." :
                     "System needs attention.\nOpen logs for details; the tray remains available.\nIf the GUI started, use Open dashboard for controls.";
                 tray.Text = "Teams Monitor — needs attention";
-            } finally { busy = false; start.Enabled = true; }
+            } finally { busy = false; start.Enabled = true; stop.Enabled = supervisor != null; }
+        }
+        async Task StopOwnedTree() {
+            if (supervisor != null) {
+                try { await Control("stop-owned", supervisor.Id); } catch { Log("api_stop_unavailable owned_tree_will_stop"); }
+                await Task.Run(() => supervisor.WaitForExit(5000));
+            }
+            job.Dispose();
+            if (supervisor != null) { supervisor.Dispose(); supervisor = null; }
+            if (!quitting) job = new OwnedJob();
+            Log("owned_process_tree_stopped");
+        }
+        async Task Stop() {
+            if (busy || quitting) return;
+            busy = true; start.Enabled = false; stop.Enabled = false;
+            status.Text = "Stopping system…"; tray.Text = "Teams Monitor — stopping"; Log("system_stop_requested");
+            try {
+                await StopOwnedTree(); systemStopped = true;
+                status.Text = "System stopped.\nClick Start system to start it again.\n\nClosing this window hides the tray app.";
+                tray.Text = "Teams Monitor — stopped";
+            } catch (Exception error) {
+                Log("system_stop_failed type=" + error.GetType().Name);
+                status.Text = "Could not finish stopping.\nOpen logs for details, or quit using the tray icon.";
+                tray.Text = "Teams Monitor — needs attention";
+            } finally { busy = false; start.Enabled = true; stop.Enabled = supervisor != null; }
         }
         async Task Refresh() {
             busy = true;
             try {
                 if (supervisor == null || supervisor.HasExited) {
+                    if (systemStopped) {
+                        status.Text = "System stopped.\nClick Start system to start it again.\n\nClosing this window hides the tray app.";
+                        tray.Text = "Teams Monitor — stopped"; return;
+                    }
                     if (supervisor != null && observedExitPid != supervisor.Id) {
                         observedExitPid = supervisor.Id;
                         Log("supervisor_exited pid=" + supervisor.Id + " exit=" + supervisor.ExitCode + " hex=0x" + ((uint)supervisor.ExitCode).ToString("X8"));
@@ -262,15 +293,11 @@ namespace TeamsMonitorDesktop {
             finally { busy = false; }
         }
         async Task Quit() {
-            if (quitting) return; quitting = true; timer.Stop(); start.Enabled = false;
+            if (quitting) return; quitting = true; timer.Stop(); start.Enabled = false; stop.Enabled = false;
             Log("quit_requested"); status.Text = "Stopping system…"; tray.Text = "Teams Monitor — stopping";
             // Let an in-progress start/status operation finish before disposing its job.
             while (busy) await Task.Delay(100);
-            if (supervisor != null) {
-                try { await Control("stop-owned", supervisor.Id); } catch { Log("api_stop_unavailable owned_tree_will_stop"); }
-                await Task.Run(() => supervisor.WaitForExit(5000));
-            }
-            job.Dispose(); Log("owned_process_tree_stopped");
+            await StopOwnedTree();
             tray.Visible = false; window.Quitting = true; window.Close(); Application.ExitThread();
         }
         public void Run() { Application.Run(window); }
