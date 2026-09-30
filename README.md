@@ -39,6 +39,27 @@ For an existing JSON installation, stop the GUI/monitor, run `bun scripts/migrat
 
 ## Normal startup
 
+On Windows, use the **Teams Monitor** desktop shortcut. It opens a small status window and adds a tray icon. Closing the window hides it; double-clicking the tray icon (or desktop shortcut again) reopens it. Right-click the tray icon and choose **Quit Teams Monitor** to stop the monitor, tunnel, GUI and supervisor.
+
+Install/rebuild the shortcut and native tray app after pulling changes (quit the current tray app before rebuilding):
+
+```powershell
+bun run desktop:install
+bun run desktop
+```
+
+The app is compiled locally using Windows' .NET Framework compiler; no downloaded runtime, administrator rights, execution-policy changes or boot startup are needed. The installer creates `Teams Monitor.lnk` in the actual desktop folder, including a redirected OneDrive desktop. Generated executable/icon and local logs stay ignored under `data/desktop/`. Moving the repository requires reinstalling the shortcut.
+
+The desktop launch starts the GUI supervisor, recreates the project's existing `teams-gui` tunnel under its ownership, and starts the orchestrator. Teams must already be available with CDP enabled. Start/stop controls in the dashboard still work; the tray's **Start system** starts components that were stopped there. An already-running external GUI supervisor or monitor is refused: stop it from its terminal/dashboard first (`bun run gui:stop` for the GUI supervisor). A duplicate desktop launch only reopens the current window.
+
+The native tray app owns a Windows job containing the supervisor and its descendants. Children are assigned before they execute, and dashboard-started monitor/tunnel processes inherit that ownership. Tray Quit first requests the authenticated local stop controls, then closes the owned job to clean up remaining processes even if the GUI is unavailable. It never kills using an old PID file. Tray crashes, Windows sign-out/shutdown and power loss can still stop the system; reopening the desktop shortcut starts it again. This is a manual launcher, with no service, Task Scheduler or login/reboot startup.
+
+`scripts/start-desktop.ps1` asks the **existing desktop Explorer** to launch the native app. A newly created `Shell.Application` or `explorer.exe` may inherit the calling tool's context, so those are not the launch path. The live launch was checked with the existing Explorer PID as its parent. Generic Windows job membership alone does not identify a Codex-owned job. Tray lifecycle/observed supervisor exits are logged in `data/desktop/tray.log` (256 KiB plus one backup); GUI per-run diagnostics remain in `data/supervisor/`.
+
+Validate with `bun scripts/smoke-desktop.mjs` after building the app. It uses isolated state and verifies close-to-tray, explicit quit, suspended job assignment, detached descendant ownership/cleanup, duplicate instance locking, local authentication and ownership checks. GUI supervisor verification is described below.
+
+For terminal development or GUI-only operation:
+
 From the repo root:
 
 ```powershell
@@ -78,13 +99,13 @@ To run the monitor directly without the GUI:
 bun start
 ```
 
-The all-in-one Windows launcher remains available:
+The all-in-one Windows launcher also uses the desktop tray app:
 
 ```powershell
 .\scripts\start-stack.ps1
 ```
 
-It starts the GUI, orchestrator, and existing Cloudflare tunnel when each is not already running.
+It installs the desktop launcher if missing, then asks the existing Explorer desktop to start it.
 
 ## CLI
 

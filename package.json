@@ -7,6 +7,8 @@
     "teams": "src/cli.mjs"
   },
   "scripts": {
+    "desktop:install": "powershell.exe -NoProfile -File scripts/install-desktop.ps1",
+    "desktop": "powershell.exe -NoProfile -File scripts/start-desktop.ps1",
     "start": "bun --env-file=.env src/cli.mjs run",
     "gui": "bun --env-file=.env scripts/gui-supervisor.mjs start",
     "gui:direct": "bun --env-file=.env src/cli.mjs gui",

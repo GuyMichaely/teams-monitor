@@ -1,57 +1,7 @@
-# Starts the Teams-monitor stack: GUI server, orchestrator, Cloudflare tunnel.
-# Safe to re-run — each component starts only if it isn't already running.
-# Logs land in data\.
-
-$root = "C:\Users\GuyMichaely\projects\teams-monitor"
-$cloudflared = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
-$data = Join-Path $root "data"
-New-Item -ItemType Directory -Force $data | Out-Null
-
-$bunCommand = Get-Command bun -ErrorAction SilentlyContinue
-if ($bunCommand) {
-  $bun = $bunCommand.Source
-} else {
-  $bun = Join-Path $HOME ".bun\bin\bun.exe"
-  if (-not (Test-Path $bun)) {
-    throw "Bun is not installed or not on PATH. Install Bun 1.4+ before starting the stack."
-  }
+# Compatibility entrypoint: the desktop tray now owns the entire stack.
+$ErrorActionPreference = 'Stop'
+$projectRoot = Split-Path $PSScriptRoot -Parent
+if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'data\desktop\TeamsMonitor.exe'))) {
+    & (Join-Path $PSScriptRoot 'install-desktop.ps1')
 }
-
-function Test-Port($port) {
-  try {
-    $c = New-Object Net.Sockets.TcpClient
-    $c.Connect("127.0.0.1", $port)
-    $c.Close()
-    return $true
-  } catch { return $false }
-}
-
-# GUI server (port 8090). Bun loads GUI_TOKEN/GEMINI_API_KEY from .env.
-if (-not (Test-Port 8090)) {
-  $supervisorStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-  Start-Process $bun -ArgumentList '--env-file=.env scripts/gui-supervisor.mjs start' -WorkingDirectory $root -WindowStyle Hidden `
-    -RedirectStandardError "$data\supervisor-$supervisorStamp.log" -RedirectStandardOutput "$data\supervisor-$supervisorStamp.out.log"
-}
-
-# Orchestrator (fresh heartbeat = alive; hard-stop kills the pid and removes it)
-$hb = "$data\heartbeat.json"
-$orchRunning = $false
-if (Test-Path $hb) {
-  try {
-    $j = Get-Content $hb -Raw | ConvertFrom-Json
-    if ((New-TimeSpan -Start ([DateTime]$j.at) -End (Get-Date)).TotalSeconds -lt 60) { $orchRunning = $true }
-  } catch {}
-}
-if (-not $orchRunning) {
-  Start-Process $bun -ArgumentList '--env-file=.env src/cli.mjs run' -WorkingDirectory $root -WindowStyle Hidden `
-    -RedirectStandardError "$data\orchestrator.log" -RedirectStandardOutput "$data\orchestrator.out.log"
-}
-
-# Cloudflare tunnel (gui.guymichaely.com -> 127.0.0.1:8090).
-# Match this tunnel specifically so another cloudflared process does not block it.
-$tunnelRunning = Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" -ErrorAction SilentlyContinue | `
-  Where-Object { $_.CommandLine -match '(?i)tunnel\s+run' -and $_.CommandLine -match '(?i)teams-gui' }
-if (-not $tunnelRunning) {
-  Start-Process $cloudflared -ArgumentList 'tunnel run teams-gui' -WorkingDirectory $root -WindowStyle Hidden `
-    -RedirectStandardError "$data\tunnel.log" -RedirectStandardOutput "$data\tunnel.out.log"
-}
+& (Join-Path $PSScriptRoot 'start-desktop.ps1')
