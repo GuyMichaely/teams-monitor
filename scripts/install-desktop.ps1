@@ -7,10 +7,11 @@ $desktopBin = Join-Path $projectRoot 'data\desktop'
 New-Item -ItemType Directory -Force -Path $desktopBin | Out-Null
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw '.NET Framework C# compiler is unavailable.' }
-$exePath = Join-Path $desktopBin 'TeamsMonitor.exe'
-if (Get-Process -Name TeamsMonitor -ErrorAction SilentlyContinue) { throw 'Quit Teams Monitor from its tray icon before rebuilding.' }
+$exePath = Join-Path $desktopBin 'TM.exe'
+$previousExePath = Join-Path $desktopBin 'TeamsMonitor.exe'
+if (Get-Process -Name TM,TeamsMonitor -ErrorAction SilentlyContinue | Where-Object { $_.Path -in @($exePath, $previousExePath) }) { throw 'Quit TM from its tray icon before rebuilding.' }
 Add-Type -AssemblyName System.Drawing
-$iconPath = Join-Path $desktopBin 'TeamsMonitor.ico'
+$iconPath = Join-Path $desktopBin 'TM.ico'
 $bitmap = New-Object System.Drawing.Bitmap 32,32
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $font = New-Object System.Drawing.Font 'Segoe UI',20,([System.Drawing.FontStyle]::Bold)
@@ -25,17 +26,26 @@ try { $icon.Save($iconFile) } finally { $iconFile.Dispose(); $icon.Dispose(); $g
 if ($LASTEXITCODE -ne 0) { throw 'Tray app compilation failed.' }
 if (-not $BuildOnly) {
     $desktopFolder = [Environment]::GetFolderPath('Desktop')
-    $shortcutPath = Join-Path $desktopFolder 'Teams Monitor.lnk'
+    $shortcutPath = Join-Path $desktopFolder 'TM.lnk'
+    $previousShortcutPath = Join-Path $desktopFolder 'Teams Monitor.lnk'
+    $shortcutShell = New-Object -ComObject WScript.Shell
     if (Test-Path -LiteralPath $shortcutPath) {
-        $existingShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
-        if ($existingShortcut.TargetPath -ne $exePath) { throw 'A different Teams Monitor desktop shortcut already exists; it was not overwritten.' }
+        $existingShortcut = $shortcutShell.CreateShortcut($shortcutPath)
+        if ($existingShortcut.TargetPath -notin @($exePath, $previousExePath)) { throw 'A different TM desktop shortcut already exists; it was not overwritten.' }
     }
-    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+    $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $exePath
     $shortcut.WorkingDirectory = $projectRoot
-    $shortcut.Description = 'Start Teams Monitor; closing the status window hides to tray. Quit using the tray icon.'
+    $shortcut.Description = 'Start TM; closing the status window hides to tray. Quit using the tray icon.'
     $shortcut.IconLocation = "$exePath,0"
     $shortcut.Save()
+    # Only replace the previous shortcut when it belongs to this checkout.
+    if (Test-Path -LiteralPath $previousShortcutPath) {
+        $previousShortcut = $shortcutShell.CreateShortcut($previousShortcutPath)
+        if ($previousShortcut.TargetPath -in @($exePath, $previousExePath)) {
+            Remove-Item -LiteralPath $previousShortcutPath
+        }
+    }
     Write-Output "Installed: $shortcutPath"
 }
 Write-Output "Tray app: $exePath"

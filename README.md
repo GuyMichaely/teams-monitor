@@ -1,4 +1,4 @@
-# teams-monitor
+# TM
 
 Personal Microsoft Teams monitoring/automation system. It drives the new Teams desktop client (WebView2) over the Chrome DevTools Protocol (CDP), triages unread messages, exposes a management GUI, and alerts an Android companion app through Firebase Cloud Messaging (FCM) and/or a WebSocket connection through the Cloudflare Tunnel.
 
@@ -39,7 +39,7 @@ For an existing JSON installation, stop the GUI/monitor, run `bun scripts/migrat
 
 ## Normal startup
 
-On Windows, use the **Teams Monitor** desktop shortcut. It opens a small status window and adds a tray icon. Closing the window hides it; double-clicking the tray icon (or desktop shortcut again) reopens it. **Stop system** stops the monitor, tunnel, GUI and supervisor while keeping the tray app open; **Start system** starts them again. Right-click the tray icon and choose **Quit Teams Monitor** to stop the system and exit the tray app.
+On Windows, use the **TM** desktop shortcut. It opens a small status window and adds a tray icon. Closing the window hides it; double-clicking the tray icon (or desktop shortcut again) reopens it. **Stop system** stops the monitor, tunnel, GUI and supervisor while keeping the tray app open; **Start system** starts them again. Right-click the tray icon and choose **Quit TM** to stop the system and exit the tray app.
 
 Install/rebuild the shortcut and native tray app after pulling changes (quit the current tray app before rebuilding):
 
@@ -48,7 +48,7 @@ bun run desktop:install
 bun run desktop
 ```
 
-The app is compiled locally using Windows' .NET Framework compiler; no downloaded runtime, administrator rights, execution-policy changes or boot startup are needed. The installer creates `Teams Monitor.lnk` in the actual desktop folder, including a redirected OneDrive desktop. Generated executable/icon and local logs stay ignored under `data/desktop/`. Moving the repository requires reinstalling the shortcut.
+The app is compiled locally using Windows' .NET Framework compiler; no downloaded runtime, administrator rights, execution-policy changes or boot startup are needed. The installer creates `TM.lnk` in the actual desktop folder, including a redirected OneDrive desktop. Generated executable/icon and local logs stay ignored under `data/desktop/`. Moving the repository requires reinstalling the shortcut.
 
 The desktop launch starts the GUI supervisor, recreates the project's existing `teams-gui` tunnel under its ownership, and starts the orchestrator. Teams must already be available with CDP enabled. Start/stop controls in the dashboard still work; the tray's **Start system** starts components that were stopped there. An already-running external GUI supervisor or monitor is refused: stop it from its terminal/dashboard first (`bun run gui:stop` for the GUI supervisor). A duplicate desktop launch only reopens the current window.
 

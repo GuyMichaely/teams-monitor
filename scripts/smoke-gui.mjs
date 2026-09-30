@@ -92,7 +92,7 @@ try {
 
   const pageResponse = await fetch(`http://127.0.0.1:${port}/`);
   const page = await pageResponse.text();
-  for (const marker of ['id="pipeline"', 'id="messages"', 'id="pollStatus"', 'id="replyMode"', "Teams Monitor"]) {
+  for (const marker of ['id="pipeline"', 'id="messages"', 'id="pollStatus"', 'id="replyMode"', '<title>TM — Dashboard</title>']) {
     if (!page.includes(marker)) throw new Error(`observability UI marker missing: ${marker}`);
   }
   for (const match of page.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {

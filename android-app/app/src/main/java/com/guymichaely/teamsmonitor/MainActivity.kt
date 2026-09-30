@@ -202,7 +202,7 @@ class MainActivity : AppCompatActivity() {
                         } else {
                             val clipboard = getSystemService(ClipboardManager::class.java)
                                 ?: error("Clipboard unavailable")
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Teams Monitor diagnostics", report))
+                            clipboard.setPrimaryClip(ClipData.newPlainText("TM diagnostics", report))
                             Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
                         }
                     }.onFailure { diagnosticsExportFailed() }

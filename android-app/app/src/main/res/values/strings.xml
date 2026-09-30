@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Teams Monitor</string>
+    <string name="app_name">TM</string>
     <string name="settings_title">Settings</string>
     <string name="dashboard_title">Dashboard</string>
     <string name="menu_settings">Settings</string>

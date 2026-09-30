@@ -12,6 +12,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
+[assembly: System.Reflection.AssemblyTitle("TM")]
+[assembly: System.Reflection.AssemblyProduct("TM")]
+
 namespace TeamsMonitorDesktop {
     // A handle-owned process tree, never reconstructed from a persisted PID.
     public sealed class OwnedJob : IDisposable {
@@ -134,7 +137,7 @@ namespace TeamsMonitorDesktop {
             logs = Path.Combine(root, "data", "desktop"); Directory.CreateDirectory(logs);
             session = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff");
             Log("started pid=" + Process.GetCurrentProcess().Id + " parentPid=" + OwnedJob.ParentPid() + " inheritedJob=" + OwnedJob.InAnyJob());
-            window.Text = "Teams Monitor"; window.Size = new Size(480, 340); window.MinimumSize = new Size(480, 340);
+            window.Text = "TM"; window.Size = new Size(480, 340); window.MinimumSize = new Size(480, 340);
             window.StartPosition = FormStartPosition.CenterScreen; window.BackColor = Color.FromArgb(24, 27, 32);
             window.ForeColor = Color.WhiteSmoke; window.Font = new Font("Segoe UI", 10);
             window.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -150,8 +153,8 @@ namespace TeamsMonitorDesktop {
             menu.Items.Add("Open dashboard", null, delegate { Open(dashboard); });
             menu.Items.Add("Open logs", null, delegate { Open(Path.Combine(root, "data")); });
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Quit Teams Monitor", null, async delegate { await Quit(); });
-            tray = new NotifyIcon { Icon = window.Icon, Text = "Teams Monitor — starting", ContextMenuStrip = menu, Visible = true };
+            menu.Items.Add("Quit TM", null, async delegate { await Quit(); });
+            tray = new NotifyIcon { Icon = window.Icon, Text = "TM — starting", ContextMenuStrip = menu, Visible = true };
             tray.DoubleClick += delegate { Show(); };
             timer.Interval = 5000; timer.Tick += async delegate {
                 if (show.WaitOne(0)) Show();
@@ -233,16 +236,16 @@ namespace TeamsMonitorDesktop {
                 if (quitting) throw new OperationCanceledException();
                 await Control("start-components");
                 Log("components_started");
-                status.Text = "System started.\n\nClosing this window leaves it running.\nUse the tray icon → Quit Teams Monitor to stop it.";
-                tray.Text = "Teams Monitor — running";
-                tray.ShowBalloonTip(4000, "Teams Monitor", "Running. Close this window to hide it; use tray → Quit to stop.", ToolTipIcon.Info);
+                status.Text = "System started.\n\nClosing this window leaves it running.\nUse the tray icon → Quit TM to stop it.";
+                tray.Text = "TM — running";
+                tray.ShowBalloonTip(4000, "TM", "Running. Close this window to hide it; use tray → Quit to stop.", ToolTipIcon.Info);
             } catch (Exception error) {
                 string code = error is InvalidOperationException ? error.Message : error.GetType().Name;
                 Log("startup_failed code=" + code);
                 status.Text = code == "EXISTING_SUPERVISOR" ? "A GUI supervisor is already running.\nStop it with bun run gui:stop, then click Start system." :
                     code == "EXISTING_MONITOR" ? "An external monitor is already running.\nStop it from its terminal or dashboard before starting here." :
                     "System needs attention.\nOpen logs for details; the tray remains available.\nIf the GUI started, use Open dashboard for controls.";
-                tray.Text = "Teams Monitor — needs attention";
+                tray.Text = "TM — needs attention";
             } finally { busy = false; start.Enabled = true; stop.Enabled = supervisor != null; }
         }
         async Task StopOwnedTree() {
@@ -258,15 +261,15 @@ namespace TeamsMonitorDesktop {
         async Task Stop() {
             if (busy || quitting) return;
             busy = true; start.Enabled = false; stop.Enabled = false;
-            status.Text = "Stopping system…"; tray.Text = "Teams Monitor — stopping"; Log("system_stop_requested");
+            status.Text = "Stopping system…"; tray.Text = "TM — stopping"; Log("system_stop_requested");
             try {
                 await StopOwnedTree(); systemStopped = true;
                 status.Text = "System stopped.\nClick Start system to start it again.\n\nClosing this window hides the tray app.";
-                tray.Text = "Teams Monitor — stopped";
+                tray.Text = "TM — stopped";
             } catch (Exception error) {
                 Log("system_stop_failed type=" + error.GetType().Name);
                 status.Text = "Could not finish stopping.\nOpen logs for details, or quit using the tray icon.";
-                tray.Text = "Teams Monitor — needs attention";
+                tray.Text = "TM — needs attention";
             } finally { busy = false; start.Enabled = true; stop.Enabled = supervisor != null; }
         }
         async Task Refresh() {
@@ -275,26 +278,26 @@ namespace TeamsMonitorDesktop {
                 if (supervisor == null || supervisor.HasExited) {
                     if (systemStopped) {
                         status.Text = "System stopped.\nClick Start system to start it again.\n\nClosing this window hides the tray app.";
-                        tray.Text = "Teams Monitor — stopped"; return;
+                        tray.Text = "TM — stopped"; return;
                     }
                     if (supervisor != null && observedExitPid != supervisor.Id) {
                         observedExitPid = supervisor.Id;
                         Log("supervisor_exited pid=" + supervisor.Id + " exit=" + supervisor.ExitCode + " hex=0x" + ((uint)supervisor.ExitCode).ToString("X8"));
                     }
                     status.Text = "GUI supervisor stopped.\nClick Start system to start it.\nOpen logs for shutdown evidence.";
-                    tray.Text = "Teams Monitor — supervisor stopped"; return;
+                    tray.Text = "TM — supervisor stopped"; return;
                 }
                 var value = await Control("status");
                 status.Text = "GUI supervisor: " + value["gui"] + "\nMonitor: " + value["monitor"] + "\nTunnel: " + value["tunnel"] +
                     "\n\nClose this window to hide it. Quit using the tray icon.";
                 bool healthy = Convert.ToString(value["gui"]) == "Running" && Convert.ToString(value["monitor"]) == "Running" && Convert.ToString(value["tunnel"]) == "Running";
-                tray.Text = healthy ? "Teams Monitor — running" : "Teams Monitor — needs attention";
-            } catch { status.Text = "GUI is not responding.\nThe supervisor may be recovering it.\nOpen logs for details."; tray.Text = "Teams Monitor — GUI unavailable"; }
+                tray.Text = healthy ? "TM — running" : "TM — needs attention";
+            } catch { status.Text = "GUI is not responding.\nThe supervisor may be recovering it.\nOpen logs for details."; tray.Text = "TM — GUI unavailable"; }
             finally { busy = false; }
         }
         async Task Quit() {
             if (quitting) return; quitting = true; timer.Stop(); start.Enabled = false; stop.Enabled = false;
-            Log("quit_requested"); status.Text = "Stopping system…"; tray.Text = "Teams Monitor — stopping";
+            Log("quit_requested"); status.Text = "Stopping system…"; tray.Text = "TM — stopping";
             // Let an in-progress start/status operation finish before disposing its job.
             while (busy) await Task.Delay(100);
             await StopOwnedTree();
@@ -330,7 +333,7 @@ namespace TeamsMonitorDesktop {
             } catch (Exception error) {
                 if (args.Length > 0 && args[0] == "--self-test") { File.WriteAllText(args[1] + ".failed", error.ToString()); return 1; }
                 RecordFatal(root, error);
-                MessageBox.Show("Teams Monitor could not start (" + error.GetType().Name + ").\nCheck the installation and data/desktop logs.", "Teams Monitor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("TM could not start (" + error.GetType().Name + ").\nCheck the installation and data/desktop logs.", "TM", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
         }

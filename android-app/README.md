@@ -1,4 +1,4 @@
-# Teams Monitor — Android companion app
+# TM — Android companion app
 
 Personal-use, sideloaded Android app for the Teams monitoring system in this repo.
 
@@ -119,7 +119,7 @@ The main screen's **Test alarm** button uses the current alarm settings and beco
 
 ## GitHub build and download
 
-Open the [latest APK download](https://github.com/GuyMichaely/teams-monitor/releases/download/android-latest/teams-monitor.apk) on the phone and install it, then open **Teams Monitor**. Configure the server URL and access token shown above; saving connection settings synchronizes the phone with the PC.
+Open the [latest APK download](https://github.com/GuyMichaely/teams-monitor/releases/download/android-latest/teams-monitor.apk) on the phone and install it, then open **TM**. Configure the server URL and access token shown above; saving connection settings synchronizes the phone with the PC.
 
 The **Android APK** workflow (`.github/workflows/android-apk.yml`) runs when Android code or the workflow changes on `main`, and supports manual runs from GitHub Actions. It publishes `teams-monitor.apk` to the stable `android-latest` release and also uploads a workflow artifact. Versions use code `100000 + GITHUB_RUN_NUMBER` and name `1.0.<run number>`.
 

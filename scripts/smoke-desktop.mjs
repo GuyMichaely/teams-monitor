@@ -48,7 +48,7 @@ assert.deepEqual(stoppedCalls, ['/api/supervisor/status', '/api/stop', '/api/tun
 
 if (process.platform === 'win32') {
   const report = join(DATA_DIR, 'desktop-self-test.txt');
-  const child = spawn(process.env.DESKTOP_TEST_EXE || join(ROOT, 'data', 'desktop', 'TeamsMonitor.exe'), ['--self-test', report], { windowsHide: true, stdio: 'ignore' });
+  const child = spawn(process.env.DESKTOP_TEST_EXE || join(ROOT, 'data', 'desktop', 'TM.exe'), ['--self-test', report], { windowsHide: true, stdio: 'ignore' });
   const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
   if (exit !== 0) console.error(await readFile(report + '.failed', 'utf8').catch(() => 'No self-test error report'));
   assert.equal(exit, 0);

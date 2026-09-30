@@ -28,8 +28,8 @@ object DiagnosticsExport {
         return Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "Teams Monitor diagnostics")
-            clipData = ClipData.newUri(context.contentResolver, "Teams Monitor diagnostics", uri)
+            putExtra(Intent.EXTRA_SUBJECT, "TM diagnostics")
+            clipData = ClipData.newUri(context.contentResolver, "TM diagnostics", uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }

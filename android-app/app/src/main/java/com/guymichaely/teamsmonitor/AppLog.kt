@@ -86,7 +86,7 @@ object AppLog {
         val now = Instant.now()
         val selected = filter.select(read(app), now)
         val header = buildString {
-            appendLine("Teams Monitor diagnostics")
+            appendLine("TM diagnostics")
             appendLine("generated=$now")
             appendLine("logWindow=${if (filter.rangeStartMs != null) "custom range" else filter.windowMs?.let { "${it / 60_000} minutes" } ?: "all retained"}")
             appendLine("selectionTimeZone=${filter.localZoneId}")

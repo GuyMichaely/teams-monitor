@@ -92,10 +92,10 @@ object HealthIncidentManager {
         }
         AlertNotifier.show(
             context,
-            chat = "Teams Monitor",
+            chat = "TM",
             author = "Watchdog",
             text = when (incident) {
-                INCIDENT_PUBLIC_TUNNEL -> "The public Teams Monitor tunnel is unreachable"
+                INCIDENT_PUBLIC_TUNNEL -> "The public TM tunnel is unreachable"
                 else -> "PC/orchestrator heartbeat is missing"
             }
         )
