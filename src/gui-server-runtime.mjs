@@ -63,6 +63,7 @@ async function runtimeConfig() {
   const transport = cfg.alerts?.transport || "websocket";
   return {
     pollIntervalMs: cfg.pollIntervalMs || 15000,
+    desktop: { keepAwake: cfg.desktop?.keepAwake !== false },
     alerts: {
       transport,
       fallbackTransport: configuredFallbackTransport(cfg.alerts, transport),
@@ -154,6 +155,16 @@ async function savePollInterval(req) {
   cfg.pollIntervalMs = pollIntervalMs;
   await saveConfig(cfg);
   return { pollIntervalMs };
+}
+
+async function saveKeepAwake(req) {
+  const body = await readJsonBody(req);
+  if (typeof body?.enabled !== 'boolean')
+    throw Object.assign(new Error('enabled must be a boolean'), { httpCode: 400 });
+  const cfg = await loadConfig();
+  cfg.desktop = { ...cfg.desktop, keepAwake: body.enabled };
+  await saveConfig(cfg);
+  return { enabled: body.enabled };
 }
 
 function tunnelProcesses() {
@@ -266,7 +277,7 @@ export function startGui(config) {
 
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
-    if (url.pathname.startsWith("/api/tunnel/") || url.pathname === "/api/runtime/config" || url.pathname === "/api/config/poll-interval" || url.pathname === "/api/config/alerts" || url.pathname === "/api/fcm/register") {
+    if (url.pathname.startsWith("/api/tunnel/") || url.pathname === "/api/runtime/config" || url.pathname === "/api/config/poll-interval" || url.pathname === "/api/config/keep-awake" || url.pathname === "/api/config/alerts" || url.pathname === "/api/fcm/register") {
       try {
         if (token && !authOk(req.headers.authorization, token)) {
           return sendJson(res, 401, { ok: false, error: "unauthorized" });
@@ -276,6 +287,9 @@ export function startGui(config) {
         }
         if (req.method === "PUT" && url.pathname === "/api/config/poll-interval") {
           return sendJson(res, 200, { ok: true, ...(await savePollInterval(req)) });
+        }
+        if (req.method === "PUT" && url.pathname === "/api/config/keep-awake") {
+          return sendJson(res, 200, { ok: true, ...(await saveKeepAwake(req)) });
         }
         if (req.method === "PUT" && url.pathname === "/api/config/alerts") {
           return sendJson(res, 200, await saveAlertConfig(req));

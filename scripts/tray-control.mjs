@@ -19,6 +19,7 @@ export async function trayControl(action, { config, request = fetch, ownerPid } 
     return response.json();
   };
   if (action === 'describe') return { url, port, controlPort: port + 1 };
+  if (action === 'awake-policy') return { enabled: config.desktop?.keepAwake !== false };
   if (action === 'prepare') {
     // Refuse to take over an existing GUI. Only a live authenticated supervisor can stop itself.
     let access;

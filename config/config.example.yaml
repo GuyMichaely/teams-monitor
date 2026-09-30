@@ -1,5 +1,7 @@
 # Copied to the gitignored config/config.yaml on first run. Keep secrets out of this file.
 pollIntervalMs: 15000
+desktop:
+  keepAwake: true
 whitelist: 
   autoSend: 
     []

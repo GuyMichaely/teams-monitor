@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { startGui } from "../src/gui-server.mjs";
 import { createBrain } from "../src/brain.mjs";
 import { CONFIG_FILE } from "../src/local-paths.mjs";
+import { loadConfig, saveConfig } from '../src/context.mjs';
+import assert from 'node:assert/strict';
 
 const port = 18090;
 process.env.GUI_TOKEN = "runtime-smoke-token";
@@ -92,13 +94,34 @@ try {
 
   const pageResponse = await fetch(`http://127.0.0.1:${port}/`);
   const page = await pageResponse.text();
-  for (const marker of ['id="pipeline"', 'id="messages"', 'id="pollStatus"', 'id="replyMode"', '<title>TM — Dashboard</title>']) {
+  for (const marker of ['id="pipeline"', 'id="messages"', 'id="pollStatus"', 'id="replyMode"', 'id="keepAwake"', '<title>TM — Dashboard</title>']) {
     if (!page.includes(marker)) throw new Error(`observability UI marker missing: ${marker}`);
   }
   for (const match of page.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {
     // Compile browser scripts without executing them; catches malformed injected JS.
     new Function(match[1]);
   }
+
+  const awakeUrl = `http://127.0.0.1:${port}/api/config/keep-awake`;
+  const awakeHeaders = { Authorization: 'Bearer runtime-smoke-token', 'Content-Type': 'application/json' };
+  assert.equal((await fetch(awakeUrl, { method: 'PUT', body: '{"enabled":false}' })).status, 401);
+  for (const invalid of [{}, { enabled: 'false' }, { enabled: null }, { enabled: 1 }, null]) {
+    const before = await readFile(CONFIG_FILE, 'utf8');
+    assert.equal((await fetch(awakeUrl, { method: 'PUT', headers: awakeHeaders, body: JSON.stringify(invalid) })).status, 400);
+    assert.equal(await readFile(CONFIG_FILE, 'utf8'), before);
+  }
+  for (const enabled of [false, true]) {
+    const before = await loadConfig();
+    const response = await fetch(awakeUrl, { method: 'PUT', headers: awakeHeaders, body: JSON.stringify({ enabled }) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).enabled, enabled);
+    assert.deepEqual(await loadConfig(), { ...before, desktop: { ...before.desktop, keepAwake: enabled } });
+    const runtime = await fetch(`http://127.0.0.1:${port}/api/runtime/config`, { headers: awakeHeaders });
+    assert.equal((await runtime.json()).desktop.keepAwake, enabled);
+  }
+  const invalidDesktop = await loadConfig(), beforeInvalidDesktop = await readFile(CONFIG_FILE, 'utf8');
+  await assert.rejects(saveConfig({ ...invalidDesktop, desktop: { keepAwake: 'false' } }), /must be a boolean/);
+  assert.equal(await readFile(CONFIG_FILE, 'utf8'), beforeInvalidDesktop);
 
   const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/api/diagnostics?limit=5`, {
     headers: { Authorization: "Bearer runtime-smoke-token" },

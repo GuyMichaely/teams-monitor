@@ -10,6 +10,7 @@ function dashboardClient() {
   let token = localStorage.guiToken || "";
   let overview, runtime, health, diagnostics, poll, tunnel;
   let presenceChanging = false, presenceRevision = 0;
+  let keepAwakeSaving = false;
   let activityClearing = false, clearedThrough = null, activityGeneration = 0;
   let items = [], groups = [], selected = null, lastSuccess = null, paused = false, refreshing = false, slowAt = 0;
   let deliveryReady = false, policyReady = false, profileReady = false, rulesReady = false;
@@ -58,6 +59,10 @@ function dashboardClient() {
     finally { button.disabled = false; renderStatus(); }
   }
   function renderStatus() {
+    if (runtime && !keepAwakeSaving) {
+      $('keepAwake').checked = runtime.desktop?.keepAwake !== false;
+      $('keepAwake').disabled = false;
+    }
     const orch = overview?.orchestrator;
     if (orch) {
       status('orchStatus', orch.stale ? 'Not responding' : orch.running ? 'Running' : 'Stopped', orch.stale ? 'bad' : orch.running ? 'good' : 'neutral');
@@ -263,6 +268,17 @@ function dashboardClient() {
     };
   }
   $('pollInterval').oninput = () => { pollDirty = true; setText('pollSaveState', 'Unsaved'); };
+  $('keepAwake').onchange = async () => {
+    keepAwakeSaving = true; $('keepAwake').disabled = true;
+    setText('keepAwakeSaveState', 'Saving…');
+    try {
+      const value = await api('/api/config/keep-awake', 'PUT', { enabled: $('keepAwake').checked });
+      runtime.desktop = { ...runtime.desktop, keepAwake: value.enabled };
+      setText('keepAwakeSaveState', 'Saved · applies on next tray refresh');
+    } catch (e) {
+      setText('keepAwakeSaveState', 'Save failed'); notify(e.message, true);
+    } finally { keepAwakeSaving = false; renderStatus(); }
+  };
   $('presenceSelect').onchange = async () => {
     const version = ++presenceRevision;
     const requested = $('presenceSelect').value;
@@ -339,6 +355,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Runtime controls</h2></div>
 <div class="runtime-row"><div class="runtime-name">Teams orchestrator</div><span id="orchStatus" class="badge neutral">Checking</span></div><p id="orchDetail" class="runtime-detail">Checking heartbeat…</p><div class="button-row"><button id="startOrch" class="primary small" disabled>▶ Start monitor</button><button id="stopOrch" class="small danger" disabled>Stop</button></div>
 <form id="pollForm"><label for="pollInterval">Time between Teams polls</label><div class="poll-setting"><input id="pollInterval" type="number" min="1" max="300" step="1" required aria-label="Poll interval in seconds"><span>seconds</span><button id="savePoll" class="small">Save</button><span id="pollSaveState" class="save-state"></span></div></form>
+<label class="check"><input id="keepAwake" type="checkbox" disabled>Keep screen on</label><p class="hint">Keeps the display and laptop awake while the TM tray system runs, even with its window closed. Uses more battery; does not override locks or sign-in expiry.</p><span id="keepAwakeSaveState" class="save-state" aria-live="polite"></span>
 <hr class="divider"><div class="runtime-name">Teams availability</div><label id="presenceLabel" for="presenceSelect" aria-live="polite">Set status</label><select id="presenceSelect"><option value="available">Available</option><option value="away">Appear away</option><option value="offline">Appear offline</option><option value="busy">Busy</option><option value="dnd">Do not disturb</option><option value="brb">Be right back</option><option value="" disabled>Unknown / unavailable</option></select>
 <hr class="divider"><div class="runtime-row"><div class="runtime-name">Cloudflare tunnel</div><span id="tunnelStatus" class="badge neutral">Checking</span></div><p id="tunnelDetail" class="runtime-detail">Remote access to this laptop</p><div class="button-row"><button id="startTunnel" class="small" disabled>Start tunnel</button><button id="stopTunnel" class="small danger" disabled>Stop</button></div></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Phone delivery</h2></div><form id="deliveryForm"><label for="deliveryMethod">Preferred delivery method</label><select id="deliveryMethod"><option value="fcm">FCM</option><option value="websocket">Websocket</option></select><label class="check"><input id="fallbackEnabled" type="checkbox">Use the other method if delivery fails</label><div class="form-footer"><span id="deliverySaveState" class="save-state"></span><button id="saveDelivery" class="small">Save delivery</button></div></form><p id="deliveryHint" class="hint">Checking phone delivery…</p><p id="activeTransport" class="hint"></p><details><summary>Setup & recovery details</summary><div id="setupDetails"></div></details></div></section>

@@ -41,6 +41,8 @@ For an existing JSON installation, stop the GUI/monitor, run `bun scripts/migrat
 
 On Windows, use the **TM** desktop shortcut. It opens a small status window and adds a tray icon. Closing the window hides it; double-clicking the tray icon (or desktop shortcut again) reopens it. **Stop system** stops the monitor, tunnel, GUI and supervisor while keeping the tray app open; **Start system** starts them again. Right-click the tray icon and choose **Quit TM** to stop the system and exit the tray app.
 
+The dashboard's Runtime controls include **Keep screen on**, enabled by default and persisted as `desktop.keepAwake` in local YAML config. Changes apply on the tray's next refresh (normally every five seconds), without restarting. While enabled and the desktop-owned system is running (including hidden to the tray), TM requests that Windows keep both the display and system awake. The native status window shows whether the request is active or failed; transitions are recorded in `data/desktop/tray.log`. Stop system, Quit, or an observed supervisor exit releases the request; Start system reacquires it if enabled. No power-plan or security settings are changed, and Windows releases the request if the tray process exits. This uses more battery and does not prevent manual sleep/lid-close sleep, screen savers, enforced session locks, or authentication/session expiry. Terminal-only launches do not enable keep-awake.
+
 Install/rebuild the shortcut and native tray app after pulling changes (quit the current tray app before rebuilding):
 
 ```powershell

@@ -21,14 +21,23 @@ async function ensureLocalFile(path, examplePath, label) {
   await copyFile(examplePath, path);
 }
 
+function validateDesktop(config) {
+  if (config.desktop !== undefined && (!config.desktop || typeof config.desktop !== 'object' || Array.isArray(config.desktop)))
+    throw new Error('desktop must be a mapping');
+  if (config.desktop?.keepAwake !== undefined && typeof config.desktop.keepAwake !== 'boolean')
+    throw new Error('desktop.keepAwake must be a boolean');
+}
+
 export async function loadConfig() {
   await ensureLocalFile(CONFIG_FILE, CONFIG_EXAMPLE_FILE, "config/config.yaml");
   const config = parseConfigYaml(await readFile(CONFIG_FILE, "utf8"));
+  validateDesktop(config);
   validateAutomation(config.automation);
   return config;
 }
 
 export async function saveConfig(config) {
+  validateDesktop(config);
   validateAutomation(config.automation);
   const temporary = CONFIG_FILE + '.' + randomUUID() + '.tmp';
   await writeFile(temporary, configYaml(config));

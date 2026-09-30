@@ -9,6 +9,9 @@ import { trayControl } from './tray-control.mjs';
 const config = { gui: { port: 18240, authTokenEnv: 'DESKTOP_TEST_TOKEN' } };
 process.env.DESKTOP_TEST_TOKEN = 'fixture';
 assert.deepEqual(await trayControl('describe', { config }), { url: 'http://127.0.0.1:18240', port: 18240, controlPort: 18241 });
+assert.deepEqual(await trayControl('awake-policy', { config }), { enabled: true });
+assert.deepEqual(await trayControl('awake-policy', { config: { ...config, desktop: { keepAwake: false } }, request: () => { throw Error('Must read local config only'); } }), { enabled: false });
+assert.deepEqual(await trayControl('awake-policy', { config: { ...config, desktop: { keepAwake: true } } }), { enabled: true });
 const calls = [];
 const request = async (url, options) => {
   assert.equal(options.headers.Authorization, 'Bearer fixture');
