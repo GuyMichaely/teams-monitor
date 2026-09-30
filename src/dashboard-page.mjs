@@ -11,6 +11,7 @@ function dashboardClient() {
   let overview, runtime, health, diagnostics, poll, tunnel;
   let presenceChanging = false, presenceRevision = 0;
   let keepAwakeSaving = false;
+  let scheduleBusy = false, schedulesRefreshing = false, schedulesFingerprint = '', scheduleRequestId = null;
   let activityClearing = false, clearedThrough = null, activityGeneration = 0;
   let items = [], groups = [], selected = null, lastSuccess = null, paused = false, refreshing = false, slowAt = 0;
   let deliveryReady = false, policyReady = false, profileReady = false, rulesReady = false;
@@ -236,6 +237,69 @@ function dashboardClient() {
   $('pauseUpdates').onclick = () => { paused = !paused; updateLiveLabel(); if (!paused) refresh(true); };
   $('refreshButton').onclick = () => { refresh(true); refreshSupervisor(); };
   function localDateTime(at) { const d = new Date(at); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, -1); }
+  const scheduleNames = { available: 'Available', away: 'Appear away', offline: 'Appear offline', busy: 'Busy', dnd: 'Do not disturb', brb: 'Be right back' };
+  function renderSchedules(jobs) {
+    const fingerprint = JSON.stringify(jobs);
+    if (schedulesFingerprint === fingerprint) return;
+    schedulesFingerprint = fingerprint;
+    const row = job => {
+      const tone = job.state === 'completed' ? 'good' : ['failed','uncertain','invalid'].includes(job.state) ? 'bad' : ['missed','blocked','superseded'].includes(job.state) ? 'warn' : 'neutral';
+      return `<article class="schedule-job"><div class="inline-heading"><strong>${escape(job.kind === 'message' ? 'Message · ' + job.chat : job.kind === 'status' ? 'Status · ' + scheduleNames[job.presence] : 'Invalid schedule')}</strong>${badge(job.state, tone)}</div><time>${escape(time(job.dueAt))}</time>${job.kind === 'message' ? `<p class="scheduled-text">${escape(job.text)}</p>` : ''}<p class="hint">${escape(job.detail)}</p>${job.state === 'pending' ? `<button class="small danger" data-cancel-schedule="${escape(job.id)}">Cancel</button>` : ''}</article>`;
+    };
+    $('schedulePending').innerHTML = jobs.filter(j => ['pending','running'].includes(j.state)).map(row).join('') || '<p class="hint">No pending schedules.</p>';
+    $('scheduleHistory').innerHTML = jobs.filter(j => !['pending','running'].includes(j.state)).map(row).join('') || '<p class="hint">No completed schedules.</p>';
+  }
+  async function refreshSchedules() {
+    if (schedulesRefreshing || scheduleBusy || $('login').open) return;
+    schedulesRefreshing = true;
+    try {
+      const data = await api('/api/schedules'); renderSchedules(data.jobs);
+      setText('schedulerState', data.orchestrator?.running && !data.orchestrator?.stale ? 'Orchestrator running' : 'Orchestrator stopped or not responding · schedules cannot run');
+      $('scheduleSubmit').disabled = false; setText('scheduleLoadState', '');
+    } catch (e) { setText('scheduleLoadState', e.message); }
+    finally { schedulesRefreshing = false; }
+  }
+  function scheduleKindChanged() {
+    const message = $('scheduleKind').value === 'message';
+    $('scheduleMessageFields').hidden = !message;
+    $('scheduleChat').required = message; $('scheduleText').required = message;
+    $('scheduleStatusField').hidden = message;
+  }
+  $('scheduleKind').onchange = scheduleKindChanged;
+  $('scheduleForm').oninput = () => { scheduleRequestId = null; };
+  $('scheduleWhen').value = localDateTime(Date.now() + 10 * 60000).slice(0, 16);
+  setText('scheduleTimezone', 'Time zone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone);
+  scheduleKindChanged();
+  $('scheduleForm').onsubmit = async e => {
+    e.preventDefault(); if (scheduleBusy) return;
+    const raw = $('scheduleWhen').value, due = new Date(raw);
+    if (!Number.isFinite(due.getTime()) || due.getTime() <= Date.now() || localDateTime(due).slice(0,16) !== raw) {
+      notify('Choose a valid future local date/time. Times skipped by daylight saving are not accepted.', true); return;
+    }
+    scheduleRequestId ||= crypto.randomUUID();
+    const body = { kind: $('scheduleKind').value, dueAt: due.toISOString(), requestId: scheduleRequestId,
+      chat: $('scheduleChat').value, text: $('scheduleText').value, presence: $('schedulePresence').value };
+    scheduleBusy = true; $('scheduleFields').disabled = true; $('scheduleSubmit').disabled = true;
+    try {
+      await api('/api/schedules', 'POST', body); scheduleRequestId = null;
+      if (body.kind === 'message') $('scheduleText').value = ''; notify('Schedule saved');
+    } catch (e) { notify(e.message + ' Your draft was kept.', true); }
+    finally { scheduleBusy = false; $('scheduleFields').disabled = false; await refreshSchedules(); }
+  };
+  $('schedulePending').onclick = async e => {
+    const button = e.target.closest('[data-cancel-schedule]');
+    if (!button || scheduleBusy) return;
+    if (button.dataset.confirmed !== 'true') {
+      button.dataset.confirmed = 'true'; button.textContent = 'Confirm cancel';
+      setTimeout(() => { button.dataset.confirmed = ''; button.textContent = 'Cancel'; }, 10000);
+      return;
+    }
+    button.disabled = true; scheduleBusy = true;
+    try { await api('/api/schedules/' + button.dataset.cancelSchedule + '/cancel', 'POST'); notify('Schedule cancelled'); }
+    catch (e) { notify(e.message, true); }
+    finally { scheduleBusy = false; button.disabled = false; await refreshSchedules(); }
+  };
+  $('refreshSchedules').onclick = refreshSchedules;
   function syncDateFilter() { $('hideOlder').checked = !!clearedThrough; if (clearedThrough) $('activitySince').value = localDateTime(clearedThrough); }
   async function changeActivityView(through) {
     if (activityClearing) return;
@@ -326,6 +390,7 @@ function dashboardClient() {
   refreshSupervisor();
   // Supervisor safety status stays live even while message/log tailing is paused.
   setInterval(refreshSupervisor, 5000);
+  refreshSchedules(); setInterval(refreshSchedules, 5000);
   setInterval(() => {
     if (supervisorCheckedAt && Date.now() - supervisorCheckedAt > 15000) {
       status('supervisorHealth', 'Status stale', 'warn');
@@ -347,6 +412,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 .activity-clear{padding:12px 20px 0}.activity-clear .button-row{flex-wrap:wrap}header,.header-right{flex-wrap:wrap}.header-right{justify-content:flex-end;padding:8px 0}@media(max-width:760px){.header-right{width:100%;justify-content:flex-start}.header-right .sync-time{width:100%}.activity-clear{padding:12px 12px 0}}
 .header-right .live-toggle.good{background:#294e40;color:#c5e8d0;border-color:#568169}.header-right .live-toggle.warn{background:#493a24;color:#edc185;border-color:#806842}.live-toggle:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;background:currentColor}.live-toggle.neutral:before{background:#8e9ca4}.message{cursor:text;user-select:text;-webkit-user-select:text}.message:focus-visible{outline:2px solid var(--green);outline-offset:-2px}.message-top strong{font-size:15px;white-space:normal}.message-author{font-size:13px;font-weight:600;color:#b9c6cf;margin-top:4px}.message-copy{display:block;overflow:visible;white-space:pre-wrap}.action-icons{display:flex;gap:7px;flex-shrink:0}.action-icon{font-size:18px}.message.message-error{background:#352128}.message.message-error:hover{background:#422932}.message.message-error.selected{background:#482b34;box-shadow:inset 3px 0 var(--red)}.message-meta time{margin:0}.date-filter{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.date-filter label{margin:0}.date-filter input[type=datetime-local]{width:auto;max-width:100%;font-size:11px}.date-filter button{margin-left:auto}
 .settings-fields{border:0;padding:0;margin:0;min-width:0}.settings-fields .check{margin:12px 0}.settings-fields:disabled{opacity:.6}
+.schedule-layout{display:grid;grid-template-columns:minmax(220px,.85fr) minmax(280px,1.15fr);gap:24px}.schedule-job{padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:9px;background:#151e23}.schedule-job strong{font-size:12px;overflow-wrap:anywhere}.schedule-job time{font-size:12px}.scheduled-text{white-space:pre-wrap;font-size:12px;margin-top:8px}.schedule-queue{max-height:430px;overflow:auto}.schedule-layout details{margin:0}.schedule-layout summary{font-size:12px}@media(max-width:900px){.schedule-layout{grid-template-columns:1fr}}
 </style></head><body>
 <header><div class="brand"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>TM <span class="workspace-label">/ LOCAL CONTROL</span></div><div class="header-right"><span id="lastRefresh" class="sync-time">Waiting for server</span><button id="pauseUpdates" class="live-toggle warn" aria-pressed="true" title="Connecting · Pause live log tailing">Pause live log tailing</button><button id="refreshButton" title="Manually sync tail" aria-label="Manually sync tail">↻</button><button id="accountButton">Access token</button></div></header>
 <main class="shell">
@@ -371,6 +437,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <p class="hint">Conditions: type direct_message, mention, or reaction; or field text/author/chat with match exact/contains and value. Text also supports contains_number. Combine conditions with all or any arrays. Actions: alert_phone, reply (requires text), or ignore (no action for that rule). Reaction changes are synthetic messages, not new direct messages or mentions.</p>
 <p class="hint">The LLM sees rule definitions, tested values, results, proposed actions and permissions. On review failure or timeoutMs expiry, original rule actions run unchanged; no LLM additions run. Identical actions are attempted once. Teams replies always require reply permission. Saves apply next poll.</p></div></section>
 </aside><section class="main-column" aria-label="Live monitoring">
+<section class="card" aria-labelledby="scheduleHeading"><div class="card-body"><div class="section-title"><h2 id="scheduleHeading">Scheduled Teams actions</h2><button id="refreshSchedules" class="small" type="button">Refresh schedules</button></div><p id="schedulerState" class="hint">Checking orchestrator…</p><div class="schedule-layout"><form id="scheduleForm"><fieldset id="scheduleFields" class="settings-fields"><label for="scheduleKind">Action</label><select id="scheduleKind"><option value="message">Send a message</option><option value="status">Change availability</option></select><div id="scheduleMessageFields"><label for="scheduleChat">Exact Teams chat name</label><input id="scheduleChat" maxlength="300" placeholder="Person or group chat name"><label for="scheduleText">Message</label><textarea id="scheduleText" maxlength="8000" rows="3"></textarea><p class="hint">Uses Teams reply permissions at send time. An empty whitelist blocks all sends. Duplicate chat names or existing drafts are not sent.</p></div><div id="scheduleStatusField" hidden><label for="schedulePresence">Availability</label><select id="schedulePresence"><option value="available">Available</option><option value="away">Appear away</option><option value="offline">Appear offline</option><option value="busy">Busy</option><option value="dnd">Do not disturb</option><option value="brb">Be right back</option></select></div><label for="scheduleWhen">Date and time</label><input id="scheduleWhen" type="datetime-local" required><p id="scheduleTimezone" class="hint"></p><button id="scheduleSubmit" type="submit" class="primary small" disabled>Schedule action</button></fieldset></form><div><div id="schedulePending" class="schedule-queue">Loading schedules…</div><details><summary>Recent results (latest 100)</summary><div id="scheduleHistory" class="schedule-queue"></div></details><p id="scheduleLoadState" class="error-text" role="status"></p></div></div><p class="hint">One-time schedules, saved locally. The orchestrator must be running; actions wait for current handling to finish. Due while stopped or more than five minutes late: missed, not replayed. Interrupted sends: outcome unconfirmed, never automatically retried. Schedule checks continue while live log tailing is paused.</p></div></section>
 <section class="card poll-card" aria-label="Latest orchestrator poll"><div class="poll-heading"><div><div class="poll-title"><h2 id="pollStatus">No poll recorded yet</h2></div><p id="pollDetail" class="poll-meta">Waiting for the orchestrator…</p></div><span id="pollBadge" class="badge neutral">Checking</span></div><div class="poll-stats"><div class="stat"><b id="pollChats">—</b><span>Unread chats</span></div><div class="stat"><b id="pollHandled">—</b><span>Messages handled</span></div><div class="stat"><b id="pollDuplicates">—</b><span>Duplicates skipped</span></div><div class="stat"><b id="pollErrors">—</b><span>Errors</span></div></div><div class="poll-foot"><span id="pollExtra">Counts will appear after the first poll.</span><span id="pollNext">Monitor stopped</span></div></section>
 <section class="card"><div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="activity-clear"><div class="date-filter"><label class="check"><input id="hideOlder" type="checkbox">Hide messages at or before</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Hide messages at or before date and time"><button id="clearActivity" class="small" disabled>Hide through selected message</button></div><p id="activityClearState" class="hint"></p></div><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div id="messages" class="message-list"></div></div><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div><p class="log-note">Recent retained activity, newest first. Duplicate reads are counted in the poll above.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>
 </section></div></main><div id="toast" class="toast hidden" role="status"></div><dialog id="login"><form id="loginForm"><div class="eyebrow">TM</div><h2>Dashboard access</h2><p>Enter the access token from your local configuration. It is saved in this browser.</p><label for="tokenInput">Access token</label><input id="tokenInput" type="password" autocomplete="current-password" required><button class="primary">Connect</button></form></dialog>

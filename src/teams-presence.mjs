@@ -76,6 +76,9 @@ async function findSession(port) {
   return null;
 }
 
+// Shared bounded discovery; scheduled sends must not restart Teams or choose an ambiguous window.
+export async function getTeamsProfileSession(port = 9222) { return findSession(port); }
+
 async function readPresence(session) {
   const raw = await evalOnPage(session, `document.querySelector('[data-tid="${BADGE}"]')?.getAttribute('aria-label') || null`);
   let value = null;
@@ -114,10 +117,10 @@ export async function setPresenceOnSession(session, requestedStatus, isCurrent =
     // A successful click is not proof of a successful presence update.
     for (let i = 0; i < 20; i++) {
       await sleep(150);
-      if (!isCurrent()) return { ok: false, superseded: true, requested: key };
+      if (!isCurrent()) return { ok: false, superseded: true, requested: key, attempted: true };
       const current = await readPresence(session);
-      if (!isCurrent()) return { ok: false, superseded: true, requested: key, value: current.value, status: current.status };
-      if (current.value === key) return { ...current, ok: true, verified: true, requested: key, previous: before.raw };
+      if (!isCurrent()) return { ok: false, superseded: true, requested: key, attempted: true, value: current.value, status: current.status };
+      if (current.value === key) return { ...current, ok: true, verified: true, attempted: true, requested: key, previous: before.raw };
     }
     throw Object.assign(new Error(`Teams did not confirm ${STATUSES[key][0]}; read back the current status before retrying`), { httpCode: 502 });
   } finally {
@@ -138,11 +141,12 @@ const queues = new Map();
 let requestId = 0;
 const supersededResult = (request) => ({ ok: false, superseded: true, requested: request.status });
 
-export async function setTeamsPresence(status, port = 9222) {
+export async function setTeamsPresence(status, port = 9222, { expiresAt = Infinity } = {}) {
   const key = normalizeStatus(status); // Validate before connecting or touching Teams.
+  if (Date.now() > expiresAt) return { ok: false, expired: true, requested: key };
   const queue = queues.get(port) ?? { latest: null, running: false };
   queues.set(port, queue);
-  const request = { id: ++requestId, status: key };
+  const request = { id: ++requestId, status: key, expiresAt };
   let resolve, reject;
   const result = new Promise((res, rej) => { resolve = res; reject = rej; });
   request.resolve = resolve; request.reject = reject;
@@ -159,11 +163,12 @@ async function drainPresenceQueue(port, queue) {
       const request = queue.latest;
       let session;
       try {
+        if (Date.now() > request.expiresAt) { request.resolve({ ok: false, expired: true, requested: request.status }); if (queue.latest === request) queue.latest = null; continue; }
         session = await findSession(port);
         if (!session) throw Object.assign(new Error("Teams profile is not reachable over CDP; open Teams with the debugging port enabled"), { httpCode: 503 });
         if (queue.latest !== request) { request.resolve(supersededResult(request)); continue; }
-        const response = await setPresenceOnSession(session, request.status, () => queue.latest === request);
-        request.resolve(response);
+        const response = await setPresenceOnSession(session, request.status, () => queue.latest === request && Date.now() <= request.expiresAt);
+        request.resolve(Date.now() > request.expiresAt ? { ok: false, expired: true, attempted: !!response.attempted, requested: request.status } : response);
       } catch (error) {
         if (queue.latest !== request) request.resolve(supersededResult(request));
         else request.reject(error);

@@ -105,6 +105,9 @@ try {
   assert.deepEqual(mock.state.clicks.filter(x => x.startsWith(prefix)), [prefix + "busy", prefix + "do_not_disturb"], "Serialized UI work skips stale pending selections");
   const recovered = await setTeamsPresence("away", server.port);
   assert.equal(recovered.value, "away", "A failed prior operation must not wedge the queue");
+  const beforeExpired = mock.state.clicks.length;
+  assert.equal((await setTeamsPresence('offline', server.port, { expiresAt: Date.now() - 1 })).expired, true);
+  assert.equal(mock.state.clicks.length, beforeExpired, 'Expired schedule must not touch Teams');
   mode = "offline";
   assert.equal((await getTeamsPresence(server.port)).connected, false);
   await assert.rejects(setTeamsPresence("busy", server.port), { httpCode: 503 });

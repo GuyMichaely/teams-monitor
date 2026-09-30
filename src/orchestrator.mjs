@@ -25,6 +25,8 @@ import { createPoll } from "./poll-status.mjs";
 import { startDispatcher } from "./integrations/tfs-server.mjs";
 import { loadConfig, loadUserProfile } from "./context.mjs";
 import { loadState, saveState, markFirstRead, logActivity, DATA_DIR } from "./state.mjs";
+import { createScheduleStore, runScheduledAction } from './scheduled-actions.mjs';
+import { sendScheduledMessage, setScheduledPresence } from './scheduled-teams.mjs';
 
 const STOP_FILE = join(DATA_DIR, "STOP");
 const HEARTBEAT_FILE = join(DATA_DIR, "heartbeat.json");
@@ -96,6 +98,18 @@ export async function run() {
   if (existsSync(STOP_FILE)) rmSync(STOP_FILE);
 
   let running = true;
+  let schedules;
+  const executeSchedule = async () => {
+    try {
+      if (!schedules) {
+        const candidate = createScheduleStore();
+        try { candidate.recover(activatedAt); schedules = candidate; }
+        catch (error) { candidate.close(); throw error; }
+      }
+      await runScheduledAction({ store: schedules, loadConfig, sendMessage: sendScheduledMessage, setPresence: setScheduledPresence,
+        stopped: () => !running || existsSync(STOP_FILE), audit: logActivity });
+    } catch { console.error('Scheduler storage/execution unavailable; no automatic retry of claimed jobs.'); }
+  };
   const stop = (why) => {
     if (!running) return;
     running = false;
@@ -132,17 +146,25 @@ export async function run() {
       );
     } catch { /* try again next tick */ }
     try {
+      await executeSchedule();
       await tick({ config, brain, userProfile, whitelist, echoLoop, activatedAt });
     } catch (e) {
       console.error("tick error:", e.message);
     }
     // Interruptible wait.
-    for (let waited = 0; running && waited < config.pollIntervalMs; waited += 250) {
+    const nextPollAt = Date.now() + config.pollIntervalMs;
+    let nextScheduleCheckAt = 0;
+    while (running && Date.now() < nextPollAt) {
       if (existsSync(STOP_FILE)) break;
+      if (Date.now() >= nextScheduleCheckAt) {
+        nextScheduleCheckAt = Date.now() + 1000;
+        await executeSchedule();
+      }
       await sleep(250);
     }
   }
   if (dispatcher) await dispatcher.close().catch(() => {});
+  schedules?.close();
   rmSync(HEARTBEAT_FILE, { force: true });
   console.error("✔  Orchestrator halted.");
 }

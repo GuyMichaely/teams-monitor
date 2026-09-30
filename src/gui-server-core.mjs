@@ -95,7 +95,7 @@ async function readHeartbeat() {
 }
 
 /** Liveness from the heartbeat the orchestrator writes every tick. */
-async function orchestratorStatus(pollIntervalMs) {
+export async function orchestratorStatus(pollIntervalMs) {
   const hb = await readHeartbeat();
   if (!hb) return { running: false, pid: null, lastTickAt: null, ageMs: null };
   const ageMs = Date.now() - Date.parse(hb.at || 0);

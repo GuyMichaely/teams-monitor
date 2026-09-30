@@ -60,6 +60,16 @@ The native tray app owns a Windows job containing the supervisor and its descend
 
 Validate with `bun scripts/smoke-desktop.mjs` after building the app. It uses isolated state and verifies close-to-tray, explicit quit, suspended job assignment, detached descendant ownership/cleanup, duplicate instance locking, local authentication and ownership checks. GUI supervisor verification is described below.
 
+### Scheduled Teams actions
+
+The dashboard's **Scheduled Teams actions** panel schedules one-time messages or availability changes. Choose the action, exact chat name/message or status, and a future date/time (within the next year). Times use the browser's displayed timezone and are stored as UTC. Pending items can be cancelled; recent results show completion, blocked permissions, missed times and unconfirmed outcomes. The queue refreshes even when live log tailing is paused.
+
+The orchestrator must be running. It executes schedules between normal chat handling, checking about once a second during poll waits. The laptop and Teams must be available; a schedule is not a Windows wake timer or autostart task. Jobs due before orchestrator activation after downtime are marked **missed**, not replayed. Jobs delayed more than five minutes are also missed. Future jobs survive restarts.
+
+Scheduled messages use current Teams reply permissions, checked again after opening the chat. The default empty whitelist blocks sends. Only an exact, unique chat name with a matching open-chat title is eligible; prefix matches and ambiguous names are refused. Existing composer text/detected attachment drafts are left untouched. A send is recorded when Teams' send button is clicked, not as a delivery/read receipt. An interruption or uncertain outcome is never retried automatically: check Teams before scheduling another copy. Status changes use the same latest-wins queue as manual selections, with read-back verification and an execution deadline.
+
+Local state is ignored `data/scheduled-actions.sqlite`, using Bun's built-in SQLite with durable transactional claims; no extra package or hosted service. Diagnostic activity records contain schedule IDs/outcomes, not message contents. Validate with `bun scripts/smoke-schedules.mjs` and `bun scripts/smoke-presence.mjs`; tests use private state and mocked Teams, never real recipient sends.
+
 For terminal development or GUI-only operation:
 
 From the repo root:

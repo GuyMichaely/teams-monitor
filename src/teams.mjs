@@ -207,17 +207,18 @@ export async function setUnreadFilter(session, on) {
 /**
  * Open a chat by its display name (clicks the matching rail row).
  * Returns true if a row was found and clicked. Matches exact name first,
- * then a case-insensitive startsWith fallback.
+ * then a case-insensitive startsWith fallback. exact:true requires one exact leaf row.
  */
-export async function openChat(session, name) {
+export async function openChat(session, name, { exact = false } = {}) {
   return await evalOnPage(
     session,
     `(() => {
       const target = ${JSON.stringify(name)}.toLowerCase();
       const rows = [...document.querySelectorAll('[role="treeitem"]')];
       const rowName = (r) => (r.innerText || '').split('\\n')[0].replace(/\\s+/g, ' ').trim();
-      let row = rows.find(r => rowName(r).toLowerCase() === target)
-             || rows.find(r => rowName(r).toLowerCase().startsWith(target));
+      const matches = rows.filter(r => rowName(r).toLowerCase() === target && !r.querySelector('[role="treeitem"]'));
+      if (${exact} && matches.length !== 1) return false;
+      let row = matches[0] || (${!exact} && rows.find(r => rowName(r).toLowerCase().startsWith(target)));
       if (!row) return false;
       row.scrollIntoView({ block: 'center' });
       const clickable = row.querySelector('[role="button"], a, [tabindex]') || row;

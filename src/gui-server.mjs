@@ -16,6 +16,8 @@ import { validateAutomation } from "./deterministic-rules.mjs";
 import { parseConfigYaml, configYaml } from './config-format.mjs';
 import { getTeamsPresence, setTeamsPresence } from "./teams-presence.mjs";
 import { activityView, clearActivityThrough, restoreActivity } from "./activity-view.mjs";
+import { createScheduleStore } from './scheduled-actions.mjs';
+import { orchestratorStatus } from './gui-server-core.mjs';
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
@@ -77,6 +79,8 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
   server.removeListener("request", runtimeHandler);
   const g = config?.gui || {};
   const token = process.env[g.authTokenEnv || "GUI_TOKEN"] || null;
+  let schedules;
+  server.once('close', () => schedules?.close());
 
   logDiagnostic("gui_started", {
     pid: process.pid,
@@ -123,6 +127,29 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
 
+    if (url.pathname === '/api/schedules' || /^\/api\/schedules\/[^/]+\/cancel$/.test(url.pathname)) {
+      try {
+        if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: 'unauthorized' });
+        schedules ||= createScheduleStore();
+        res.setHeader('Cache-Control', 'no-store');
+        if (url.pathname === '/api/schedules' && req.method === 'GET') {
+          const cfg = await loadConfig();
+          return sendJson(res, 200, { jobs: schedules.list(), orchestrator: await orchestratorStatus(cfg.pollIntervalMs) });
+        }
+        if (url.pathname === '/api/schedules' && req.method === 'POST') {
+          const job = schedules.create(await readJsonBody(req, 65536));
+          logDiagnostic('schedule_created', { scheduleId: job.id, action: job.kind, dueAt: job.dueAt });
+          return sendJson(res, 201, job);
+        }
+        if (url.pathname.endsWith('/cancel') && req.method === 'POST') {
+          const job = schedules.cancel(url.pathname.split('/')[3]);
+          logDiagnostic('schedule_cancelled', { scheduleId: job.id });
+          return sendJson(res, 200, job);
+        }
+        return sendJson(res, 405, { error: 'method not allowed' });
+      } catch (e) { return sendJson(res, e.httpCode || 500, { error: e.httpCode ? e.message : 'Schedule storage unavailable; no changes confirmed.' }); }
+    }
+
     if (url.pathname === "/api/activity/view") {
       try {
         if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: "unauthorized" });
@@ -140,10 +167,12 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
     if (url.pathname === "/api/teams/presence") {
       try {
         if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: "unauthorized" });
-        if (req.method === "GET") return sendJson(res, 200, await presence.get());
+        if (req.method === "GET") return sendJson(res, 200, await presence.get(config.port || 9222));
         if (req.method === "PUT") {
           const body = await readJsonBody(req);
-          const result = await presence.set(body.status);
+          if (body.expiresAt !== undefined && (!Number.isSafeInteger(body.expiresAt) || body.expiresAt > Date.now() + 300000))
+            return sendJson(res, 400, { error: 'Invalid status execution deadline.' });
+          const result = await presence.set(body.status, config.port || 9222, { expiresAt: body.expiresAt ?? Infinity });
           logDiagnostic(result.superseded ? "teams_presence_superseded" : "teams_presence_changed", { requested: result.requested, previous: result.previous, status: result.status, verified: result.verified });
           return sendJson(res, 200, result);
         }
