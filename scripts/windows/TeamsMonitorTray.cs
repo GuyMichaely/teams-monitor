@@ -137,7 +137,7 @@ namespace TeamsMonitorDesktop {
             logs = Path.Combine(root, "data", "desktop"); Directory.CreateDirectory(logs);
             session = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff");
             Log("started pid=" + Process.GetCurrentProcess().Id + " parentPid=" + OwnedJob.ParentPid() + " inheritedJob=" + OwnedJob.InAnyJob());
-            window.Text = "TM"; window.Size = new Size(480, 340); window.MinimumSize = new Size(480, 340);
+            window.Text = "TM"; window.Size = new Size(480, 295); window.MinimumSize = new Size(480, 295);
             window.StartPosition = FormStartPosition.CenterScreen; window.BackColor = Color.FromArgb(24, 27, 32);
             window.ForeColor = Color.WhiteSmoke; window.Font = new Font("Segoe UI", 10);
             window.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -147,7 +147,6 @@ namespace TeamsMonitorDesktop {
             AddButton("Open logs", 235, 150, delegate { Open(Path.Combine(root, "data")); });
             start.Text = "Start system"; StyleButton(start); start.SetBounds(20, 195, 200, 34); start.Click += async delegate { await Start(); }; window.Controls.Add(start);
             stop.Text = "Stop system"; StyleButton(stop); stop.SetBounds(235, 195, 200, 34); stop.Click += async delegate { await Stop(); }; window.Controls.Add(stop);
-            var hide = AddButton("Hide to tray", 20, 240, delegate { window.Hide(); }); hide.Width = 415;
             var menu = new ContextMenuStrip();
             menu.Items.Add("Show status", null, delegate { Show(); });
             menu.Items.Add("Open dashboard", null, delegate { Open(dashboard); });
