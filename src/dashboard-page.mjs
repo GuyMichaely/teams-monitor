@@ -446,7 +446,6 @@ function dashboardClient() {
       button.dataset.agentChat = conversation.chat; conversations.append(button);
     }
     if (!conversations.childElementCount) conversations.textContent = 'No conversation history available yet.';
-    const log = $('agentRecords'); log.scrollTop = 0;
   }
   async function refreshAgent() {
     if (agentRefreshing || $('login').open) return;

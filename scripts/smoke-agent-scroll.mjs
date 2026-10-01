@@ -1,6 +1,6 @@
 import './smoke-env.mjs';
 import assert from 'node:assert/strict';
-import { syncAgentRecordList } from '../src/dashboard-page.mjs';
+import { DASHBOARD_PAGE, syncAgentRecordList } from '../src/dashboard-page.mjs';
 
 // Minimal layout harness: exercise the browser's actual reconciliation function.
 class Panel {
@@ -37,7 +37,25 @@ let created = 0;
 const makeRow = record => { created++; return new Row(record.value.height); };
 const record = (seq, height = 50) => ({ seq, kind: 'tool_result', at: seq, value: { height } });
 let records = Array.from({ length: 20 }, (_, index) => record(20 - index));
-const render = () => syncAgentRecordList(panel, structuredClone(records), makeRow);
+// Exercise the shipped caller too: a later write can undo the helper's work.
+const rendererStart = DASHBOARD_PAGE.indexOf('function renderAgent(value) {');
+const rendererEnd = DASHBOARD_PAGE.indexOf('async function refreshAgent()', rendererStart);
+assert(rendererStart >= 0 && rendererEnd > rendererStart, 'Shipped agent renderer exists');
+const elements = {
+  agentRecords: panel,
+  agentMode: {},
+  agentActions: { replaceChildren() {}, childElementCount: 0 },
+  agentConversations: { replaceChildren() {}, childElementCount: 0 },
+};
+const renderAgent = new Function('$', 'syncAgentRecordList', 'addAgentEntry', 'document', 'setText', 'status', 'time',
+  `let agentStatus, agentModeDirty = false; ${DASHBOARD_PAGE.slice(rendererStart, rendererEnd)}; return renderAgent;`)(
+  id => { assert(id in elements); return elements[id]; },
+  syncAgentRecordList,
+  (_parent, _title, value) => makeRow({ value }),
+  { createDocumentFragment: () => ({}) },
+  () => {}, () => {}, String,
+);
+const render = () => renderAgent({ records: structuredClone(records), actions: [], conversations: [] });
 const anchor = () => panel.children.find(node => node.getBoundingClientRect().bottom > 101);
 render();
 panel.scrollTop = 215;
@@ -76,4 +94,4 @@ assert.equal(panel.scrollTop, 0);
 records = [record(200)]; render();
 assert.equal(panel.childElementCount, 1);
 assert.equal(panel.scrollTop, 0);
-console.log('Agent result scroll smoke passed: unchanged polls, prepended results, retained/evicted anchors, open details, DOM reuse and empty transitions.');
+console.log('Agent result scroll smoke passed through the shipped renderer: unchanged polls, prepended results, retained/evicted anchors, open details, DOM reuse and empty transitions.');
