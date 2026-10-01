@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DATA_DIR } from "./local-paths.mjs";
 import { alertClientCount } from "./gui-server-core.mjs";
+import { brainApiKeyEnv, NVIDIA_MODEL } from './nvidia-api.mjs';
 
 let probe = null;
 let checkedAt = 0;
@@ -19,5 +20,5 @@ export async function dashboardHealth(config) {
   let tunnel = null;
   try { tunnel = JSON.parse(await readFile(join(DATA_DIR, "tunnel-health.json"), "utf8")); } catch {}
   return { teams: await probe, websocketClients: alertClientCount(), tunnel,
-    brain: { provider: config.brain?.provider || "stub", model: config.brain?.model || "", configured: config.brain?.provider === "stub" || !!process.env[config.brain?.apiKeyEnv || "GEMINI_API_KEY"] } };
+    brain: { provider: config.brain?.provider || "stub", model: config.brain?.model || (config.brain?.provider === 'nvidia' ? NVIDIA_MODEL : ''), configured: config.brain?.provider === "stub" || !!process.env[brainApiKeyEnv(config)] } };
 }

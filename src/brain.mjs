@@ -1,3 +1,5 @@
+import { requestNvidia, NVIDIA_MODEL, brainApiKeyEnv } from './nvidia-api.mjs';
+
 // The model proposes changes/additions. rule-policy.mjs is the authority boundary.
 async function emit(trace, name, payload) {
   try { await trace?.[name]?.(payload); } catch { /* Trace failures do not change decisions. */ }
@@ -30,7 +32,7 @@ export function parseAgentPlan(raw) {
 
 export function createBrain(config) {
   const b = config?.brain || {}, provider = b.provider || 'stub';
-  const apiKey = process.env[b.apiKeyEnv || 'GEMINI_API_KEY'];
+  const apiKey = process.env[brainApiKeyEnv(config)];
   return { async reviewPlan(input, trace = {}) {
     const { system, user } = buildPrompt(input);
     await emit(trace, 'onInput', { provider, model: b.model, system, user });
@@ -38,6 +40,16 @@ export function createBrain(config) {
       const result = { changes: [], additions: [], reason: 'Stub retains configured actions without additions' };
       await emit(trace, 'onOutput', { provider, raw: JSON.stringify(result) });
       return result;
+    }
+    if (provider === 'nvidia') {
+      const body = await requestNvidia({ apiKey, signal: input.signal, body: {
+        model: b.model || NVIDIA_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        temperature: 0.2, max_tokens: 2048, response_format: { type: 'json_object' },
+      } });
+      const raw = body.choices[0].message.content;
+      if (body.choices[0].message.tool_calls?.length || !raw) throw new Error('NVIDIA returned an invalid review response');
+      await emit(trace, 'onOutput', { provider, model: b.model || NVIDIA_MODEL, raw });
+      return parseAgentPlan(raw);
     }
     if (provider !== 'gemini') throw new Error(`Brain provider ${provider} is not implemented`);
     if (!apiKey) throw new Error(`Brain provider gemini needs ${b.apiKeyEnv || 'GEMINI_API_KEY'}`);

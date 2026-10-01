@@ -45,7 +45,7 @@ src/
   teams.mjs         Teams WebView2/CDP core on port 9222.
   teams-presence.mjs Profile-menu presence control; no keyboard/search commands. Reads back status before confirming success.
   monitor.mjs       Unread detection + chat reading.
-  brain.mjs         Gemini decision layer.
+  brain.mjs         Configurable NVIDIA/Gemini decision layer.
   deterministic-rules.mjs Unified config validation and rule evaluation with condition evidence.
   rule-policy.mjs    Configured actions plus bounded, permission-checked agent cancellation/modification/initiation.
   orchestrator.mjs  Poll → read → dedupe → decide → act → log. Writes real tick heartbeat.
@@ -143,7 +143,7 @@ Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker 
 ## Current operating decisions
 
 - There is no separate alert-only mode. Teams replies (including hold messages) are controlled solely by replyPolicy; the live policy is an empty whitelist, so nobody may receive replies. Phone alerts and deterministic alarm/ignore rules remain independent of reply permission.
-- Keep Gemini for now; a local-model replacement is deferred. Direct access to OpenCode's free Muse Spark endpoint returned a client-restriction 403; do not add an OpenCode harness workaround.
+- NVIDIA is the selected provider (October 1), using nvidia/nemotron-3-super-120b-a12b and NVIDIA_API_KEY. Gemini remains selectable; a local-model replacement is deferred. NVIDIA uses direct HTTPS with no retries, bounded abort and sanitized errors; malformed/truncated output retains deterministic actions. Free API Catalog trial terms restrict evaluation/production/confidential inputs; account terms govern use. Direct access to OpenCode's free Muse Spark endpoint returned a client-restriction 403; do not add an OpenCode harness workaround.
 - Heuristics and deterministic rules share `automation.rules`: each rule has id, optional enabled, when, action, and optional agent.cancel/modify permissions (both default false). All enabled matching rules propose actions; identical resulting actions are attempted once. Conditions support direct_message, mention, field/match/value, and nested all/any. Direct matching uses normalized chat/author equality; mentions use semantic names or explicit @name text against alerts.mentionNames, not bare name references. Actions are alert_phone, reply (required text), or ignore (no-op for its own rule, not cancellation of other rules).
 - `automation.agent.initiate` grants new-action authority with when never/unmatched/always and explicit actions alert_phone/reply; missing authority defaults to never/empty. The live/example config explicitly permits unmatched Gemini triage, while direct/@mention rules permit neither cancellation nor modification. Modification changes text only, never action type or destination. Review receives all evaluated definitions, tested values/results, proposals and permissions. Code validates the entire plan atomically; invalid/unauthorized output, provider error or timeout retains original configured actions (including permitted canned replies), adds nothing, aborts the request and ignores late output. timeoutMs defaults 5000 (1..30000). Valid cancellations are final. Teams sends always recheck current replyPolicy immediately before execution; review cannot override it.
 - Reply permission applies only to outgoing Teams replies (including hold messages), never phone alerts. `replyPolicy` defaults to an empty whitelist; legacy `whitelist.autoSend` is read only when the new policy is absent. Blacklist mode permits all chats except listed exact names. Matching is case-insensitive.
@@ -202,7 +202,7 @@ Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker 
 
 ## Secrets inventory
 
-- `.env`: `GUI_TOKEN`, `GEMINI_API_KEY`.
+- `.env`: `GUI_TOKEN`, `NVIDIA_API_KEY`, optional `GEMINI_API_KEY`.
 - `config/fcm-service-account.json`: PC Firebase service account.
 - `android-app/app/google-services.json`: Android Firebase config.
 - `%USERPROFILE%\.android\debug.keystore`: local Android signing key; preserve it for compatible APK updates.

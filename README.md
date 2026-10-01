@@ -4,6 +4,17 @@ Personal Microsoft Teams monitoring/automation system. It drives the new Teams d
 
 ## Requirements
 
+The selected brain provider is NVIDIA (`nvidia/nemotron-3-super-120b-a12b`). Set
+`NVIDIA_API_KEY` in ignored `.env`; YAML uses `brain.provider: nvidia`, that model,
+and `brain.apiKeyEnv: NVIDIA_API_KEY`. Gemini remains available by selecting
+`provider: gemini`, a Gemini model and `apiKeyEnv: GEMINI_API_KEY`. Restart after
+changing credentials. Provider changes do not change deterministic rules or reply
+permissions. Requests are bounded, never automatically retried, and invalid or
+failed reviews retain configured actions. NVIDIA API Catalog trial access is not
+a production SLA; its [trial terms](https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf)
+restrict evaluation/production use and confidential inputs. Your account's terms
+govern permitted use.
+
 - Windows with the new Teams desktop client (`ms-teams.exe`).
 - Bun 1.4+.
 - An existing Cloudflare Tunnel named `teams-gui` if remote GUI/WebSocket connectivity is wanted.
