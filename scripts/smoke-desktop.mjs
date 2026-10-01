@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import { DATA_DIR, ROOT } from '../src/local-paths.mjs';
 import { trayControl } from './tray-control.mjs';
 
+const traySource = await readFile(new URL('./windows/TeamsMonitorTray.cs', import.meta.url), 'utf8');
+assert.doesNotMatch(traySource, /clos(?:e|ing) this window/i);
+
 const config = { gui: { port: 18240, authTokenEnv: 'DESKTOP_TEST_TOKEN' } };
 process.env.DESKTOP_TEST_TOKEN = 'fixture';
 assert.deepEqual(await trayControl('describe', { config }), { url: 'http://127.0.0.1:18240', port: 18240, controlPort: 18241 });

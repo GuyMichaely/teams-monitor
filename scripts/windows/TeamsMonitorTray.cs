@@ -270,9 +270,9 @@ namespace TeamsMonitorDesktop {
                 if (quitting) throw new OperationCanceledException();
                 await Control("start-components");
                 Log("components_started");
-                status.Text = "System started.\n\nClosing this window leaves it running.\nUse the tray icon → Quit TM to stop it.";
+                status.Text = "System started.\n\nUse the tray icon → Quit TM to stop it.";
                 tray.Text = "TM — running";
-                tray.ShowBalloonTip(4000, "TM", "Running. Close this window to hide it; use tray → Quit to stop.", ToolTipIcon.Info);
+                tray.ShowBalloonTip(4000, "TM", "Running. Use tray → Quit to stop.", ToolTipIcon.Info);
             } catch (Exception error) {
                 string code = error is InvalidOperationException ? error.Message : error.GetType().Name;
                 Log("startup_failed code=" + code);
@@ -299,7 +299,7 @@ namespace TeamsMonitorDesktop {
             status.Text = "Stopping system…"; tray.Text = "TM — stopping"; Log("system_stop_requested");
             try {
                 await StopOwnedTree(); systemStopped = true;
-                status.Text = "System stopped.\nClick Start system to start it again.\n\nClosing this window hides the tray app.";
+                status.Text = "System stopped.\nClick Start system to start it again.";
                 tray.Text = "TM — stopped";
             } catch (Exception error) {
                 Log("system_stop_failed type=" + error.GetType().Name);
@@ -322,7 +322,7 @@ namespace TeamsMonitorDesktop {
                 if (supervisor == null || supervisor.HasExited) {
                     SetAwake(false);
                     if (systemStopped) {
-                        status.Text = "System stopped.\nClick Start system to start it again.\n\nClosing this window hides the tray app.";
+                        status.Text = "System stopped.\nClick Start system to start it again.";
                         tray.Text = "TM — stopped"; return;
                     }
                     if (supervisor != null && observedExitPid != supervisor.Id) {
@@ -334,7 +334,7 @@ namespace TeamsMonitorDesktop {
                 }
                 var value = await Control("status");
                 status.Text = "GUI supervisor: " + value["gui"] + "\nMonitor: " + value["monitor"] + "\nTunnel: " + value["tunnel"] +
-                    "\n\nClose this window to hide it. Quit using the tray icon.";
+                    "\n\nQuit using the tray icon.";
                 bool healthy = Convert.ToString(value["gui"]) == "Running" && Convert.ToString(value["monitor"]) == "Running" && Convert.ToString(value["tunnel"]) == "Running";
                 tray.Text = healthy ? "TM — running" : "TM — needs attention";
             } catch { status.Text = "GUI is not responding.\nThe supervisor may be recovering it.\nOpen logs for details."; tray.Text = "TM — GUI unavailable"; }
