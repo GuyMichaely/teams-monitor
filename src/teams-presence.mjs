@@ -1,5 +1,6 @@
 // Use the profile menu, never slash commands or keyboard focus (which can hit a chat).
 import { evalOnPage } from "./teams.mjs";
+import { teamsQueue } from './teams-queue.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PROFILE = "me-control-avatar-trigger";
@@ -132,6 +133,9 @@ export async function setPresenceOnSession(session, requestedStatus, isCurrent =
 }
 
 export async function getTeamsPresence(port = 9222) {
+  return teamsQueue.run(() => readTeamsPresence(port));
+}
+async function readTeamsPresence(port) {
   const session = await findSession(port);
   if (!session) return { connected: false, value: null, status: null, raw: null };
   try { return await readPresence(session); } finally { session.close(); }
@@ -158,6 +162,7 @@ export async function setTeamsPresence(status, port = 9222, { expiresAt = Infini
 
 async function drainPresenceQueue(port, queue) {
   queue.running = true;
+  await teamsQueue.run(async () => {
   try {
     while (queue.latest) {
       const request = queue.latest;
@@ -180,4 +185,5 @@ async function drainPresenceQueue(port, queue) {
     if (queue.latest) void drainPresenceQueue(port, queue);
     else queues.delete(port);
   }
+  });
 }

@@ -18,6 +18,7 @@ import { getTeamsPresence, setTeamsPresence } from "./teams-presence.mjs";
 import { activityView, clearActivityThrough, restoreActivity } from "./activity-view.mjs";
 import { createScheduleStore } from './scheduled-actions.mjs';
 import { orchestratorStatus } from './gui-server-core.mjs';
+import { teamsOperation } from './teams-broker.mjs';
 
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
 const TUNNEL_OUT_LOG = join(DATA_DIR, "tunnel.out.log");
@@ -73,6 +74,7 @@ async function putPolicyRules(body) {
 }
 
 export function startGui(config, presence = { get: getTeamsPresence, set: setTeamsPresence }) {
+  if (process.env.TEAMS_MONITOR_DEV === '1' && config.port !== 29222) throw new Error('Development GUI requires mock Teams CDP port 29222.');
   const result = startRuntimeGui(config);
   const { server } = result;
   const runtimeHandler = server.listeners("request")[0];
@@ -126,6 +128,13 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
 
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
+
+    if (url.pathname === '/api/teams/operation') {
+      if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: 'unauthorized' });
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
+      try { return sendJson(res, 200, await teamsOperation(await readJsonBody(req, 65536))); }
+      catch (error) { return sendJson(res, 409, { error: 'Teams operation not confirmed.', scheduleCode: error.scheduleCode }); }
+    }
 
     if (url.pathname === '/api/schedules' || /^\/api\/schedules\/[^/]+\/cancel$/.test(url.pathname)) {
       try {

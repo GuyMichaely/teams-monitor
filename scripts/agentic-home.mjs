@@ -13,6 +13,7 @@ export function prepareAgenticHome(root) {
   if (!existsSync(configFile)) {
     const config = Bun.YAML.parse(readFileSync(join(root, 'config', 'config.example.yaml'), 'utf8'));
     config.gui = { port: 28090, host: '127.0.0.1', authTokenEnv: 'AGENTIC_GUI_TOKEN' };
+    config.port = 29222;
     config.controlWorker = { enabled: false, publicHealthUrl: '' };
     config.desktop = { keepAwake: false };
     config.alerts.websocketUrl = 'http://127.0.0.1:28090/api/alerts';

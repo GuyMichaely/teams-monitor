@@ -5,3 +5,4 @@ import { prepareAgenticHome } from './agentic-home.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const home = prepareAgenticHome(root);
 process.env.TEAMS_MONITOR_HOME = home;
+process.env.TEAMS_MONITOR_DEV = '1';

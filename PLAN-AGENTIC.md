@@ -14,6 +14,13 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
 - Increment 1 is implemented and verified (October 1 UTC / September 30 local).
   Next: increment 2, ordered intake and action execution. Do not ask again whether
   implementation is authorized.
+- Increment 2 groundwork is saved: agent/store.mjs (ordered durable message/action
+  claims and archive), GUI Teams broker/client, shared operation queue including
+  latest-wins presence, and development CDP/restart guards. Storage, presence,
+  schedules and GUI smokes pass. It is NOT wired into the orchestrator yet;
+  next implement ordered intake, nonblocking policy handling and action execution.
+  Existing .agentic-dev config created before this checkpoint needs port: 29222
+  before launching a development GUI; SDK-only commands remain usable.
 - Commit and push completed increments to agentic. Do not merge into main or move
   the normal desktop installation until the user chooses the new version.
 - Each increment must leave a usable, testable result. Update this status as work
