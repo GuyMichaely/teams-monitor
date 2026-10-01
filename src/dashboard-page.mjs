@@ -1,4 +1,36 @@
 import { buildActivityGroups } from "./dashboard-activity.mjs";
+
+export function syncAgentRecordList(panel, rows, makeRow) {
+  const previous = panel._agentRecordRows || new Map(), next = new Map();
+  const scrollTop = panel.scrollTop, followNewest = scrollTop <= 1;
+  const top = panel.getBoundingClientRect().top + panel.clientTop;
+  const anchor = [...panel.children].find(node => node.getBoundingClientRect().bottom > top);
+  const anchorKey = anchor?.dataset.recordKey, anchorOffset = anchor ? anchor.getBoundingClientRect().top - top : 0;
+  if (!panel.childElementCount) panel.textContent = '';
+  let cursor = panel.firstElementChild;
+  for (const [index, record] of rows.entries()) {
+    const key = String(record.seq ?? `invalid:${index}`), signature = JSON.stringify(record);
+    const old = previous.get(key);
+    const node = old?.signature === signature ? old.node : makeRow(record);
+    node.dataset.recordKey = key;
+    if (old && old.node !== node) {
+      const details = node.querySelector('details');
+      if (details) details.open = !!old.node.querySelector('details')?.open;
+    }
+    // Insert new entries without detaching unchanged rows or their selected text.
+    if (node !== cursor) panel.insertBefore(node, cursor);
+    cursor = node.nextElementSibling;
+    next.set(key, { node, signature });
+  }
+  while (cursor) { const after = cursor.nextElementSibling; cursor.remove(); cursor = after; }
+  panel._agentRecordRows = next;
+  if (!rows.length) panel.textContent = 'No agent activity recorded.';
+  const retainedAnchor = next.get(anchorKey)?.node;
+  if (followNewest) panel.scrollTop = 0;
+  else if (retainedAnchor) panel.scrollTop += retainedAnchor.getBoundingClientRect().top - top - anchorOffset;
+  else panel.scrollTop = scrollTop;
+}
+
 // One page owns presentation and refresh state; the existing authenticated APIs own controls.
 function dashboardClient() {
   const $ = (id) => document.getElementById(id);
@@ -394,11 +426,8 @@ function dashboardClient() {
     setText('agentCurrent', current ? `${current.trigger || 'Working'} · ${current.contextId || 'user'} · started ${time(current.startedAt)}` : 'Idle');
     const mode = value.mode || 'active'; if (!agentModeDirty) $('agentMode').value = mode;
     status('agentModeBadge', mode.replaceAll('_', ' '), mode === 'active' ? 'good' : mode === 'paused' ? 'warn' : 'neutral');
-    const records = $('agentRecords'); records.replaceChildren();
-    for (const record of (value.records || []).slice(0, 25)) {
-      addAgentEntry(records, `${record.kind || 'record'} · ${time(record.at)}`, record.value);
-    }
-    if (!records.childElementCount) records.textContent = 'No agent activity recorded.';
+    syncAgentRecordList($('agentRecords'), (value.records || []).slice(0, 25), record =>
+      addAgentEntry(document.createDocumentFragment(), `${record.kind || 'record'} · ${time(record.at)}`, record.value));
     const actions = $('agentActions'); actions.replaceChildren();
     for (const action of value.actions || []) {
       const entry = addAgentEntry(actions, `${action.id} · ${action.state || 'unknown'}`, action.value, action.due ? `Due ${time(action.due)}` : '');
@@ -608,4 +637,4 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <section class="card poll-card" aria-label="Latest orchestrator poll"><div class="poll-heading"><div><div class="poll-title"><h2 id="pollStatus">No poll recorded yet</h2></div><p id="pollDetail" class="poll-meta">Waiting for the orchestrator…</p></div><span id="pollBadge" class="badge neutral">Checking</span></div><div class="poll-stats"><div class="stat"><b id="pollChats">—</b><span>Unread chats</span></div><div class="stat"><b id="pollHandled">—</b><span>Messages handled</span></div><div class="stat"><b id="pollDuplicates">—</b><span>Duplicates skipped</span></div><div class="stat"><b id="pollErrors">—</b><span>Errors</span></div></div><div class="poll-foot"><span id="pollExtra">Counts will appear after the first poll.</span><span id="pollNext">Monitor stopped</span></div></section>
 <section class="card"><div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="activity-clear"><div class="date-filter"><label class="check"><input id="hideOlder" type="checkbox">Hide messages at or before</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Hide messages at or before date and time"><button id="clearActivity" class="small" disabled>Hide through selected message</button></div><p id="activityClearState" class="hint"></p></div><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div id="messages" class="message-list"></div></div><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div><p class="log-note">Recent retained activity, newest first. Duplicate reads are counted in the poll above.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>
 </section></div></main><div id="toast" class="toast hidden" role="status"></div><dialog id="login"><form id="loginForm"><div class="eyebrow">TM</div><h2>Dashboard access</h2><p>Enter the access token from your local configuration. It is saved in this browser.</p><label for="tokenInput">Access token</label><input id="tokenInput" type="password" autocomplete="current-password" required><button class="primary">Connect</button></form></dialog>
-<script>${buildActivityGroups.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;
+<script>${buildActivityGroups.toString()}; ${syncAgentRecordList.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;

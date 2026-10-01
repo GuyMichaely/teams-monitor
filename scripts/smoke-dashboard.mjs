@@ -155,6 +155,8 @@ try {
   assert(page.includes('id="agentHeading"') && page.includes('id="agentMode"'));
   assert(page.includes('id="agentReplayForm"') && page.includes('id="agentWakeForm"'));
   assert(page.includes('id="agentNoteSelect"') && page.includes('id="agentBriefSave"'));
+  assert(page.includes('function syncAgentRecordList(panel, rows, makeRow)'));
+  assert.match(page, /syncAgentRecordList\(\$\(['"]agentRecords['"]\)/);
   assert(page.includes("Paused stops model runs") && page.includes("Read-only prevents model-originated"));
   assert(!page.includes('id="heuristicsForm"'));
   for (const script of page.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) new Function(script[1]);
