@@ -59,29 +59,31 @@ export async function readChat(name, limit = 20, port) {
   const session = await getChatSession(port);
   let restoreFilter = null;
   try {
-    let opened = await openChat(session, name);
+    let opened = await openChat(session, name, { exact: true });
     if (!opened) {
       // A reaction-only revisit may target a chat that no longer appears as unread.
       const r = await setUnreadFilter(session, false);
       if (r.ok) restoreFilter = r.wasOn;
       await settle(500);
-      opened = await openChat(session, name);
+      opened = await openChat(session, name, { exact: true });
       if (!opened) {
         await setUnreadFilter(session, true);
         await settle(500);
-        opened = await openChat(session, name);
+        opened = await openChat(session, name, { exact: true });
       }
     }
     if (!opened) throw new Error(`Chat not found in rail: "${name}"`);
     // Wait until the message pane reflects the newly opened chat.
+    let confirmed = false;
     for (let i = 0; i < 10; i++) {
       const ready = await evalOnPage(
         session,
-        `!!document.querySelector('[data-tid="message-pane-list-viewport"]')`
+        `!!document.querySelector('[data-tid="message-pane-list-viewport"]') && (document.querySelector('[data-tid="chat-title"]')?.innerText || '').replace(/\\s+/g,' ').trim().toLowerCase() === ${JSON.stringify(name.replace(/\s+/g, ' ').trim().toLowerCase())}`
       );
-      if (ready) break;
+      if (ready) { confirmed = true; break; }
       await settle(300);
     }
+    if (!confirmed) throw new Error('Exact chat header could not be verified');
     const messages = await readOpenChat(session, limit);
     return { chat: name, messages };
   } finally {

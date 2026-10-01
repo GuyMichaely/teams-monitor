@@ -11,6 +11,7 @@
     "test:agent-sdk": "bun --no-env-file scripts/smoke-agent-sdk.mjs",
     "test:agent-home": "bun --no-env-file scripts/smoke-agentic-home.mjs",
     "test:agent-storage": "bun --no-env-file scripts/smoke-agent-storage.mjs",
+    "test:agent-intake": "bun --no-env-file scripts/smoke-agent-intake.mjs",
     "desktop:install": "powershell.exe -NoProfile -File scripts/install-desktop.ps1",
     "desktop": "powershell.exe -NoProfile -File scripts/start-desktop.ps1",
     "start": "bun --env-file=.env src/cli.mjs run",

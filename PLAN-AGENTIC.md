@@ -12,13 +12,12 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
 - Development checkout: C:/Users/GuyMichaely/.codex/worktrees/agentic/teams-monitor.
 - Branch name is exactly agentic (user correction; no codex/ prefix).
 - Increment 1 is implemented and verified (October 1 UTC / September 30 local).
-  Next: increment 2, ordered intake and action execution. Do not ask again whether
+  Increments 1 and 2 are complete. Next: JavaScript policy and scoped agent tools. Do not ask again whether
   implementation is authorized.
-- Increment 2 groundwork is saved: agent/store.mjs (ordered durable message/action
-  claims and archive), GUI Teams broker/client, shared operation queue including
-  latest-wins presence, and development CDP/restart guards. Storage, presence,
-  schedules and GUI smokes pass. It is NOT wired into the orchestrator yet;
-  next implement ordered intake, nonblocking policy handling and action execution.
+- Increment 2 is wired: ordered intake/archive, independent policy and action work,
+  GUI-owned Teams queue, exact/header-checked reads/sends, durable attempted actions,
+  fresh reply permissions and a live loopback executor lease. Model waits do not
+  block polling. Existing rules are a temporary handler until increment 3 conversion.
   Existing .agentic-dev config created before this checkpoint needs port: 29222
   before launching a development GUI; SDK-only commands remain usable.
 - Commit and push completed increments to agentic. Do not merge into main or move
@@ -201,7 +200,7 @@ SDK references:
 - [x] Preserve stable main and create isolated agentic worktree.
 - [x] Save approved plan with the user's corrections before compaction.
 - [x] Increment 1: SDK integration.
-- [ ] Increment 2: ordered intake and action execution.
+- [x] Increment 2: ordered intake and action execution.
 - [ ] Increment 3: JavaScript policy.
 - [ ] Increment 4: agent tools and permissions.
 - [ ] Increment 5: continuity, notes, and UI.

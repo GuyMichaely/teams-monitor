@@ -12,7 +12,7 @@ const decode = row => {
 };
 
 export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
-  mkdirSync(dirname(file), { recursive: true });
+  if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new Database(file, { create: true, strict: true });
   db.exec(`PRAGMA busy_timeout=2000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
     CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE,chat TEXT,body TEXT,time INTEGER,observed INTEGER,state TEXT);
@@ -21,6 +21,9 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     CREATE INDEX IF NOT EXISTS action_due ON actions(state,due);
     CREATE INDEX IF NOT EXISTS message_chat ON messages(chat,time);`);
   const store = {
+    completeMessage(id, runId, actions, result) {
+      db.transaction(() => { store.plan(id, actions); store.record(runId, 'policy_result', result); store.finishMessage(id); }).immediate();
+    },
     observe(chat, message, eligible = false) {
       const id = messageKey(chat, message), now = Date.now();
       const changed = db.query('INSERT OR IGNORE INTO messages(id,chat,body,time,observed,state) VALUES(?,?,?,?,?,?)').run(id, chat, JSON.stringify(message), Date.parse(message.time) || now, now, eligible ? 'pending' : 'observed').changes;

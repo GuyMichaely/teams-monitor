@@ -78,6 +78,21 @@ export function hardStop({ maxHeartbeatAgeMs = 120_000 } = {}) {
 }
 
 export async function run() {
+  const { runEngine } = await import('./agent/engine.mjs');
+  // Transitional handler for increment 2; replaced by the policy subprocess next.
+  return runEngine({ handle: async (ctx, { configLoader }) => {
+    const config = await configLoader();
+    const result = await decideWithRules({ chat: ctx.chatName, latest: ctx.message, history: ctx.history, userProfile: ctx.userProfile,
+      whitelisted: isReplyAllowed(config, ctx.chatName), config }, createBrain(config));
+    const seen = new Set();
+    const actions = (result.ruleActions || []).filter(p => !['cancelled', 'blocked_reply_policy'].includes(p.outcome) && p.action.type !== 'ignore')
+      .map(p => ({ kind: p.action.type === 'reply' ? 'message' : 'alert', chat: ctx.chatName, text: p.action.text || ctx.message.text, author: ctx.authorName, time: ctx.message.time }))
+      .filter(a => { const key = JSON.stringify(a); if (seen.has(key)) return false; seen.add(key); return true; });
+    return { ok: true, actions };
+  } });
+}
+
+async function previousRun() {
   const activatedAt = new Date().toISOString();
   let config = await loadConfig();
   let userProfile = await loadUserProfile();

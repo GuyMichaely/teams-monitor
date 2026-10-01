@@ -223,6 +223,7 @@ function resolveCloudflared() {
 }
 
 function startTunnel() {
+  if (process.env.TEAMS_MONITOR_DEV === '1') throw new Error('Tunnel controls are disabled in development.');
   const current = tunnelStatus();
   if (current.running) {
     throw Object.assign(new Error(`already running (pid ${current.pids.join(", ")})`), { httpCode: 409 });
@@ -247,6 +248,7 @@ function startTunnel() {
 }
 
 function stopTunnel() {
+  if (process.env.TEAMS_MONITOR_DEV === '1') throw new Error('Tunnel controls are disabled in development.');
   const current = tunnelStatus();
   if (!current.running) return { killed: false, pids: [], reason: "not-running" };
   const killed = [];
