@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 data/
+node_modules/
+.agentic-dev/
 config/config.json
 config/config.yaml
 config/config.yaml.*.tmp

@@ -7,6 +7,9 @@
     "teams": "src/cli.mjs"
   },
   "scripts": {
+    "agent:sdk": "bun --no-env-file scripts/agent-sdk-demo.mjs",
+    "test:agent-sdk": "bun --no-env-file scripts/smoke-agent-sdk.mjs",
+    "test:agent-home": "bun --no-env-file scripts/smoke-agentic-home.mjs",
     "desktop:install": "powershell.exe -NoProfile -File scripts/install-desktop.ps1",
     "desktop": "powershell.exe -NoProfile -File scripts/start-desktop.ps1",
     "start": "bun --env-file=.env src/cli.mjs run",
@@ -21,5 +24,9 @@
   "engines": {
     "bun": ">=1.4.0"
   },
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@openai/agents": "0.18.0",
+    "zod": "4.6.5"
+  }
 }

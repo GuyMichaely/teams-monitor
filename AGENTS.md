@@ -2,6 +2,21 @@
 
 Read this before touching anything. It captures architecture, operational procedures, and user decisions that are not necessarily obvious from individual files.
 
+## Agentic branch
+
+Read PLAN-AGENTIC.md for the approved incremental agent implementation and progress.
+Changes stay in the separate `agentic` worktree; do not merge/deploy or restart the
+stable main installation during development. SDK dependencies are an intentional
+exception to main's zero-dependency rule. Only increment 1 is implemented so far:
+`src/agent/` provides the bounded SDK/Gemini loop; `bun run agent:sdk` is a harmless
+mock probe, and `--live` explicitly opts into a Gemini probe. These commands use
+ignored `.agentic-dev/`, loopback GUI/control ports 28090/28091 and separate auth.
+They do not connect to Teams or start GUI/orchestrator/tunnel processes. Existing
+normal runtime entrypoints are not yet agentic-development launchers; do not use
+them alongside stable Teams. SDK external trace export is disabled; local bounded
+activity records contain lifecycle metadata/sanitized faults, not prompt/tool bodies.
+Validate this foundation with `bun run test:agent-sdk` and `bun run test:agent-home`.
+
 ## What this is
 
 A personal Microsoft Teams monitoring/alerting system. It drives the new Teams desktop client (MSIX/WebView2) over the Chrome DevTools Protocol, triages incoming messages with an LLM, and alerts the user's Android phone. Single user, runs on a Windows laptop, not a product. Priorities: reliable alerting > cautious automation > elegance.

@@ -11,9 +11,9 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
   system intact while implementing.
 - Development checkout: C:/Users/GuyMichaely/.codex/worktrees/agentic/teams-monitor.
 - Branch name is exactly agentic (user correction; no codex/ prefix).
-- Only this handoff has been added so far. Implementation has not started.
-- The user wants to compact before implementation. After resuming, start increment
-  1 below; do not ask again whether implementation is authorized.
+- Increment 1 is implemented and verified (October 1 UTC / September 30 local).
+  Next: increment 2, ordered intake and action execution. Do not ask again whether
+  implementation is authorized.
 - Commit and push completed increments to agentic. Do not merge into main or move
   the normal desktop installation until the user chooses the new version.
 - Each increment must leave a usable, testable result. Update this status as work
@@ -193,9 +193,36 @@ SDK references:
 
 - [x] Preserve stable main and create isolated agentic worktree.
 - [x] Save approved plan with the user's corrections before compaction.
-- [ ] Increment 1: SDK integration.
+- [x] Increment 1: SDK integration.
 - [ ] Increment 2: ordered intake and action execution.
 - [ ] Increment 3: JavaScript policy.
 - [ ] Increment 4: agent tools and permissions.
 - [ ] Increment 5: continuity, notes, and UI.
 - [ ] Increment 6: delayed runs and rollout.
+
+### Increment 1 completed
+
+- Pinned @openai/agents 0.18.0 and Zod 4.6.5 with bun.lock; frozen install verified
+  on Bun 1.4.0. Main/deployed runtime remains untouched.
+- src/agent/runtime.mjs supplies the bounded SDK tool loop and structured failures.
+  Default deadline is 30 seconds, max 10 model turns, serialized tools, no automatic
+  provider retries. Non-cooperative model timeout/late-output exclusion is tested.
+- src/agent/gemini-model.mjs translates text/function tools and preserves exact
+  Gemini parts/signatures/IDs through SDK history. Uses existing brain settings;
+  additional providers/streaming/multimodal/server-side sessions are not implemented.
+- SDK tracing/export and sensitive SDK console logging are disabled. Bounded local
+  metadata/sanitized fault logs live in data/agent/activity.jsonl under selected home.
+  Detailed tool bodies/action outcomes are for later increments, not logged yet.
+- agent:sdk bootstraps ignored .agentic-dev with GUI/control ports 28090/28091,
+  AGENTIC_GUI_TOKEN, no public probes/Worker/keep-awake, private fixture profile,
+  no copied phone registration/credentials, empty whitelist. No GUI/Teams processes
+  are launched. Existing normal entrypoints still use Teams and are NOT safe
+  alongside stable; a separate mock-CDP launcher/port is still needed in increment 2.
+- Verified: test:agent-sdk, test:agent-home, mock agent:sdk, smoke-gui, frozen install.
+- Real Gemini probe verified: one read_probe invocation and two model requests,
+  using the private existing .env directly (no copy/logging). First attempt got a
+  transient 503; a later AUTO tool-choice response skipped the probe, so the probe
+  now requires its first tool call and returns to AUTO after the tool result.
+- No monitor/policy/dashboard replacement, staged external actions, memory tools,
+  wakeups or live cutover yet. Start increment 2 without treating this foundation as
+  completed agentic behavior.

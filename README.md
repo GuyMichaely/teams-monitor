@@ -8,7 +8,63 @@ Personal Microsoft Teams monitoring/automation system. It drives the new Teams d
 - Bun 1.4+.
 - An existing Cloudflare Tunnel named `teams-gui` if remote GUI/WebSocket connectivity is wanted.
 
-There are no server package dependencies.
+On `agentic`, run `bun install --frozen-lockfile` for the OpenAI Agents SDK and Zod.
+Stable `main` remains dependency-free.
+
+## Agentic development
+
+This branch implements [PLAN-AGENTIC.md](PLAN-AGENTIC.md) incrementally. The first
+increment is an SDK foundation, not a replacement for the current monitor yet.
+The stable checkout/desktop installation stays on `main`.
+
+From the separate `agentic` worktree:
+
+```powershell
+bun install --frozen-lockfile
+bun run agent:sdk
+bun run test:agent-sdk
+bun run test:agent-home
+```
+
+`agent:sdk` runs a mock model/tool/result loop. It creates only ignored
+`.agentic-dev/` configuration, context and data; it never contacts Teams or a
+phone. The development configuration reserves loopback GUI port 28090 (supervisor
+28091), uses `AGENTIC_GUI_TOKEN`, disables public health probes/Worker/keep-awake,
+and starts with an empty reply whitelist. It does not copy the live profile,
+registration, schedules or credentials. Linked development directories and a
+configuration that reuses the normal GUI port/auth are refused.
+
+To test the real configured Gemini model, load an existing private credential file
+explicitly (the SDK command never copies it):
+
+```powershell
+bun --env-file=C:/path/to/private/.env scripts/agent-sdk-demo.mjs --live
+```
+
+This test exposes only a harmless local `read_probe` tool and verifies a model →
+tool → result → final-text round trip. The real adapter currently supports text
+and function tools, not streaming, images, hosted tools or server-side sessions.
+It retains Gemini part metadata/signatures in the returned history. The model
+still receives its prompts at Google's API; disabling SDK tracing is not offline
+inference.
+
+`src/agent/runtime.mjs` returns structured success/error results, with a 30-second
+default deadline and 10-model-turn limit. There are no automatic provider retries.
+Timeouts/cancellation return promptly even if a model ignores its signal; late
+model results cannot invoke tools. Future external-action tools must stage their
+changes and check the supplied signal before commit. A timeout is not an OS
+sandbox and cannot undo work already performed by arbitrary tool code.
+
+Run/model/tool lifecycle metadata and sanitized fault call sites stay in
+`.agentic-dev/data/agent/activity.jsonl` (256 KiB with two backups). No prompt,
+tool argument/result body or credential is recorded there; external SDK trace
+export and sensitive SDK console logging are disabled. Detailed local execution
+records and dashboard tools arrive in later increments.
+
+Do not start this worktree's normal desktop/monitor/tunnel commands alongside the
+stable system. The SDK commands above are isolated; the existing Teams CDP client
+is still shared and has not yet been integrated into development. Continue using
+the stable checkout's desktop shortcut for normal operation.
 
 Install Bun on Windows if needed:
 
