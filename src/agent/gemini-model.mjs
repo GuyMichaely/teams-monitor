@@ -129,9 +129,3 @@ export class GeminiModel {
   }
   async *getStreamedResponse() { throw unsupported(); }
 }
-
-export function configuredModel(config, options = {}) {
-  const b = config?.brain || {};
-  if ((b.provider || 'gemini') !== 'gemini') throw new AgentRuntimeError('INVALID_CONFIG', 'Only Gemini is configured for the agent SDK currently.');
-  return new GeminiModel({ model: b.model, apiKey: process.env[b.apiKeyEnv || 'GEMINI_API_KEY'], ...options });
-}

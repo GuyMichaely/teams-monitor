@@ -4,6 +4,13 @@ Read this before touching anything. It captures architecture, operational proced
 
 ## Agentic branch
 
+October 1 provider-only exception approved by the user: NVIDIA is configured in
+both agentic and main. Main keeps its original rules runtime and zero dependencies;
+no agentic code was merged there. This supersedes earlier keep-Gemini decisions.
+Agentic uses the SDK Chat Completions converter over src/nvidia-api.mjs; tools retain
+local output validation, portable sessions, bounded/abortable calls and no retries.
+Validate with smoke-nvidia and smoke-agent-nvidia plus existing SDK/policy smokes.
+
 Read PLAN-AGENTIC.md for the approved incremental agent implementation and progress.
 Changes stay in the separate `agentic` worktree; do not merge/deploy or restart the
 stable main installation during development. SDK dependencies are an intentional

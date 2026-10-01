@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Agent, Runner, tool, setTracingDisabled, setTraceProcessors, setSensitiveDataLoggingEnabled } from '@openai/agents';
-import { configuredModel } from './gemini-model.mjs';
+import { configuredModel } from './model.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
 import { recordAgentActivity } from './activity.mjs';
 import { errorEvidence } from '../process-diagnostics.mjs';

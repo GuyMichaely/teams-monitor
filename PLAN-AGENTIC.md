@@ -6,6 +6,12 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
 
 ## Current state and next step
 
+- October 1 follow-up: user approved NVIDIA provider support in agentic and the
+  small provider-only update on main. Both use Nemotron 3 Super, retaining Gemini
+  as an option. Main remains non-agentic with no new dependencies; no branch merge.
+  Earlier stable-main-unchanged statements below describe the original cutover
+  baseline, not this approved provider change. See AGENTIC.md for provider setup.
+
 - Stable checkout: C:/Users/GuyMichaely/projects/teams-monitor, main at
   0efa442b9b31ef0e752a9587eb42db7612ff810e. Keep the stable checkout and its desktop
   system intact while implementing.

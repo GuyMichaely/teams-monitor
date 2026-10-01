@@ -29,6 +29,19 @@ still gates outgoing Teams messages. Agent Read only/Paused do not disable
 deterministic actions. No fake-data preview or simulated application mode exists;
 fixtures are confined to automated tests. Interrupted/gap messages are not replayed.
 
+## Model provider
+
+NVIDIA is selected in `brain` YAML: `provider: nvidia`,
+`model: nvidia/nemotron-3-super-120b-a12b`, `apiKeyEnv: NVIDIA_API_KEY`.
+The private key lives only in ignored `.env`. Gemini remains selectable using its
+model and `GEMINI_API_KEY`. Both run through the Agents SDK with the same tools,
+permissions, deadlines, staged effects and local-only diagnostics. NVIDIA uses
+the shared dependency-free HTTPS transport and the SDK Chat Completions converter;
+tool output validation remains local. Empty/truncated output and provider errors
+cannot commit model effects. Provider-specific history metadata stays local while
+portable text/tool history continues across the switch. No automatic provider retry.
+Free API Catalog access has trial-use/confidential-input restrictions; see README.
+
 ## Policy
 
 Other settings remain YAML. The dashboard edits the trusted local JavaScript file
