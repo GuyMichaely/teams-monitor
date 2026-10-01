@@ -50,8 +50,10 @@ export async function requestNvidia({ apiKey, body, signal, fetchImpl = fetch })
   let completion;
   try { completion = await response.json(); } catch {
     if (signal?.aborted) signal.throwIfAborted();
+    if (bounded.aborted) throw new NvidiaError('TIMEOUT', 'NVIDIA exceeded its request deadline.');
     throw invalid();
   }
-  bounded.throwIfAborted();
+  if (signal?.aborted) signal.throwIfAborted();
+  if (bounded.aborted) throw new NvidiaError('TIMEOUT', 'NVIDIA exceeded its request deadline.');
   return validateNvidiaCompletion(completion);
 }

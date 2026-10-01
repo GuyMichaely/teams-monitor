@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { requestNvidia, validateNvidiaCompletion, NVIDIA_MODEL, NVIDIA_ENDPOINT, brainApiKeyEnv } from '../src/nvidia-api.mjs';
 import { createBrain } from '../src/brain.mjs';
 import { decideWithRules } from '../src/rule-policy.mjs';
+import { dashboardHealth } from '../src/dashboard-health.mjs';
 
 const completion = (content, finish = 'stop') => ({ id: 'synthetic', choices: [{ finish_reason: finish, message: { role: 'assistant', content } }] });
 const plan = { changes: [], additions: [], reason: 'Keep configured actions' };
@@ -63,6 +64,11 @@ try {
   assert.equal(attempts, 1);
   await assert.rejects(requestNvidia({ body: { model: NVIDIA_MODEL } }), { code: 'MISSING_CREDENTIALS' });
   await assert.rejects(requestNvidia({ apiKey: 'x', body: { model: '../invalid' } }), { code: 'INVALID_CONFIG' });
+  globalThis.fetch = async () => Response.json([]);
+  assert.equal((await dashboardHealth(config)).brain.configured, true);
+  assert.equal((await dashboardHealth(config)).brain.model, NVIDIA_MODEL);
+  delete process.env.NVIDIA_API_KEY;
+  assert.equal((await dashboardHealth(config)).brain.configured, false, 'Gemini credentials do not satisfy NVIDIA health');
   console.log('NVIDIA smoke passed: JSON reviews, default/custom key env, protected-action fallback, HTTP failures, no retries, invalid/truncated output and cancellation.');
 } finally {
   globalThis.fetch = previousFetch;
