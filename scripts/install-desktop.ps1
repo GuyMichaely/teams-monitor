@@ -24,6 +24,9 @@ $iconFile = [IO.File]::Create($iconPath)
 try { $icon.Save($iconFile) } finally { $iconFile.Dispose(); $icon.Dispose(); $graphics.Dispose(); $font.Dispose(); $brush.Dispose(); $bitmap.Dispose() }
 & $compiler /nologo /target:winexe /optimize+ /platform:x64 "/out:$exePath" "/win32icon:$iconPath" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $PSScriptRoot 'windows\TeamsMonitorTray.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Tray app compilation failed.' }
+$signalPath = Join-Path $desktopBin 'TM-signal.exe'
+& $compiler /nologo /target:winexe /optimize+ /platform:x64 /define:AWAKE_SIGNAL_ONLY "/out:$signalPath" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $PSScriptRoot 'windows\TeamsMonitorTray.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Tray signal helper compilation failed.' }
 if (-not $BuildOnly) {
     $desktopFolder = [Environment]::GetFolderPath('Desktop')
     $shortcutPath = Join-Path $desktopFolder 'TM.lnk'

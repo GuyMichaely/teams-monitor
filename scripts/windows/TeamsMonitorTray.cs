@@ -138,9 +138,27 @@ namespace TeamsMonitorDesktop {
         }
     }
 
+    // A local save signal, not a timer or file watcher. No event is created by the sender.
+    sealed class AwakeSignal : IDisposable {
+        readonly EventWaitHandle changed;
+        readonly RegisteredWaitHandle registration;
+        public AwakeSignal(string root, Action handler) {
+            changed = new EventWaitHandle(false, EventResetMode.AutoReset, Program.InstanceName(root) + "_awake_changed");
+            registration = ThreadPool.RegisterWaitForSingleObject(changed, delegate(object state, bool timedOut) { handler(); }, null, Timeout.Infinite, false);
+        }
+        public static int Send(string root) {
+            try {
+                EventWaitHandle existing;
+                if (!EventWaitHandle.TryOpenExisting(Program.InstanceName(root) + "_awake_changed", out existing)) return 2;
+                using (existing) { existing.Set(); }
+                return 0;
+            } catch { return 3; }
+        }
+        public void Dispose() { registration.Unregister(null); changed.Dispose(); }
+    }
+
     sealed class TrayApplication : IDisposable {
         readonly string root, bun, logs, session;
-        readonly JavaScriptSerializer json = new JavaScriptSerializer();
         OwnedJob job = new OwnedJob();
         readonly EventWaitHandle show;
         readonly NotifyIcon tray;
@@ -151,8 +169,10 @@ namespace TeamsMonitorDesktop {
         readonly Button start = new Button();
         readonly Button stop = new Button();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+        readonly AwakeSignal awakeSignal;
         Process supervisor;
-        bool busy, quitting, systemStopped, awakePolicyFailed, keepAwakeEnabled = true;
+        bool busy, quitting, disposed, systemStopped, awakePolicyPending, keepAwakeEnabled = true;
+        Task awakePolicyTask;
         int observedExitPid;
         string dashboard = "http://127.0.0.1:8090/";
         public TrayApplication(string project, string runtime, EventWaitHandle showEvent) {
@@ -180,6 +200,18 @@ namespace TeamsMonitorDesktop {
             menu.Items.Add("Quit TM", null, async delegate { await Quit(); });
             tray = new NotifyIcon { Icon = window.Icon, Text = "TM — starting", ContextMenuStrip = menu, Visible = true };
             tray.DoubleClick += delegate { Show(); };
+            // Force the handle now so save notifications can always marshal to its UI thread.
+            var windowHandle = window.Handle;
+            awakeSignal = new AwakeSignal(root, delegate {
+                try {
+                    window.BeginInvoke(new Action(async delegate {
+                        if (quitting || disposed) return;
+                        Log("keep_awake_save_signal");
+                        try { await ReadAwakePolicy(); }
+                        catch { awakeStatus.Text = "Keep awake: Setting update failed — save again"; }
+                    }));
+                } catch (InvalidOperationException) { }
+            });
             timer.Interval = 5000; timer.Tick += async delegate {
                 if (show.WaitOne(0)) Show();
                 if (!busy && !quitting) await Refresh();
@@ -206,7 +238,7 @@ namespace TeamsMonitorDesktop {
         void Open(string target) { try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); } catch { status.Text = "Could not open " + (target == dashboard ? "dashboard." : "logs."); } }
         public void Show() { window.Show(); window.WindowState = FormWindowState.Normal; window.Activate(); }
         void SetAwake(bool active) {
-            active = active && !quitting;
+            active = active && !quitting && !disposed && !systemStopped;
             bool wasActive = keepAwake.Active, wasFailed = keepAwake.Failed;
             bool success = keepAwake.SetActive(active);
             awakeStatus.Text = success ? (active ? "Keep awake: Active (display and system)" : "Keep awake: Off") : "Keep awake: Failed — check logs";
@@ -222,6 +254,24 @@ namespace TeamsMonitorDesktop {
                 File.AppendAllText(path, DateTime.UtcNow.ToString("o") + " " + message + Environment.NewLine);
             } catch { }
         }
+        Task ReadAwakePolicy() {
+            awakePolicyPending = true;
+            if (awakePolicyTask == null || awakePolicyTask.IsCompleted) awakePolicyTask = ReadAwakePolicyLoop();
+            return awakePolicyTask;
+        }
+        async Task ReadAwakePolicyLoop() {
+            // Coalesce saves, but reread if another signal arrives during the config read.
+            while (awakePolicyPending && !quitting && !disposed) {
+                awakePolicyPending = false;
+                try {
+                    var policy = await Control("awake-policy");
+                    if (quitting || disposed) return;
+                    if (awakePolicyPending) continue;
+                    keepAwakeEnabled = Convert.ToBoolean(policy["enabled"]);
+                    SetAwake(keepAwakeEnabled && supervisor != null && !supervisor.HasExited);
+                } catch { Log("keep_awake_policy_read_failed save_again_required"); throw; }
+            }
+        }
         async Task<Dictionary<string, object>> Control(string action, int ownerPid = 0) {
             return await Task.Run(() => {
                 using (var process = new Process()) {
@@ -233,7 +283,7 @@ namespace TeamsMonitorDesktop {
                     var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
                     if (!process.WaitForExit(25000)) { process.Kill(); throw new TimeoutException(); }
                     Task.WaitAll(output, error);
-                    var result = json.Deserialize<Dictionary<string, object>>(output.Result);
+                    var result = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(output.Result);
                     if (process.ExitCode != 0 || result.ContainsKey("error")) throw new InvalidOperationException(result.ContainsKey("error") ? Convert.ToString(result["error"]) : "LOCAL_CONTROL_FAILED");
                     return result;
                 }
@@ -243,7 +293,7 @@ namespace TeamsMonitorDesktop {
             if (busy || quitting) return;
             busy = true; start.Enabled = false; stop.Enabled = false; systemStopped = false; status.Text = "Starting system…";
             try {
-                var policy = await Control("awake-policy"); keepAwakeEnabled = Convert.ToBoolean(policy["enabled"]);
+                await ReadAwakePolicy();
                 SetAwake(keepAwakeEnabled);
                 if (supervisor != null && !supervisor.HasExited) {
                     await Control("resume-components"); Log("components_resumed"); return;
@@ -288,6 +338,7 @@ namespace TeamsMonitorDesktop {
                 try { await Control("stop-owned", supervisor.Id); } catch { Log("api_stop_unavailable owned_tree_will_stop"); }
                 await Task.Run(() => supervisor.WaitForExit(5000));
             }
+            if (awakePolicyTask != null) try { await awakePolicyTask; } catch { }
             job.Dispose();
             if (supervisor != null) { supervisor.Dispose(); supervisor = null; }
             if (!quitting) job = new OwnedJob();
@@ -295,7 +346,7 @@ namespace TeamsMonitorDesktop {
         }
         async Task Stop() {
             if (busy || quitting) return;
-            busy = true; start.Enabled = false; stop.Enabled = false;
+            busy = true; systemStopped = true; start.Enabled = false; stop.Enabled = false;
             status.Text = "Stopping system…"; tray.Text = "TM — stopping"; Log("system_stop_requested");
             try {
                 await StopOwnedTree(); systemStopped = true;
@@ -310,15 +361,6 @@ namespace TeamsMonitorDesktop {
         async Task Refresh() {
             busy = true;
             try {
-                if (supervisor == null || supervisor.HasExited) SetAwake(false);
-                // Read local config independently of GUI liveness so Off works during recovery.
-                try {
-                    var policy = await Control("awake-policy"); keepAwakeEnabled = Convert.ToBoolean(policy["enabled"]);
-                    if (awakePolicyFailed) Log("keep_awake_policy_read_recovered"); awakePolicyFailed = false;
-                } catch {
-                    if (!awakePolicyFailed) Log("keep_awake_policy_read_failed retaining_last_setting"); awakePolicyFailed = true;
-                }
-                SetAwake(keepAwakeEnabled && supervisor != null && !supervisor.HasExited);
                 if (supervisor == null || supervisor.HasExited) {
                     SetAwake(false);
                     if (systemStopped) {
@@ -350,7 +392,7 @@ namespace TeamsMonitorDesktop {
             tray.Visible = false; window.Quitting = true; window.Close(); Application.ExitThread();
         }
         public void Run() { Application.Run(window); }
-        public void Dispose() { keepAwake.Dispose(); timer.Dispose(); tray.Dispose(); job.Dispose(); if (supervisor != null) supervisor.Dispose(); window.Dispose(); }
+        public void Dispose() { disposed = true; awakeSignal.Dispose(); keepAwake.Dispose(); timer.Dispose(); tray.Dispose(); job.Dispose(); if (supervisor != null) supervisor.Dispose(); window.Dispose(); }
     }
 
     public static class Program {
@@ -358,9 +400,13 @@ namespace TeamsMonitorDesktop {
             using (var hash = SHA256.Create()) return "Local\\TeamsMonitorTray_" + BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToLowerInvariant()))).Replace("-", "").Substring(0, 24);
         }
         [STAThread] public static int Main(string[] args) {
+            string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", ".."));
+#if AWAKE_SIGNAL_ONLY
+            // Separate executable: an older tray build must never mistake a signal for launch.
+            return AwakeSignal.Send(root);
+#else
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
-            string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", ".."));
             string bun = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".bun", "bin", "bun.exe");
             try {
                 if (args.Length > 0 && args[0] == "--self-test") { SelfTest(args[1]); return 0; }
@@ -382,6 +428,7 @@ namespace TeamsMonitorDesktop {
                 MessageBox.Show("TM could not start (" + error.GetType().Name + ").\nCheck the installation and data/desktop logs.", "TM", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
+#endif
         }
         static void RecordFatal(string root, Exception error) {
             try {
@@ -395,6 +442,7 @@ namespace TeamsMonitorDesktop {
             } catch { }
         }
         static void SelfTest(string report) {
+            SelfTestSaveSignal(report);
             var requests = new List<uint>();
             var awake = new KeepAwake(delegate(uint flags) { requests.Add(flags); return 0x80000000; });
             awake.SetActive(true); awake.SetActive(true);
@@ -446,7 +494,42 @@ namespace TeamsMonitorDesktop {
                 if (!first || second) throw new Exception("Duplicate launch lock failed.");
                 one.ReleaseMutex();
             }
-            File.WriteAllText(report, "Passed: keep-awake Windows acquire/release, flags, hide retention, stop/restart, failure retries and disposal; close hides; explicit quit closes; child starts in owned job; descendants inherit; job disposal stops entire tree; duplicate launch is locked.");
+            File.WriteAllText(report, "Passed: immediate save signal from helper to UI thread, on/off, absent listener; keep-awake Windows acquire/release, flags, hide retention, stop/restart, failure retries and disposal; close hides; explicit quit closes; child starts in owned job; descendants inherit; job disposal stops entire tree; duplicate launch is locked.");
+        }
+        static void SelfTestSaveSignal(string report) {
+            // A copied helper derives this private home, never the actual installed tray's event.
+            string home = Path.Combine(Path.GetDirectoryName(report), "signal-home");
+            string bin = Path.Combine(home, "data", "desktop"); Directory.CreateDirectory(bin);
+            string helper = Path.Combine(bin, "TM-signal.exe");
+            File.Copy(Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "TM-signal.exe"), helper, true);
+            int ownerThread = Thread.CurrentThread.ManagedThreadId, applied = 0;
+            bool enabled = false;
+            var requests = new List<uint>();
+            using (var window = new TrayWindow())
+            using (var awake = new KeepAwake(delegate(uint flags) { requests.Add(flags); return 0x80000000; })) {
+                var handle = window.Handle;
+                using (var signal = new AwakeSignal(home, delegate {
+                    window.BeginInvoke(new Action(delegate {
+                        if (Thread.CurrentThread.ManagedThreadId != ownerThread) throw new Exception("Signal must apply on UI thread.");
+                        awake.SetActive(enabled); applied++;
+                    }));
+                })) {
+                    foreach (bool next in new[] { true, false, true, false }) {
+                        enabled = next; int previous = applied;
+                        using (var sender = Process.Start(new ProcessStartInfo(helper) { UseShellExecute = false, CreateNoWindow = true })) {
+                            if (!sender.WaitForExit(2000) || sender.ExitCode != 0) throw new Exception("Save helper must signal an existing listener promptly.");
+                        }
+                        var deadline = Stopwatch.StartNew();
+                        while (applied == previous && deadline.ElapsedMilliseconds < 2000) { Application.DoEvents(); Thread.Sleep(5); }
+                        if (applied != previous + 1 || awake.Active != next) throw new Exception("Save must apply without a refresh timer.");
+                    }
+                    if (requests.Count != 4) throw new Exception("On/off signals must all reach keep-awake.");
+                }
+                using (var sender = Process.Start(new ProcessStartInfo(helper) { UseShellExecute = false, CreateNoWindow = true })) {
+                    if (!sender.WaitForExit(2000) || sender.ExitCode != 2) throw new Exception("An absent tray must not be launched or treated as notified.");
+                }
+                window.Quitting = true;
+            }
         }
     }
 }

@@ -60,13 +60,19 @@ async function testBrainTrace() {
 await testChildProcess();
 await testBrainTrace();
 
+const awakeNotifications = [];
+let signalResult = { notified: true };
+
 const { server, close } = startGui({
   gui: {
     host: "127.0.0.1",
     port,
     authTokenEnv: "GUI_TOKEN",
   },
-});
+}, undefined, undefined, { notifyTray: async () => {
+  awakeNotifications.push((await loadConfig()).desktop.keepAwake);
+  return signalResult;
+} });
 
 let ws;
 try {
@@ -110,18 +116,30 @@ try {
     assert.equal((await fetch(awakeUrl, { method: 'PUT', headers: awakeHeaders, body: JSON.stringify(invalid) })).status, 400);
     assert.equal(await readFile(CONFIG_FILE, 'utf8'), before);
   }
+  assert.deepEqual(awakeNotifications, [], 'unauthorized/invalid saves must not signal the tray');
   for (const enabled of [false, true]) {
     const before = await loadConfig();
     const response = await fetch(awakeUrl, { method: 'PUT', headers: awakeHeaders, body: JSON.stringify({ enabled }) });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).enabled, enabled);
+    const saved = await response.json();
+    assert.equal(saved.enabled, enabled);
+    assert.deepEqual(saved.tray, { notified: true });
     assert.deepEqual(await loadConfig(), { ...before, desktop: { ...before.desktop, keepAwake: enabled } });
     const runtime = await fetch(`http://127.0.0.1:${port}/api/runtime/config`, { headers: awakeHeaders });
     assert.equal((await runtime.json()).desktop.keepAwake, enabled);
   }
-  const invalidDesktop = await loadConfig(), beforeInvalidDesktop = await readFile(CONFIG_FILE, 'utf8');
+  const invalidDesktop = await loadConfig();
+  assert.deepEqual(awakeNotifications, [false, true], 'signal only after the new config is persisted');
+  for (const reason of ['unavailable', 'signal_failed']) {
+    signalResult = { notified: false, reason };
+    const response = await fetch(awakeUrl, { method: 'PUT', headers: awakeHeaders, body: '{"enabled":false}' });
+    assert.equal(response.status, 200, 'saved config remains valid when the tray is absent/unreachable');
+    assert.deepEqual((await response.json()).tray, signalResult);
+  }
+  assert(!page.includes('applies on next tray refresh'));
+  const beforeInvalidDesktopSave = await readFile(CONFIG_FILE, 'utf8');
   await assert.rejects(saveConfig({ ...invalidDesktop, desktop: { keepAwake: 'false' } }), /must be a boolean/);
-  assert.equal(await readFile(CONFIG_FILE, 'utf8'), beforeInvalidDesktop);
+  assert.equal(await readFile(CONFIG_FILE, 'utf8'), beforeInvalidDesktopSave);
 
   const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/api/diagnostics?limit=5`, {
     headers: { Authorization: "Bearer runtime-smoke-token" },

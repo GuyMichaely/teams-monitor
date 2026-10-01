@@ -17,6 +17,7 @@ import { DATA_DIR } from "./state.mjs";
 import { controlState, registrationFileExists, saveFcmRegistration } from "./alert-runtime.mjs";
 import { DEFAULT_FCM_SERVICE_ACCOUNT_FILE, resolveFcmConfig } from "./fcm-config.mjs";
 import { TUNNEL_HOST, TUNNEL_NAME } from "./tunnel-config.mjs";
+import { signalKeepAwake } from './desktop-signal.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TUNNEL_LOG = join(DATA_DIR, "tunnel.log");
@@ -157,14 +158,16 @@ async function savePollInterval(req) {
   return { pollIntervalMs };
 }
 
-async function saveKeepAwake(req) {
+async function saveKeepAwake(req, notifyTray) {
   const body = await readJsonBody(req);
   if (typeof body?.enabled !== 'boolean')
     throw Object.assign(new Error('enabled must be a boolean'), { httpCode: 400 });
   const cfg = await loadConfig();
   cfg.desktop = { ...cfg.desktop, keepAwake: body.enabled };
   await saveConfig(cfg);
-  return { enabled: body.enabled };
+  const tray = await notifyTray();
+  logDiagnostic('keep_awake_saved', { enabled: body.enabled, trayNotified: tray.notified, reason: tray.reason });
+  return { enabled: body.enabled, tray };
 }
 
 function tunnelProcesses() {
@@ -270,7 +273,7 @@ function stopTunnel() {
 }
 
 
-export function startGui(config) {
+export function startGui(config, { notifyTray = signalKeepAwake } = {}) {
   const result = startCoreGui(config);
   const { server } = result;
   const coreHandler = server.listeners("request")[0];
@@ -292,7 +295,7 @@ export function startGui(config) {
           return sendJson(res, 200, { ok: true, ...(await savePollInterval(req)) });
         }
         if (req.method === "PUT" && url.pathname === "/api/config/keep-awake") {
-          return sendJson(res, 200, { ok: true, ...(await saveKeepAwake(req)) });
+          return sendJson(res, 200, { ok: true, ...(await saveKeepAwake(req, notifyTray)) });
         }
         if (req.method === "PUT" && url.pathname === "/api/config/alerts") {
           return sendJson(res, 200, await saveAlertConfig(req));

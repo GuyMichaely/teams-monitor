@@ -340,7 +340,8 @@ function dashboardClient() {
     try {
       const value = await api('/api/config/keep-awake', 'PUT', { enabled: $('keepAwake').checked });
       runtime.desktop = { ...runtime.desktop, keepAwake: value.enabled };
-      setText('keepAwakeSaveState', 'Saved · applies on next tray refresh');
+      setText('keepAwakeSaveState', value.tray?.notified ? 'Saved · tray notified' :
+        value.tray?.reason === 'unavailable' ? 'Saved · applies when tray starts' : 'Saved · tray notification failed');
     } catch (e) {
       setText('keepAwakeSaveState', 'Save failed'); notify(e.message, true);
     } finally { keepAwakeSaving = false; renderStatus(); }

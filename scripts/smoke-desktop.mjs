@@ -5,9 +5,27 @@ import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DATA_DIR, ROOT } from '../src/local-paths.mjs';
 import { trayControl } from './tray-control.mjs';
+import { signalKeepAwake } from '../src/desktop-signal.mjs';
+import { EventEmitter } from 'node:events';
 
 const traySource = await readFile(new URL('./windows/TeamsMonitorTray.cs', import.meta.url), 'utf8');
 assert.doesNotMatch(traySource, /clos(?:e|ing) this window/i);
+const refresh = traySource.slice(traySource.indexOf('async Task Refresh()'), traySource.indexOf('async Task Quit()'));
+assert.doesNotMatch(refresh, /awake-policy|ReadAwakePolicy/, 'health refresh must not reread keep-awake policy');
+assert.deepEqual(await signalKeepAwake({ platform: 'linux' }), { notified: false, reason: 'unavailable' });
+assert.deepEqual(await signalKeepAwake(), { notified: false, reason: 'unavailable' }, 'isolated home must not signal the real installation');
+for (const [code, result] of [[0, { notified: true }], [2, { notified: false, reason: 'unavailable' }], [3, { notified: false, reason: 'signal_failed' }]]) {
+  assert.deepEqual(await signalKeepAwake({ platform: 'win32', home: DATA_DIR, launch: (exe, args, options) => {
+    assert.equal(exe, join(DATA_DIR, 'data', 'desktop', 'TM-signal.exe'));
+    assert.deepEqual(args, []); assert.equal(options.windowsHide, true);
+    const child = new EventEmitter(); queueMicrotask(() => child.emit('exit', code)); return child;
+  } }), result);
+}
+let killed = false;
+assert.deepEqual(await signalKeepAwake({ platform: 'win32', timeoutMs: 10, launch: () => {
+  const child = new EventEmitter(); child.kill = () => { killed = true; }; return child;
+} }), { notified: false, reason: 'signal_failed' });
+assert.equal(killed, true, 'timeout kills only the handle-owned helper');
 
 const config = { gui: { port: 18240, authTokenEnv: 'DESKTOP_TEST_TOKEN' } };
 process.env.DESKTOP_TEST_TOKEN = 'fixture';
