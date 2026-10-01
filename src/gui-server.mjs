@@ -11,9 +11,11 @@ import { replyPolicy, validateReplyPolicy } from "./reply-policy.mjs";
 import { dashboardHealth } from "./dashboard-health.mjs";
 import { supervisorStatus } from './supervisor-status.mjs';
 import { controlState, recordTransportSuccess, saveFcmRegistration } from "./alert-runtime.mjs";
-import { loadConfig, saveConfig } from "./context.mjs";
-import { validateAutomation } from "./deterministic-rules.mjs";
-import { parseConfigYaml, configYaml } from './config-format.mjs';
+import { loadConfig, saveConfig, currentConfig } from "./context.mjs";
+import { agentStore } from './agent/store.mjs';
+import { agentAPI } from './agent/api.mjs';
+import { ownerActive } from './agent/owner.mjs';
+import { assertActionAuthority } from './agent/executor.mjs';
 import { getTeamsPresence, setTeamsPresence } from "./teams-presence.mjs";
 import { activityView, clearActivityThrough, restoreActivity } from "./activity-view.mjs";
 import { createScheduleStore } from './scheduled-actions.mjs';
@@ -60,20 +62,7 @@ async function diagnostics(limit) {
   };
 }
 
-async function getPolicyRules() {
-  const cfg = await loadConfig();
-  return validateAutomation(cfg.automation);
-}
-
-async function putPolicyRules(body) {
-  const automation = validateAutomation(body);
-  const cfg = await loadConfig();
-  cfg.automation = automation;
-  await saveConfig(cfg);
-  return automation;
-}
-
-export function startGui(config, presence = { get: getTeamsPresence, set: setTeamsPresence }) {
+export function startGui(config, presence = { get: getTeamsPresence, set: setTeamsPresence }, brokerIO) {
   if (process.env.TEAMS_MONITOR_DEV === '1' && config.port !== 29222) throw new Error('Development GUI requires mock Teams CDP port 29222.');
   const result = startRuntimeGui(config);
   const { server } = result;
@@ -81,8 +70,8 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
   server.removeListener("request", runtimeHandler);
   const g = config?.gui || {};
   const token = process.env[g.authTokenEnv || "GUI_TOKEN"] || null;
-  let schedules;
-  server.once('close', () => schedules?.close());
+  let schedules, agent;
+  server.once('close', () => { schedules?.close(); agent?.close(); });
 
   logDiagnostic("gui_started", {
     pid: process.pid,
@@ -129,10 +118,21 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
   server.on("request", async (req, res) => {
     const url = new URL(req.url, "http://x");
 
+    if (url.pathname.startsWith('/api/agent/')) {
+      if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: 'unauthorized' });
+      try {
+        agent ||= agentStore();
+        res.setHeader('Cache-Control', 'no-store');
+        const body = ['POST', 'PUT'].includes(req.method) ? await readJsonBody(req, 262144) : {};
+        const health = url.pathname === '/api/agent/status' ? await orchestratorStatus((await loadConfig()).pollIntervalMs) : null;
+        return sendJson(res, 200, await agentAPI({ url, method: req.method, body, store: agent, running: !!health?.running }));
+      } catch (error) { return sendJson(res, 400, { ok: false, error: error.code ? error.message : 'Invalid agent request.', code: error.code, locations: error.details?.locations }); }
+    }
+
     if (url.pathname === '/api/teams/operation') {
       if (token && !authOk(req.headers.authorization, token)) return sendJson(res, 401, { error: 'unauthorized' });
       if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
-      try { return sendJson(res, 200, await teamsOperation(await readJsonBody(req, 65536))); }
+      try { return sendJson(res, 200, await teamsOperation(await readJsonBody(req, 65536), brokerIO)); }
       catch (error) { return sendJson(res, 409, { error: 'Teams operation not confirmed.', scheduleCode: error.scheduleCode }); }
     }
 
@@ -181,7 +181,14 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
           const body = await readJsonBody(req);
           if (body.expiresAt !== undefined && (!Number.isSafeInteger(body.expiresAt) || body.expiresAt > Date.now() + 300000))
             return sendJson(res, 400, { error: 'Invalid status execution deadline.' });
-          const result = await presence.set(body.status, config.port || 9222, { expiresAt: body.expiresAt ?? Infinity });
+          if (!ownerActive(body.owner)) return sendJson(res, 409, { error: 'Orchestrator owner is no longer active.' });
+          if (body.action) { agent ||= agentStore(); assertActionAuthority(body.action, await loadConfig(), agent); }
+          const result = await presence.set(body.status, config.port || 9222, { expiresAt: body.expiresAt ?? Infinity,
+            valid: () => {
+              if (!ownerActive(body.owner)) return false;
+              try { if (body.action) assertActionAuthority(body.action, currentConfig(), agent); return true; }
+              catch { return false; }
+            } });
           logDiagnostic(result.superseded ? "teams_presence_superseded" : "teams_presence_changed", { requested: result.requested, previous: result.previous, status: result.status, verified: result.verified });
           return sendJson(res, 200, result);
         }
@@ -222,28 +229,6 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
       } catch (e) { return sendJson(res, e.httpCode || 500, { error: e.message }); }
     }
 
-
-    if (["/api/policy/automation", "/api/policy/automation/yaml"].includes(url.pathname)) {
-      try {
-        const yamlFormat = url.pathname.endsWith('/yaml');
-        if (token && !authOk(req.headers.authorization, token)) {
-          return sendJson(res, 401, { ok: false, error: "unauthorized" });
-        }
-        if (req.method === "GET") {
-          const automation = await getPolicyRules();
-          return sendJson(res, 200, yamlFormat ? { yaml: configYaml(automation) } : automation);
-        }
-        if (req.method === "PUT") {
-          const body = await readJsonBody(req);
-          if (yamlFormat && typeof body?.yaml !== 'string') throw new Error('yaml must be a string');
-          const automation = await putPolicyRules(yamlFormat ? parseConfigYaml(body.yaml) : body);
-          return sendJson(res, 200, yamlFormat ? { yaml: configYaml(automation) } : automation);
-        }
-        return sendJson(res, 405, { ok: false, error: "method not allowed" });
-      } catch (e) {
-        return sendJson(res, e.httpCode || 400, { ok: false, error: e.message });
-      }
-    }
 
     if (url.pathname === "/api/diagnostics") {
       if (token && !authOk(req.headers.authorization, token)) {

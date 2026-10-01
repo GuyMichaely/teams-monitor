@@ -33,12 +33,15 @@ export function buildActivityGroups(items) {
       // Icons represent recorded success, not a model's proposal or a failed attempt.
       if (e.status === 'ok' && ['teams_reply', 'hold_message'].includes(e.effect)) actions.add('reply');
       if (e.status === 'ok' && ['phone_alert', 'phone_alert_backstop'].includes(e.effect)) actions.add('phone');
+      if (e.status === 'ok' && e.effect === 'scheduled_reply') actions.add('scheduled_reply');
+      if (e.status === 'ok' && e.effect === 'scheduled_phone') actions.add('scheduled_phone');
       if (e.effect === 'brain_actions' && Array.isArray(e.results)) {
         for (const r of e.results) if (r?.name === 'alert_phone' && !r.error && r.result != null && r.result?.sent !== false) actions.add('phone');
       }
     }
-    g.icons = [...actions].map(a => a === 'reply' ? { symbol: '🗣️', label: 'Teams reply sent' } : { symbol: '🚨', label: 'Phone alert accepted for delivery' });
-    g.outcomes = [...actions].map(a => a === 'phone' ? 'alarm' : 'reply');
+    g.icons = [...actions].map(a => ({ reply: { symbol: '🗣️', label: 'Teams reply sent' }, phone: { symbol: '🚨', label: 'Phone alert accepted for delivery' },
+      scheduled_reply: { symbol: '⏳🗣️', label: 'Teams reply scheduled' }, scheduled_phone: { symbol: '⏳🚨', label: 'Phone alert scheduled' } })[a]);
+    g.outcomes = [...actions].map(a => a.includes('phone') ? 'alarm' : 'reply');
     if (!g.outcomes.length && g.done && !g.error) g.outcomes.push('ignore');
   }
   return [...groups.values()].sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));

@@ -31,5 +31,7 @@ export function messageContext(row, store, config, userProfile) {
     isDM: !message.reaction && normalize(row.chat) === normalize(message.author),
     mentionsMe: isMentioned(message, config.alerts?.mentionNames), reaction: message.reaction || null,
     history: store.history(row.chat).map(r => r.value).filter(Boolean), userProfile,
+    mentionNames: config.alerts?.mentionNames || [], ignoreAuthors: config.alerts?.ignoreAuthors || [],
+    notifyAll: config.alerts?.notifyAll === true,
     now: new Date().toISOString(), coverage: 'Observed visible tails only; not a complete Teams archive.' };
 }

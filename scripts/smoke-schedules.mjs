@@ -9,6 +9,7 @@ import { createScheduleStore, runScheduledAction, SCHEDULE_GRACE_MS, scheduleErr
 import { sendScheduledFromDocument, sendScheduledMessage, setScheduledPresence } from '../src/scheduled-teams.mjs';
 import { openChat } from '../src/teams.mjs';
 import { startGui } from '../src/gui-server.mjs';
+import { loadConfig, saveConfig } from '../src/context.mjs';
 
 let now = Date.parse('2026-10-01T12:00:00Z');
 const file = join(DATA_DIR, 'schedule-tests.sqlite');
@@ -143,9 +144,13 @@ try {
 } finally { mock.stop(true); }
 
 process.env.SCHEDULE_TEST_TOKEN = 'schedule-fixture';
+let revokeOnSet = false;
 const gui = startGui({ gui: { host: '127.0.0.1', port: 18243, authTokenEnv: 'SCHEDULE_TEST_TOKEN' } }, {
   get: async () => ({ connected: true }),
-  set: async (value, port, options) => ({ verified: true, value, expiresAt: options.expiresAt }),
+  set: async (value, port, options) => {
+    if (revokeOnSet) { const cfg = await loadConfig(); cfg.agent.ceiling.tools = []; await saveConfig(cfg); }
+    return options.valid() ? { verified: true, value, expiresAt: options.expiresAt } : { expired: true, attempted: false };
+  },
 });
 if (!gui.server.listening) await new Promise(resolve => gui.server.once('listening', resolve));
 const request = (path, method = 'GET', body, auth = true) => fetch('http://127.0.0.1:18243' + path, {
@@ -168,6 +173,11 @@ try {
   const old = process.env.GUI_TOKEN; process.env.GUI_TOKEN = 'schedule-fixture';
   assert.equal((await setScheduledPresence('away', { gui: { port: 18243 } }, Date.now() + 30000)).value, 'away');
   if (old === undefined) delete process.env.GUI_TOKEN; else process.env.GUI_TOKEN = old;
+  const original = await loadConfig(); revokeOnSet = true;
+  const revoked = await request('/api/teams/presence', 'PUT', { status: 'offline', expiresAt: Date.now() + 30000,
+    action: { id: 'revoked-presence', origin: 'agent', kind: 'status', presence: 'offline', authority: { tools: ['set_status'], initiateActions: ['status'] } } });
+  assert.equal(revoked.status, 200); assert.equal((await revoked.json()).expired, true, 'queued status must recheck the latest ceiling before touching Teams');
+  revokeOnSet = false; await saveConfig(original);
   const html = await (await request('/')).text();
   for (const marker of ['id="scheduleForm"', 'id="schedulePending"', 'id="scheduleHistory"']) assert(html.includes(marker));
   for (const match of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) new Function(match[1]);

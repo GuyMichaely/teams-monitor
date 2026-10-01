@@ -191,6 +191,7 @@ function tunnelProcesses() {
 }
 
 function tunnelStatus() {
+  if (process.env.TEAMS_MONITOR_DEV === '1') return { running: false, pids: [], name: 'Disabled in development', hostname: 'Mock development' };
   const processes = tunnelProcesses();
   return {
     running: processes.length > 0,

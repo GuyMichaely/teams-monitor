@@ -53,28 +53,13 @@ integrations:
     longPollMaxMs: 30000
 debug: 
   echoLoop: false
-automation: 
-  rules: 
-    - id: direct-message-alert
-      when: 
-        type: direct_message
-      action: 
-        type: alert_phone
-      agent: 
-        cancel: false
-        modify: false
-    - id: mention-alert
-      when: 
-        type: mention
-      action: 
-        type: alert_phone
-      agent: 
-        cancel: false
-        modify: false
-  agent: 
-    initiate: 
-      when: unmatched
-      actions: 
-        - alert_phone
-        - reply
-    timeoutMs: 5000
+agent:
+  timeoutMs: 30000
+  maxTurns: 10
+  maxMessages: 3
+  policyTimeoutMs: 90000
+  # Code grants per-call authority; this ceiling and replyPolicy can only narrow it.
+  ceiling:
+    readChats: ['*']
+    writeChats: ['*']
+    initiateActions: [message, alert, status, wake]

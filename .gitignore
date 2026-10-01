@@ -7,7 +7,10 @@ node_modules/
 config/config.json
 config/config.yaml
 config/config.yaml.*.tmp
+config/config.yaml.automation.bak
 config/*.json.migrated.bak
 config/fcm-service-account.json
 context/user-profile.md
+automation/policy.mjs
+automation/policy.mjs.*.mjs
 android-app/app/google-services.json

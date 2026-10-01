@@ -145,12 +145,12 @@ const queues = new Map();
 let requestId = 0;
 const supersededResult = (request) => ({ ok: false, superseded: true, requested: request.status });
 
-export async function setTeamsPresence(status, port = 9222, { expiresAt = Infinity } = {}) {
+export async function setTeamsPresence(status, port = 9222, { expiresAt = Infinity, valid = () => true } = {}) {
   const key = normalizeStatus(status); // Validate before connecting or touching Teams.
   if (Date.now() > expiresAt) return { ok: false, expired: true, requested: key };
   const queue = queues.get(port) ?? { latest: null, running: false };
   queues.set(port, queue);
-  const request = { id: ++requestId, status: key, expiresAt };
+  const request = { id: ++requestId, status: key, expiresAt, valid };
   let resolve, reject;
   const result = new Promise((res, rej) => { resolve = res; reject = rej; });
   request.resolve = resolve; request.reject = reject;
@@ -168,11 +168,11 @@ async function drainPresenceQueue(port, queue) {
       const request = queue.latest;
       let session;
       try {
-        if (Date.now() > request.expiresAt) { request.resolve({ ok: false, expired: true, requested: request.status }); if (queue.latest === request) queue.latest = null; continue; }
+        if (Date.now() > request.expiresAt || !request.valid()) { request.resolve({ ok: false, expired: true, requested: request.status }); if (queue.latest === request) queue.latest = null; continue; }
         session = await findSession(port);
         if (!session) throw Object.assign(new Error("Teams profile is not reachable over CDP; open Teams with the debugging port enabled"), { httpCode: 503 });
         if (queue.latest !== request) { request.resolve(supersededResult(request)); continue; }
-        const response = await setPresenceOnSession(session, request.status, () => queue.latest === request && Date.now() <= request.expiresAt);
+        const response = await setPresenceOnSession(session, request.status, () => queue.latest === request && Date.now() <= request.expiresAt && request.valid());
         request.resolve(Date.now() > request.expiresAt ? { ok: false, expired: true, attempted: !!response.attempted, requested: request.status } : response);
       } catch (error) {
         if (queue.latest !== request) request.resolve(supersededResult(request));

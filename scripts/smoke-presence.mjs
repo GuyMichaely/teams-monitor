@@ -108,6 +108,8 @@ try {
   const beforeExpired = mock.state.clicks.length;
   assert.equal((await setTeamsPresence('offline', server.port, { expiresAt: Date.now() - 1 })).expired, true);
   assert.equal(mock.state.clicks.length, beforeExpired, 'Expired schedule must not touch Teams');
+  assert.equal((await setTeamsPresence('offline', server.port, { valid: () => false })).expired, true);
+  assert.equal(mock.state.clicks.length, beforeExpired, 'Revoked owner/authority must not touch Teams');
   mode = "offline";
   assert.equal((await getTeamsPresence(server.port)).connected, false);
   await assert.rejects(setTeamsPresence("busy", server.port), { httpCode: 503 });

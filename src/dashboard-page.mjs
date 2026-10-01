@@ -14,8 +14,10 @@ function dashboardClient() {
   let scheduleBusy = false, schedulesRefreshing = false, schedulesFingerprint = '', scheduleRequestId = null;
   let activityClearing = false, clearedThrough = null, activityGeneration = 0;
   let items = [], groups = [], selected = null, lastSuccess = null, paused = false, refreshing = false, slowAt = 0;
-  let deliveryReady = false, policyReady = false, profileReady = false, rulesReady = false;
+  let deliveryReady = false, policyReady = false, profileReady = false, agentPolicyReady = false;
   let deliveryDirty = false, policyDirty = false, profileDirty = false, pollDirty = false, rulesDirty = false;
+  let agentBusy = false, agentRefreshing = false, agentStatus = null, agentPolicyVersion = null;
+  let agentModeDirty = false, agentNoteDirty = false, agentNotePath = '', agentBriefDirty = false;
   let listFingerprint = "", flowFingerprint = "";
   const failures = new Map();
 
@@ -160,7 +162,7 @@ function dashboardClient() {
       const key = event.stage + ':' + index;
       const body = event.stage === 'message' ? event.latest?.text : event.reason || event.error || event.detail || (event.stage === 'brain_input' ? [event.provider, event.model].filter(Boolean).join(' · ') : event.stage === 'brain_output' ? 'Model response captured' : event.effect?.replaceAll('_', ' ') || '');
       const details = event.stage === 'brain_input' ? { system: event.system, user: event.user, input: event.input, skipped: event.skipped } : event.stage === 'brain_output' ? event.raw : event.ruleActions || event.ruleEvaluations || event.results || event.reply || event.result;
-      return `<li class="stage ${event.stage === 'error' || event.status === 'error' ? 'failed' : ''}"><span class="stage-dot">${index + 1}</span><div class="stage-title"><strong>${escape(event.source === 'rules' ? 'Configured rules evaluated' : event.source === 'rule_review' ? 'LLM review failed · configured actions retained' : names[event.stage] || event.stage)}</strong><span>+${escape(seconds)}s</span></div><time>${escape(time(event.at))}</time>${event.action ? badge(event.action) : ''}<p>${escape(body)}</p>${details ? `<details data-key="${escape(key)}" ${open.includes(key) ? 'open' : ''}><summary>${event.stage === 'brain_input' ? 'View exact brain input' : 'View details'}</summary><pre>${escape(pretty(details))}</pre></details>` : ''}</li>`;
+      return `<li class="stage ${event.stage === 'error' || event.status === 'error' ? 'failed' : ''}"><span class="stage-dot">${index + 1}</span><div class="stage-title"><strong>${escape(event.source === 'javascript' ? 'JavaScript policy' : event.source === 'rules' ? 'Configured rules evaluated' : event.source === 'rule_review' ? 'LLM review failed · configured actions retained' : names[event.stage] || event.stage)}</strong><span>+${escape(seconds)}s</span></div><time>${escape(time(event.at))}</time>${event.action ? badge(event.action) : ''}<p>${escape(body)}</p>${details ? `<details data-key="${escape(key)}" ${open.includes(key) ? 'open' : ''}><summary>${event.stage === 'brain_input' ? 'View exact brain input' : 'View details'}</summary><pre>${escape(pretty(details))}</pre></details>` : ''}</li>`;
     }).join('')}</ol>` : '<div class="empty"><p>Invalid log format</p></div>') + (!group.done && stages.length ? '<p class="trace-note">No completed action is recorded in this log window. New stages appear here while live updates are on.</p>' : '');
   }
   function renderLogs(lines) {
@@ -205,7 +207,7 @@ function dashboardClient() {
       await Promise.all([
         policyReady ? null : readPart('Reply policy', '/api/reply-policy', (v) => { if (!policyDirty) { $('replyMode').value = v.mode; $('replyEntries').value = v.entries.join('\n'); } policyReady = true; policySummary(); }),
         profileReady ? null : readPart('Brain context', '/api/profile', (v) => { if (!profileDirty) $('brainContext').value = v.text; profileReady = true; }),
-        rulesReady ? null : readPart('Alert rules', '/api/policy/automation/yaml', (v) => { $('alertRules').value = v.yaml; rulesReady = true; $('ruleFields').disabled = false; }),
+        agentPolicyReady ? null : readPart('JavaScript policy', '/api/agent/policy', (v) => { if (!rulesDirty) $('alertRules').value = v.source; agentPolicyVersion = v.version; setText('policyVersion', 'Version ' + v.version); agentPolicyReady = true; $('ruleFields').disabled = false; }),
       ]);
       renderStatus(); renderPoll(); renderMessages(); renderFlow(); renderLogs(logData);
       $('connectionError').hidden = !failures.size;
@@ -370,7 +372,160 @@ function dashboardClient() {
   $('brainContext').oninput = () => { profileDirty = true; setText('profileSaveState', 'Unsaved'); };
   $('profileForm').onsubmit = (e) => { e.preventDefault(); if (!profileReady) return; perform($('saveProfile'), async () => { await api('/api/profile', 'PUT', { text: $('brainContext').value }); profileDirty = false; setText('profileSaveState', 'Saved'); }, 'Brain context saved for the next poll'); };
   $('rulesForm').oninput = () => { rulesDirty = true; setText('rulesSaveState', 'Unsaved'); };
-  $('rulesForm').onsubmit = (e) => { e.preventDefault(); if (!rulesReady) return; perform($('ruleFields'), async () => { const saved = await api('/api/policy/automation/yaml', 'PUT', { yaml: $('alertRules').value }); $('alertRules').value = saved.yaml; rulesDirty = false; setText('rulesSaveState', 'Saved'); }, 'Automation config saved for the next poll'); };
+  $('rulesForm').onsubmit = (e) => { e.preventDefault(); if (!agentPolicyReady) return; perform($('ruleFields'), async () => { const saved = await api('/api/agent/policy', 'PUT', { source: $('alertRules').value }); agentPolicyVersion = saved.version; $('alertRules').value = saved.source; rulesDirty = false; setText('policyVersion', 'Version ' + saved.version); setText('rulesSaveState', 'Saved'); }, 'JavaScript policy saved'); };
+
+  let agentNotes = [];
+  function showJson(id, value) { $(id).textContent = JSON.stringify(value, null, 2); }
+  function addAgentEntry(parent, title, value, meta = '') {
+    const article = document.createElement('article'); article.className = 'agent-entry';
+    const heading = document.createElement('div'); heading.className = 'inline-heading';
+    const strong = document.createElement('strong'); strong.textContent = title; heading.append(strong);
+    if (meta) { const small = document.createElement('span'); small.textContent = meta; heading.append(small); }
+    article.append(heading);
+    if (value?.output) { const output = document.createElement('p'); output.className = 'hint'; output.textContent = String(value.output).slice(0, 1600); article.append(output); }
+    const details = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = 'Details';
+    const pre = document.createElement('pre'); pre.textContent = pretty(value); details.append(summary, pre); article.append(details);
+    parent.append(article); return article;
+  }
+  function renderAgent(value) {
+    agentStatus = value;
+    const current = value.current;
+    setText('agentCurrent', current ? `${current.trigger || 'Working'} · ${current.contextId || 'user'} · started ${time(current.startedAt)}` : 'Idle');
+    const mode = value.mode || 'active'; if (!agentModeDirty) $('agentMode').value = mode;
+    status('agentModeBadge', mode.replaceAll('_', ' '), mode === 'active' ? 'good' : mode === 'paused' ? 'warn' : 'neutral');
+    const records = $('agentRecords'); records.replaceChildren();
+    for (const record of (value.records || []).slice(0, 25)) {
+      addAgentEntry(records, `${record.kind || 'record'} · ${time(record.at)}`, record.value);
+    }
+    if (!records.childElementCount) records.textContent = 'No agent activity recorded.';
+    const actions = $('agentActions'); actions.replaceChildren();
+    for (const action of value.actions || []) {
+      const entry = addAgentEntry(actions, `${action.id} · ${action.state || 'unknown'}`, action.value, action.due ? `Due ${time(action.due)}` : '');
+      if (action.result !== undefined && action.result !== null) {
+        const result = document.createElement('p'); result.className = 'hint'; result.textContent = 'Result: ' + pretty(action.result); entry.append(result);
+      }
+      if (action.state === 'pending') {
+        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'small danger'; cancel.textContent = 'Cancel'; cancel.dataset.agentCancel = action.id; entry.append(cancel);
+      }
+    }
+    if (!actions.childElementCount) actions.textContent = 'No pending or recent agent actions.';
+    const conversations = $('agentConversations'); conversations.replaceChildren();
+    for (const conversation of value.conversations || []) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'agent-conversation';
+      button.textContent = `${conversation.chat} · ${conversation.count} messages · ${conversation.coverage || 'coverage unknown'} · ${time(conversation.last)}`;
+      button.dataset.agentChat = conversation.chat; conversations.append(button);
+    }
+    if (!conversations.childElementCount) conversations.textContent = 'No conversation history available yet.';
+    const log = $('agentRecords'); log.scrollTop = 0;
+  }
+  async function refreshAgent() {
+    if (agentRefreshing || $('login').open) return;
+    agentRefreshing = true;
+    try {
+      const [value, policy] = await Promise.all([api('/api/agent/status'), api('/api/agent/policy')]);
+      renderAgent(value);
+      if (!rulesDirty) $('alertRules').value = policy.source;
+      agentPolicyVersion = policy.version; agentPolicyReady = true; $('ruleFields').disabled = false;
+      setText('policyVersion', 'Version ' + policy.version);
+      setText('agentRefreshState', 'Updated ' + time(new Date().toISOString()));
+    } catch (e) { setText('agentRefreshState', e.message); }
+    finally { agentRefreshing = false; }
+  }
+  async function runAgentAction(button, work, success) {
+    if (agentBusy) return;
+    agentBusy = true; button.disabled = true;
+    try { const result = await work(); if (success) notify(success); return result; }
+    catch (e) { notify(e.message, true); return null; }
+    finally { agentBusy = false; button.disabled = false; await refreshAgent(); }
+  }
+  $('agentRefresh').onclick = refreshAgent;
+  $('agentMode').onchange = () => { agentModeDirty = true; };
+  $('agentModeForm').onsubmit = e => {
+    e.preventDefault(); const button = $('agentModeSave');
+    runAgentAction(button, async () => { const saved = await api('/api/agent/mode', 'PUT', { mode: $('agentMode').value }); agentModeDirty = false; $('agentMode').value = saved.mode; return saved; }, 'Agent mode saved');
+  };
+  $('agentPromptForm').onsubmit = async e => {
+    e.preventDefault(); const prompt = $('agentPrompt').value.trim(); if (!prompt) return;
+    const button = $('agentPromptSubmit');
+    const queued = await runAgentAction(button, () => api('/api/agent/prompt', 'POST', { prompt, contextId: $('agentPromptContext').value.trim() || 'user' }), 'Prompt queued');
+    if (queued) $('agentPrompt').value = '';
+  };
+  $('agentReplayForm').onsubmit = e => {
+    e.preventDefault(); const messageId = $('agentReplayId').value.trim(); if (!messageId) return;
+    runAgentAction($('agentReplaySubmit'), async () => {
+      const result = await api('/api/agent/replay', 'POST', { messageId }); showJson('agentReplayResult', result);
+      if (result.ok) notify('Replay completed with model and external actions disabled'); else notify(result.error?.message || 'Replay failed', true);
+      return result;
+    });
+  };
+  $('agentWakeForm').onsubmit = e => {
+    e.preventDefault(); const prompt = $('agentWakePrompt').value.trim(), raw = $('agentWakeWhen').value, due = new Date(raw);
+    if (!prompt || !Number.isFinite(due.getTime()) || due.getTime() <= Date.now()) { notify('Enter a prompt and a valid future time.', true); return; }
+    runAgentAction($('agentWakeSubmit'), () => api('/api/agent/wake', 'POST', { prompt, contextId: $('agentWakeContext').value.trim() || 'user', dueAt: due.toISOString() }), 'Agent wake scheduled');
+  };
+  $('agentWakeWhen').value = localDateTime(Date.now() + 10 * 60000).slice(0, 16);
+  $('agentWakeTimezone').textContent = 'Time zone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
+  $('agentActions').onclick = e => {
+    const button = e.target.closest('[data-agent-cancel]'); if (!button) return;
+    runAgentAction(button, () => api('/api/agent/actions/' + encodeURIComponent(button.dataset.agentCancel) + '/cancel', 'POST'), 'Agent action cancelled');
+  };
+  $('agentConversations').onclick = e => {
+    const button = e.target.closest('[data-agent-chat]'); if (!button) return;
+    $('agentBriefChat').value = button.dataset.agentChat; $('agentBriefLoad').click();
+  };
+  $('agentNotesRefresh').onclick = async () => {
+    try {
+      const data = await api('/api/agent/notes'); agentNotes = data.notes || [];
+      const select = $('agentNoteSelect'), selectedPath = agentNotePath || select.value;
+      select.replaceChildren();
+      for (const note of agentNotes) { const option = document.createElement('option'); option.value = note.path; option.textContent = note.path; select.append(option); }
+      if (agentNotes.some(note => note.path === selectedPath)) select.value = selectedPath;
+      else if (!agentNoteDirty) { agentNotePath = select.value; $('agentNotePath').value = agentNotePath; }
+      if (!agentNoteDirty && select.value) await loadAgentNote(select.value);
+    } catch (e) { setText('agentNoteState', e.message); }
+  };
+  async function loadAgentNote(path, force = false) {
+    if (!path || (agentNoteDirty && !force)) return;
+    try {
+      const note = await api('/api/agent/note?path=' + encodeURIComponent(path));
+      agentNotePath = note.path; $('agentNotePath').value = note.path; $('agentNoteSelect').value = note.path; $('agentNoteText').value = note.text;
+      agentNoteDirty = false; setText('agentNoteState', 'Loaded');
+    } catch (e) { setText('agentNoteState', e.message); }
+  }
+  $('agentNoteSelect').onchange = () => {
+    const next = $('agentNoteSelect').value;
+    if (agentNoteDirty && !confirm('Discard unsaved note edits?')) { $('agentNoteSelect').value = agentNotePath; return; }
+    agentNoteDirty = false; loadAgentNote(next, true);
+  };
+  $('agentNoteText').oninput = () => { agentNoteDirty = true; setText('agentNoteState', 'Unsaved'); };
+  $('agentNotePath').oninput = () => { agentNoteDirty = true; setText('agentNoteState', 'Unsaved path'); };
+  $('agentNoteNew').onclick = () => {
+    const path = prompt('New note path, for example people/alex.md'); if (!path) return;
+    if (agentNoteDirty && !confirm('Discard unsaved note edits?')) return;
+    agentNotePath = path; $('agentNotePath').value = path; $('agentNoteSelect').value = ''; $('agentNoteText').value = ''; agentNoteDirty = true; setText('agentNoteState', 'New note · unsaved');
+  };
+  $('agentNoteSave').onclick = () => {
+    const path = $('agentNotePath').value.trim(); if (!path) { notify('Choose or enter a note path.', true); return; }
+    runAgentAction($('agentNoteSave'), async () => {
+      const saved = await api('/api/agent/note', 'PUT', { path, text: $('agentNoteText').value });
+      agentNotePath = saved.path; $('agentNotePath').value = saved.path; agentNoteDirty = false;
+      setText('agentNoteState', 'Saved'); await $('agentNotesRefresh').onclick();
+    }, 'Note saved');
+  };
+  $('agentBriefLoad').onclick = async () => {
+    const chat = $('agentBriefChat').value.trim(); if (!chat) { setText('agentBriefState', 'Enter an exact chat name.'); return; }
+    try { const brief = await api('/api/agent/brief?chat=' + encodeURIComponent(chat)); $('agentBriefChat').value = brief.chat; $('agentBriefText').value = brief.text; agentBriefDirty = false; setText('agentBriefState', 'Loaded'); }
+    catch (e) { setText('agentBriefState', e.message); }
+  };
+  $('agentBriefText').oninput = () => { agentBriefDirty = true; setText('agentBriefState', 'Unsaved'); };
+  $('agentBriefSave').onclick = () => {
+    const chat = $('agentBriefChat').value.trim(); if (!chat) { notify('Enter the exact chat name.', true); return; }
+    runAgentAction($('agentBriefSave'), async () => {
+      const saved = await api('/api/agent/brief', 'PUT', { chat, text: $('agentBriefText').value });
+      $('agentBriefChat').value = saved.chat; agentBriefDirty = false; setText('agentBriefState', 'Saved');
+    }, 'Brief saved');
+  };
+  $('agentNotesRefresh').click();
   $('searchMessages').oninput = () => renderMessages(true);
   $('messageFilter').onchange = () => renderMessages(true);
   function selectMessage(e) {
@@ -385,12 +540,13 @@ function dashboardClient() {
   };
   $('logSource').onchange = () => { for (const node of document.querySelectorAll('.log-output')) node.hidden = node.id !== $('logSource').value; };
   $('copyLog').onclick = async () => { try { await navigator.clipboard.writeText($($('logSource').value).textContent); notify('Log copied'); } catch { notify('Could not copy. Select the log text to copy it manually.', true); } };
-  window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty || agentModeDirty || agentNoteDirty || agentBriefDirty) { e.preventDefault(); e.returnValue = ''; } });
   policySummary(); refresh(true);
   refreshSupervisor();
   // Supervisor safety status stays live even while message/log tailing is paused.
   setInterval(refreshSupervisor, 5000);
   refreshSchedules(); setInterval(refreshSchedules, 5000);
+  refreshAgent(); setInterval(refreshAgent, 5000);
   setInterval(() => {
     if (supervisorCheckedAt && Date.now() - supervisorCheckedAt > 15000) {
       status('supervisorHealth', 'Status stale', 'warn');
@@ -413,6 +569,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 .header-right .live-toggle.good{background:#294e40;color:#c5e8d0;border-color:#568169}.header-right .live-toggle.warn{background:#493a24;color:#edc185;border-color:#806842}.live-toggle:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;background:currentColor}.live-toggle.neutral:before{background:#8e9ca4}.message{cursor:text;user-select:text;-webkit-user-select:text}.message:focus-visible{outline:2px solid var(--green);outline-offset:-2px}.message-top strong{font-size:15px;white-space:normal}.message-author{font-size:13px;font-weight:600;color:#b9c6cf;margin-top:4px}.message-copy{display:block;overflow:visible;white-space:pre-wrap}.action-icons{display:flex;gap:7px;flex-shrink:0}.action-icon{font-size:18px}.message.message-error{background:#352128}.message.message-error:hover{background:#422932}.message.message-error.selected{background:#482b34;box-shadow:inset 3px 0 var(--red)}.message-meta time{margin:0}.date-filter{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.date-filter label{margin:0}.date-filter input[type=datetime-local]{width:auto;max-width:100%;font-size:11px}.date-filter button{margin-left:auto}
 .settings-fields{border:0;padding:0;margin:0;min-width:0}.settings-fields .check{margin:12px 0}.settings-fields:disabled{opacity:.6}
 .schedule-layout{display:grid;grid-template-columns:minmax(220px,.85fr) minmax(280px,1.15fr);gap:24px}.schedule-job{padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:9px;background:#151e23}.schedule-job strong{font-size:12px;overflow-wrap:anywhere}.schedule-job time{font-size:12px}.scheduled-text{white-space:pre-wrap;font-size:12px;margin-top:8px}.schedule-queue{max-height:430px;overflow:auto}.schedule-layout details{margin:0}.schedule-layout summary{font-size:12px}@media(max-width:900px){.schedule-layout{grid-template-columns:1fr}}
+.agent-current{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;background:#131d21;border:1px solid var(--line);border-radius:8px;font-size:12px}.agent-current span:nth-child(2){color:#c2d0d7}.agent-controls{display:flex;align-items:center;gap:8px}.agent-controls>*{min-width:0}.agent-controls input,.agent-controls select{flex:1}.agent-mode-form{margin-top:12px}.agent-form{margin-top:13px}.agent-tools,.agent-columns,.agent-memory{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:17px;padding-top:15px;border-top:1px solid var(--line)}.agent-memory{grid-template-columns:repeat(3,minmax(0,1fr))}.agent-columns h3,.agent-memory h3{font-size:12px}.agent-list{display:grid;gap:8px;margin-top:8px;max-height:340px;overflow:auto}.agent-entry{border:1px solid var(--line);border-radius:7px;background:#141e23;padding:9px;min-width:0}.agent-entry strong{font-size:11px;overflow-wrap:anywhere}.agent-entry .inline-heading>span{font-size:10px;color:var(--muted)}.agent-entry pre,.agent-output{background:#10191d;border:1px solid #2a363c;border-radius:5px;padding:8px;margin:7px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.55 Consolas,monospace;color:#c4d2d9}.agent-entry .hint{white-space:pre-wrap}.agent-entry button{margin-top:8px}.agent-conversations{display:grid;gap:6px;max-height:300px;overflow:auto;margin-top:8px}.agent-conversation{width:100%;text-align:left;font-size:10px;padding:7px 9px;overflow-wrap:anywhere}.agent-tools form{min-width:0}.agent-memory>div{min-width:0}.agent-memory .agent-controls{align-items:stretch}.agent-memory .agent-controls button{flex:0 0 auto}.agent-memory textarea{min-height:100px}.agent-current .save-state{margin-left:auto}@media(max-width:900px){.agent-memory{grid-template-columns:1fr 1fr}}@media(max-width:600px){.agent-tools,.agent-columns,.agent-memory{grid-template-columns:1fr}.agent-controls{flex-wrap:wrap}.agent-current .save-state{margin-left:0}}
 </style></head><body>
 <header><div class="brand"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>TM <span class="workspace-label">/ LOCAL CONTROL</span></div><div class="header-right"><span id="lastRefresh" class="sync-time">Waiting for server</span><button id="pauseUpdates" class="live-toggle warn" aria-pressed="true" title="Connecting · Pause live log tailing">Pause live log tailing</button><button id="refreshButton" title="Manually sync tail" aria-label="Manually sync tail">↻</button><button id="accountButton">Access token</button></div></header>
 <main class="shell">
@@ -430,13 +587,22 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <div class="health-row"><span class="health-name"><span class="health-symbol">◈</span>Teams connection</span><span id="teamsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◎</span>Phone delivery</span><span id="phoneHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◇</span>Brain</span><span id="brainHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Phone WebSocket</span><span id="wsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Public tunnel probe</span><span id="publicHealth" class="badge neutral">Checking</span></div><p id="brainModel" class="hint"></p><p class="hint">Teams can connect when the monitor starts. FCM send acceptance does not confirm phone receipt.</p></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Teams reply permissions</h2></div><p class="hint">Controls outgoing Teams replies, including holding messages. Phone alerts are unaffected.</p><form id="policyForm"><label for="replyMode">Permission mode</label><select id="replyMode"><option value="whitelist">Whitelist · only listed chats</option><option value="blacklist">Blacklist · all except listed chats</option></select><label for="replyEntries">Chat names, one per line</label><textarea id="replyEntries" rows="4" placeholder="e.g. Project chat&#10;Alex Morgan"></textarea><p class="hint">Exact chat names, case-insensitive. No wildcards.</p><p id="policyHint" class="hint"></p><div class="form-footer"><span id="policySaveState" class="save-state"></span><button id="savePolicy" class="small">Save permissions</button></div></form><p class="hint">Default: an empty whitelist allows replies to nobody.</p></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Brain context</h2></div><p class="hint">Instructions used by the brain for phone alerts and permitted Teams replies.</p><form id="profileForm"><label for="brainContext">Context & instructions</label><textarea id="brainContext" class="brain-text" rows="8" placeholder="Enter monitoring context and alert instructions…"></textarea><div class="form-footer"><span id="profileSaveState" class="save-state"></span><button id="saveProfile" class="small">Save context</button></div></form><p class="hint">Saved locally and picked up on the next poll.</p></div></section>
-<section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">Advanced alert rules</h2></div>
-<p class="hint">All matching rules propose actions. Each rule's agent.cancel and agent.modify permissions control whether the LLM can cancel it or change its text. Both default to false; modification cannot change action type or destination.</p>
-<p class="hint">agent.initiate controls new LLM actions: when is never, unmatched, or always; actions lists alert_phone and/or reply. Enter the automation mapping itself below, without an outer automation key. Quote string values that look like numbers. Saving normalizes YAML and removes comments.</p>
-<form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules">Automation config YAML</label><textarea id="alertRules" class="code-input" rows="22" spellcheck="false"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save automation config</button></div></fieldset></form>
-<p class="hint">Conditions: type direct_message, mention, or reaction; or field text/author/chat with match exact/contains and value. Text also supports contains_number. Combine conditions with all or any arrays. Actions: alert_phone, reply (requires text), or ignore (no action for that rule). Reaction changes are synthetic messages, not new direct messages or mentions.</p>
-<p class="hint">The LLM sees rule definitions, tested values, results, proposed actions and permissions. On review failure or timeoutMs expiry, original rule actions run unchanged; no LLM additions run. Identical actions are attempted once. Teams replies always require reply permission. Saves apply next poll.</p></div></section>
+<section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2><span id="policyVersion" class="badge neutral">Version —</span></div>
+<p class="hint">Policy runs for each message with <code>handle(ctx, actions)</code>. Use the scoped action functions in <code>actions</code>; model work is explicit through <code>actions.llm(...)</code>. Saves validate before activation. Replay disables model calls and external actions.</p>
+<form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules">automation/policy.mjs</label><textarea id="alertRules" class="code-input" rows="24" spellcheck="false" placeholder="export async function handle(ctx, actions) {&#10;  // Decide what to do with this message.&#10;}"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save JavaScript policy</button></div></fieldset></form></div></section>
 </aside><section class="main-column" aria-label="Live monitoring">
+<section class="card" aria-labelledby="agentHeading"><div class="card-body"><div class="section-title"><h2 id="agentHeading">Agent</h2><div class="button-row"><span id="agentModeBadge" class="badge neutral">Checking</span><button id="agentRefresh" class="small" type="button">Refresh agent</button></div></div>
+<p class="hint">Paused stops model runs; deterministic policy still runs. Read-only prevents model-originated external actions and note edits; deterministic policy still runs. Neither mode changes manual messages/status scheduling.</p>
+<div class="agent-current"><strong>Current work</strong><span id="agentCurrent">Checking…</span><span id="agentRefreshState" class="save-state"></span></div>
+<form id="agentModeForm" class="agent-controls agent-mode-form"><label for="agentMode">Autonomy mode</label><select id="agentMode"><option value="active">Active</option><option value="read_only">Read only</option><option value="paused">Paused</option></select><button id="agentModeSave" class="small">Save mode</button></form>
+<form id="agentPromptForm" class="agent-form"><label for="agentPrompt">Direct prompt</label><textarea id="agentPrompt" rows="2" placeholder="Ask the agent to review or explain something…"></textarea><div class="agent-controls"><input id="agentPromptContext" value="user" aria-label="Context ID"><button id="agentPromptSubmit" class="primary small">Queue prompt</button></div><p class="hint">The response is returned as a result. It does not implicitly send a Teams message.</p></form>
+<div class="agent-tools"><form id="agentReplayForm"><label for="agentReplayId">Replay recorded message ID</label><div class="agent-controls"><input id="agentReplayId" placeholder="Recorded message ID"><button id="agentReplaySubmit" class="small">Replay safely</button></div><p class="hint">Replay disables model calls and external actions.</p><pre id="agentReplayResult" class="agent-output">No replay yet.</pre></form>
+<form id="agentWakeForm"><label for="agentWakePrompt">Schedule an agent wake</label><textarea id="agentWakePrompt" rows="2" placeholder="What should the agent check at that time?"></textarea><label for="agentWakeContext">Context ID</label><input id="agentWakeContext" value="user"><label for="agentWakeWhen">Run at</label><input id="agentWakeWhen" type="datetime-local"><p id="agentWakeTimezone" class="hint"></p><button id="agentWakeSubmit" class="small">Schedule wake</button><p class="hint">The server applies the current configured permission ceiling. Wakeups appear with other agent actions.</p></form></div>
+<div class="agent-columns"><div><div class="inline-heading"><h3>Recent tools and results</h3><span class="hint">Newest first</span></div><div id="agentRecords" class="agent-list">Loading…</div></div><div><div class="inline-heading"><h3>Actions</h3><span class="hint">Pending and completed</span></div><div id="agentActions" class="agent-list">Loading…</div></div></div>
+<div class="agent-memory"><div><div class="inline-heading"><h3>Conversation history</h3><span class="hint">Visible coverage</span></div><div id="agentConversations" class="agent-conversations">Loading…</div></div>
+<div><div class="inline-heading"><h3>Freeform notes</h3><button id="agentNotesRefresh" type="button" class="small">Refresh list</button></div><div class="agent-controls"><select id="agentNoteSelect" aria-label="Choose a note"><option value="">No notes loaded</option></select><button id="agentNoteNew" type="button" class="small">New note</button></div><label for="agentNotePath">Note path</label><input id="agentNotePath" placeholder="people/alex.md"><label for="agentNoteText">Note text</label><textarea id="agentNoteText" rows="7" placeholder="Private notes for continuity…"></textarea><div class="form-footer"><span id="agentNoteState" class="save-state"></span><button id="agentNoteSave" type="button" class="small">Save note</button></div></div>
+<div><h3>Chat brief</h3><label for="agentBriefChat">Exact chat name</label><div class="agent-controls"><input id="agentBriefChat" placeholder="Select from conversation history or type exact name"><button id="agentBriefLoad" type="button" class="small">Load</button></div><label for="agentBriefText">Brief</label><textarea id="agentBriefText" rows="5" placeholder="Optional context for this person or chat…"></textarea><div class="form-footer"><span id="agentBriefState" class="save-state"></span><button id="agentBriefSave" type="button" class="small">Save brief</button></div></div></div>
+</div></section>
 <section class="card" aria-labelledby="scheduleHeading"><div class="card-body"><div class="section-title"><h2 id="scheduleHeading">Scheduled Teams actions</h2><button id="refreshSchedules" class="small" type="button">Refresh schedules</button></div><p id="schedulerState" class="hint">Checking orchestrator…</p><div class="schedule-layout"><form id="scheduleForm"><fieldset id="scheduleFields" class="settings-fields"><label for="scheduleKind">Action</label><select id="scheduleKind"><option value="message">Send a message</option><option value="status">Change availability</option></select><div id="scheduleMessageFields"><label for="scheduleChat">Exact Teams chat name</label><input id="scheduleChat" maxlength="300" placeholder="Person or group chat name"><label for="scheduleText">Message</label><textarea id="scheduleText" maxlength="8000" rows="3"></textarea><p class="hint">Uses Teams reply permissions at send time. An empty whitelist blocks all sends. Duplicate chat names or existing drafts are not sent.</p></div><div id="scheduleStatusField" hidden><label for="schedulePresence">Availability</label><select id="schedulePresence"><option value="available">Available</option><option value="away">Appear away</option><option value="offline">Appear offline</option><option value="busy">Busy</option><option value="dnd">Do not disturb</option><option value="brb">Be right back</option></select></div><label for="scheduleWhen">Date and time</label><input id="scheduleWhen" type="datetime-local" required><p id="scheduleTimezone" class="hint"></p><button id="scheduleSubmit" type="submit" class="primary small" disabled>Schedule action</button></fieldset></form><div><div id="schedulePending" class="schedule-queue">Loading schedules…</div><details><summary>Recent results (latest 100)</summary><div id="scheduleHistory" class="schedule-queue"></div></details><p id="scheduleLoadState" class="error-text" role="status"></p></div></div><p class="hint">One-time schedules, saved locally. The orchestrator must be running; actions wait for current handling to finish. Due while stopped or more than five minutes late: missed, not replayed. Interrupted sends: outcome unconfirmed, never automatically retried. Schedule checks continue while live log tailing is paused.</p></div></section>
 <section class="card poll-card" aria-label="Latest orchestrator poll"><div class="poll-heading"><div><div class="poll-title"><h2 id="pollStatus">No poll recorded yet</h2></div><p id="pollDetail" class="poll-meta">Waiting for the orchestrator…</p></div><span id="pollBadge" class="badge neutral">Checking</span></div><div class="poll-stats"><div class="stat"><b id="pollChats">—</b><span>Unread chats</span></div><div class="stat"><b id="pollHandled">—</b><span>Messages handled</span></div><div class="stat"><b id="pollDuplicates">—</b><span>Duplicates skipped</span></div><div class="stat"><b id="pollErrors">—</b><span>Errors</span></div></div><div class="poll-foot"><span id="pollExtra">Counts will appear after the first poll.</span><span id="pollNext">Monitor stopped</span></div></section>
 <section class="card"><div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="activity-clear"><div class="date-filter"><label class="check"><input id="hideOlder" type="checkbox">Hide messages at or before</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Hide messages at or before date and time"><button id="clearActivity" class="small" disabled>Hide through selected message</button></div><p id="activityClearState" class="hint"></p></div><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div id="messages" class="message-list"></div></div><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div><p class="log-note">Recent retained activity, newest first. Duplicate reads are counted in the poll above.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>

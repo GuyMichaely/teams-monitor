@@ -7,15 +7,29 @@ Read this before touching anything. It captures architecture, operational proced
 Read PLAN-AGENTIC.md for the approved incremental agent implementation and progress.
 Changes stay in the separate `agentic` worktree; do not merge/deploy or restart the
 stable main installation during development. SDK dependencies are an intentional
-exception to main's zero-dependency rule. Only increment 1 is implemented so far:
-`src/agent/` provides the bounded SDK/Gemini loop; `bun run agent:sdk` is a harmless
-mock probe, and `--live` explicitly opts into a Gemini probe. These commands use
-ignored `.agentic-dev/`, loopback GUI/control ports 28090/28091 and separate auth.
-They do not connect to Teams or start GUI/orchestrator/tunnel processes. Existing
-normal runtime entrypoints are not yet agentic-development launchers; do not use
-them alongside stable Teams. SDK external trace export is disabled; local bounded
-activity records contain lifecycle metadata/sanitized faults, not prompt/tool bodies.
-Validate this foundation with `bun run test:agent-sdk` and `bun run test:agent-home`.
+exception to main's zero-dependency rule. All six implementation increments are
+complete; live cutover is a separate user decision. Read AGENTIC.md for launch,
+policy/action APIs, permissions, persistence, recovery and test commands.
+`bun run agent:dev` starts a mock GUI and separately owned monitor in ignored
+`.agentic-dev/`, loopback GUI port 28090/executor lease 28092 and separate auth.
+It cannot send real Teams messages/phone alerts or control the tunnel; the model
+is a fixture unless AGENTIC_LIVE_MODEL=1 explicitly opts into Gemini.
+Normal desktop/monitor entrypoints are for deliberate cutover, not parallel use
+with stable Teams. Never copy live state/secrets into development.
+
+On this branch `src/orchestrator.mjs` delegates to `src/agent/engine.mjs` for
+ordered intake, independent decision/execution workers and real poll heartbeats.
+The GUI owns a shared Teams broker queue; sends retain exact recipient/draft
+checks, fresh reply permission and owner run nonce checks. SQLite records claims
+before effects; uncertain attempts are never retried. Trusted JS policy runs in
+a bounded Bun child (not an OS security sandbox), with atomic validated saves.
+`automation/policy.mjs` replaces YAML automation through one-time conversion;
+the old rules execution/API is removed, not a permanent compatibility layer.
+SDK tools enforce per-call/global/wake ceilings and stage effects/notes until
+successful policy commit. Originals, notes and sessions stay local in SQLite;
+SDK tracing/export is disabled. Other YAML settings and Android delivery remain.
+The main-era architecture/operations below describe preserved stable behavior;
+the approved PLAN-AGENTIC.md supersedes their old YAML-rules/brain runtime details.
 
 ## What this is
 

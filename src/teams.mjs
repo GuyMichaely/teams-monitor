@@ -18,18 +18,26 @@ function connect(wsUrl) {
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const msgId = ++id;
-      pending.set(msgId, { resolve, reject });
-      ws.send(JSON.stringify({ id: msgId, method, params }));
+      const timer = setTimeout(() => { pending.delete(msgId); reject(new Error('Teams CDP command timed out')); }, 1500);
+      pending.set(msgId, { resolve, reject, timer });
+      try { ws.send(JSON.stringify({ id: msgId, method, params })); }
+      catch (error) { clearTimeout(timer); pending.delete(msgId); reject(error); }
     });
   ws.addEventListener("message", (ev) => {
     const m = JSON.parse(ev.data);
     if (m.id && pending.has(m.id)) {
-      const { resolve, reject } = pending.get(m.id);
+      const { resolve, reject, timer } = pending.get(m.id);
+      clearTimeout(timer);
       pending.delete(m.id);
       m.error ? reject(new Error(m.error.message)) : resolve(m.result);
     }
   });
-  const ready = new Promise((r) => ws.addEventListener("open", r));
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { reject(new Error('Teams CDP connection timed out')); ws.close(); }, 1000);
+    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+    ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Teams CDP connection failed')); }, { once: true });
+  });
+  ws.addEventListener('close', () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error('Teams CDP closed')); } pending.clear(); });
   return { send, ready, close: () => ws.close() };
 }
 
@@ -123,12 +131,13 @@ export async function getChatSession(port = DEFAULT_PORT) {
   }
   // Find the main app window. After a (re)launch the UI takes a while to render
   // the rail, so poll rather than failing on the first empty check.
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 5000;
   for (;;) {
     const pages = ((await listTargets(port)) || []).filter(isTeamsPage);
     for (const p of pages) {
+      let c;
       try {
-        const c = connect(p.webSocketDebuggerUrl);
+        c = connect(p.webSocketDebuggerUrl);
         await c.ready;
         await c.send("Runtime.enable");
         const r = await c.send("Runtime.evaluate", {
@@ -138,11 +147,12 @@ export async function getChatSession(port = DEFAULT_PORT) {
         if (r?.result?.value === true) return c;
         c.close();
       } catch {
+        c?.close();
         // Page mid-reload — skip it this round.
       }
     }
     if (Date.now() > deadline) break;
-    await sleep(3000);
+    await sleep(250);
   }
   throw new Error("No Teams app window was found (no chat rail, no open chat).");
 }
