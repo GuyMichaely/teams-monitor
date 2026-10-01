@@ -10,12 +10,15 @@ stable main installation during development. SDK dependencies are an intentional
 exception to main's zero-dependency rule. All six implementation increments are
 complete; live cutover is a separate user decision. Read AGENTIC.md for launch,
 policy/action APIs, permissions, persistence, recovery and test commands.
-`bun run agent:dev` starts a mock GUI and separately owned monitor in ignored
-`.agentic-dev/`, loopback GUI port 28090/executor lease 28092 and separate auth.
-It cannot send real Teams messages/phone alerts or control the tunnel; the model
-is a fixture unless AGENTIC_LIVE_MODEL=1 explicitly opts into Gemini.
-Normal desktop/monitor entrypoints are for deliberate cutover, not parallel use
-with stable Teams. Never copy live state/secrets into development.
+The user approved two named desktop shortcuts for real trials: TM — Prod and
+TM — Agentic. `desktop:setup-switching <prod-root>` copies settings/credentials,
+brain context and current FCM registration once into separate ignored trial files;
+it never overwrites existing trial files or copies logs/pending jobs/control state.
+It builds only agentic and creates shortcuts without starting/stopping either stack.
+Quit the active tray before opening the other shortcut; both use the same GUI
+port/URL/auth and existing tunnel. Keep production code/config intact. The fake
+preview, demo launcher, automatic model fixtures and simulated runtime delivery
+were removed at user request; test fixtures remain confined to smoke tests.
 
 On this branch `src/orchestrator.mjs` delegates to `src/agent/engine.mjs` for
 ordered intake, independent decision/execution workers and real poll heartbeats.

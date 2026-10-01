@@ -63,7 +63,6 @@ async function diagnostics(limit) {
 }
 
 export function startGui(config, presence = { get: getTeamsPresence, set: setTeamsPresence }, brokerIO, runtimeOptions) {
-  if (process.env.TEAMS_MONITOR_DEV === '1' && config.port !== 29222) throw new Error('Development GUI requires mock Teams CDP port 29222.');
   const result = startRuntimeGui(config, runtimeOptions);
   const { server } = result;
   const runtimeHandler = server.listeners("request")[0];

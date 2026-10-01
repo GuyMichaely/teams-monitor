@@ -1,25 +1,33 @@
 # Agentic branch
 
-This checkout is development only. Stable `main` and its installed desktop system
+This checkout is experimental. Stable `main` and its installed desktop system
 remain unchanged. Do not start this branch against real Teams while stable is running.
 
-## Try it safely
+## Live trial and rollback
 
-From this worktree:
+Install the two named desktop shortcuts from this worktree:
 
 ```powershell
 bun install --frozen-lockfile
-bun run agent:dev
+bun run desktop:setup-switching C:/Users/GuyMichaely/projects/teams-monitor
 ```
 
-Open http://127.0.0.1:28090 and use the development-only token `agentic-local`.
-`AGENTIC_GUI_TOKEN` can override that token. State is isolated in `.agentic-dev/`.
-Teams reads/statuses are fixtures, Teams sends are disabled, phone alerts are
-simulated, tunnel controls are disabled, and the model is a fixture by default.
-Setting `AGENTIC_LIVE_MODEL=1` explicitly enables the configured Gemini model using
-the existing `GEMINI_API_KEY` environment variable; this does not enable real sends.
-The monitor is a separate owned child: dashboard Stop/Start does not close the GUI.
-Ctrl+C stops the preview and its monitor. No production credentials or phone registration are copied.
+Setup does not start/stop either stack or change production code/configuration.
+It copies only local settings, .env, brain context, Firebase service account and
+current phone registration into ignored trial files, never overwriting existing
+trial files. No old logs, dedupe, pending jobs, runtime/control state or notes are
+copied. Existing YAML automation is converted in the trial copy only.
+
+Quit the active TM tray, then open **TM — Agentic** to try it. To roll back, quit
+agentic's tray and open **TM — Prod**. The original TM shortcut is retained.
+Both use the same dashboard URL/auth, Teams connection and existing tunnel;
+configuration and state remain independent. Do not run both stacks together.
+Agentic refuses startup if another GUI occupies the configured port.
+
+This runs real Teams, the configured model and real phone delivery. Reply policy
+still gates outgoing Teams messages. Agent Read only/Paused do not disable
+deterministic actions. No fake-data preview or simulated application mode exists;
+fixtures are confined to automated tests. Interrupted/gap messages are not replayed.
 
 ## Policy
 
@@ -127,13 +135,12 @@ Old queued broker calls lose authority when their owning run stops/restarts.
 
 ```powershell
 bun run test:agent-sdk
-bun run test:agent-home
 bun run test:agent-storage
 bun run test:agent-intake
 bun run test:policy-conversion
 bun run test:agent-policy
 bun run test:agent-continuity
-bun run test:agent-preview
+bun run test:desktop-switching
 bun --no-env-file scripts/smoke-dashboard.mjs
 bun --no-env-file scripts/smoke-presence.mjs
 bun --no-env-file scripts/smoke-schedules.mjs

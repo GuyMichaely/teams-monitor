@@ -12,13 +12,13 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
 - Development checkout: C:/Users/GuyMichaely/.codex/worktrees/agentic/teams-monitor.
 - Branch name is exactly agentic (user correction; no codex/ prefix).
 - All six implementation increments are complete and locally verified (October 1).
-  Launch/API/permissions/recovery instructions are in AGENTIC.md. Live cutover,
-  production credentials/configuration and real recipient/phone delivery remain
-  separate operational steps; no merge or deployment has been performed.
-- `bun run agent:dev` is the safe fixture GUI/monitor launcher. Its separately
-  owned monitor can stop/restart without closing the GUI; Ctrl+C closes both.
-  Development state/auth/ports are isolated and external sends are disabled.
-  Older development config missing mock port 29222 is corrected on launch.
+  Launch/API/permissions/recovery instructions are in AGENTIC.md. Real trial files
+  and shortcuts are now prepared; live switching and real recipient/phone checks
+  remain separate operational steps. No startup switch or merge was performed.
+- User approved real trial setup with separate TM — Prod / TM — Agentic shortcuts,
+  one-time local config/credential/context/registration copy and independent state.
+  Quit the active tray before opening the other. No setup-time process switch.
+  Fake preview/provisions removed by request; fixtures only in automated tests.
 - Commit and push completed increments to agentic. Do not merge into main or move
   the normal desktop installation until the user chooses the new version.
 - Each increment must leave a usable, testable result. Update this status as work
@@ -219,12 +219,17 @@ SDK references:
   enforced even for direct onWake policy calls, overdue wake reassessment and
   interrupted/missed/uncertain no-retry behavior. Single live executor and owner
   run nonce checks prevent stopped/restarted queued sends from acquiring authority.
-- Passing isolated smokes: agent-sdk, agentic-home, agent-storage, agent-intake,
-  policy-conversion, agent-policy, agent-continuity, agent-preview, gui, dashboard,
+- Passing isolated smokes: agent-sdk, agent-storage, agent-intake,
+  policy-conversion, agent-policy, agent-continuity, gui, dashboard,
   presence, schedules, self-messages, reactions and rule-execution. Mock models/CDP
   and fictional recipients only; real SDK/Gemini round trip was verified separately
   during increment 1. Browser QA checked the dark mock dashboard.
 - Stable main remains at 0efa442b9b31ef0e752a9587eb42db7612ff810e, unchanged.
+- October 1: installed TM — Prod and TM — Agentic shortcuts and initialized the
+  ignored live trial settings/credentials/context/FID with converted JS policy.
+  The production tray was not stopped/rebuilt. Fake preview/demo code removed.
+  Tool policy blocked deletion of retired .agentic-dev output; it remains ignored
+  and unused, pending manual removal. Runtime no longer manufactures fixtures.
 
 ### Increment 1 completed
 
@@ -239,12 +244,8 @@ SDK references:
 - SDK tracing/export and sensitive SDK console logging are disabled. Bounded local
   metadata/sanitized fault logs live in data/agent/activity.jsonl under selected home.
   Detailed tool bodies/action outcomes are for later increments, not logged yet.
-- agent:sdk bootstraps ignored .agentic-dev with GUI/control ports 28090/28091,
-  AGENTIC_GUI_TOKEN, no public probes/Worker/keep-awake, private fixture profile,
-  no copied phone registration/credentials, empty whitelist. No GUI/Teams processes
-  are launched. Existing normal entrypoints still use Teams and are NOT safe
-  alongside stable; a separate mock-CDP launcher/port is still needed in increment 2.
-- Verified: test:agent-sdk, test:agent-home, mock agent:sdk, smoke-gui, frozen install.
+- Former fake preview/demo launchers have been removed at the user's request.
+- Verified foundation: test:agent-sdk, smoke-gui, frozen install.
 - Real Gemini probe verified: one read_probe invocation and two model requests,
   using the private existing .env directly (no copy/logging). First attempt got a
   transient 503; a later AUTO tool-choice response skipped the probe, so the probe

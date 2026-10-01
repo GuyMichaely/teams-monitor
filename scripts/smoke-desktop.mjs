@@ -53,13 +53,19 @@ assert.equal((await trayControl('stop-components', { config, request })).ok, tru
 await assert.rejects(trayControl('start-components', { config, request: async () => Response.json({ orchestrator: { stale: true } }) }), { code: 'EXISTING_MONITOR' });
 await assert.rejects(trayControl('status', { config, request: async () => new Response('', { status: 401 }) }), { code: 'HTTP_401' });
 assert.equal((await trayControl('stop-components', { config, request: async () => { throw Error('offline'); } })).ok, false);
-assert.equal((await trayControl('prepare', { config, request })).ok, true);
+const offline = async () => { throw Error('offline'); };
+assert.equal((await trayControl('prepare', { config, request: offline })).ok, true);
+await assert.rejects(trayControl('prepare', { config, request }), { code: 'EXISTING_GUI' });
+await assert.rejects(trayControl('prepare', { config, request: async () => new Response('', { status: 401 }) }), { code: 'EXISTING_GUI' });
 await writeFile(join(DATA_DIR, 'heartbeat.json'), JSON.stringify({ pid: process.pid }));
-await assert.rejects(trayControl('prepare', { config, request }), { code: 'EXISTING_MONITOR' });
+await assert.rejects(trayControl('prepare', { config, request: offline }), { code: 'EXISTING_MONITOR' });
 await rm(join(DATA_DIR, 'heartbeat.json'));
 await mkdir(join(DATA_DIR, 'supervisor'));
 await writeFile(join(DATA_DIR, 'supervisor', 'control.json'), JSON.stringify({ port: 18241, token: 'b'.repeat(64) }));
-await assert.rejects(trayControl('prepare', { config, request: async () => new Response('', { status: 401 }) }), { code: 'EXISTING_SUPERVISOR' });
+await assert.rejects(trayControl('prepare', { config, request: async url => {
+  if (url.endsWith('/api/liveness')) throw Error('offline');
+  return new Response('', { status: 401 });
+} }), { code: 'EXISTING_SUPERVISOR' });
 await assert.rejects(trayControl('stop-owned', { config, ownerPid: 100, request: async () => Response.json({ supervisorPid: 101 }) }), { code: 'OWNER_CHANGED' });
 await assert.rejects(trayControl('stop-owned', { config, request }), { code: 'INVALID_OWNER' });
 const stoppedCalls = [];

@@ -50,7 +50,7 @@ export async function executeAction({ store, client, loadConfig, stopped = () =>
       if (result.result === 'sent') state = 'completed';
     } else if (action.kind === 'alert') {
       // Stable ID survives dual transport attempts; a claimed attempt is never replayed.
-      result = process.env.TEAMS_MONITOR_DEV === '1' ? { simulated: true, alertId: job.id } : await alert({ ...action, alertId: job.id }, cfg);
+      result = await alert({ ...action, alertId: job.id }, cfg);
       state = 'completed';
     } else if (action.kind === 'status') {
       result = await client.status(action.presence, expiresAt, undefined, action);

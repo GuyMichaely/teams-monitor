@@ -21,6 +21,15 @@ export async function trayControl(action, { config, request = fetch, ownerPid } 
   if (action === 'describe') return { url, port, controlPort: port + 1 };
   if (action === 'awake-policy') return { enabled: config.desktop?.keepAwake !== false };
   if (action === 'prepare') {
+    // The other checkout has separate PID/control files but uses the same GUI port.
+    let guiResponse;
+    try {
+      guiResponse = await request(url + '/api/liveness', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(1000), redirect: 'error',
+      });
+    } catch {}
+    if (guiResponse) throw Object.assign(Error('Another GUI is running'), { code: 'EXISTING_GUI' });
     // Refuse to take over an existing GUI. Only a live authenticated supervisor can stop itself.
     let access;
     try { access = JSON.parse(await readFile(join(DATA_DIR, 'supervisor', 'control.json'), 'utf8')); } catch {}

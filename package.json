@@ -7,15 +7,13 @@
     "teams": "src/cli.mjs"
   },
   "scripts": {
-    "agent:sdk": "bun --no-env-file scripts/agent-sdk-demo.mjs",
     "test:agent-sdk": "bun --no-env-file scripts/smoke-agent-sdk.mjs",
-    "test:agent-home": "bun --no-env-file scripts/smoke-agentic-home.mjs",
     "test:agent-storage": "bun --no-env-file scripts/smoke-agent-storage.mjs",
     "test:agent-intake": "bun --no-env-file scripts/smoke-agent-intake.mjs",
-    "agent:dev": "bun --no-env-file scripts/agentic-dev.mjs",
     "test:agent-policy": "bun --no-env-file scripts/smoke-agent-policy.mjs",
     "test:agent-continuity": "bun --no-env-file scripts/smoke-agent-continuity.mjs",
-    "test:agent-preview": "bun --no-env-file scripts/smoke-agent-preview.mjs",
+    "desktop:setup-switching": "bun --no-env-file scripts/setup-switching.mjs",
+    "test:desktop-switching": "bun --no-env-file scripts/smoke-desktop-switching.mjs",
     "test:policy-conversion": "bun --no-env-file scripts/smoke-policy-conversion.mjs",
     "desktop:install": "powershell.exe -NoProfile -File scripts/install-desktop.ps1",
     "desktop": "powershell.exe -NoProfile -File scripts/start-desktop.ps1",

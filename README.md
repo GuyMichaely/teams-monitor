@@ -22,37 +22,26 @@ From the separate `agentic` worktree:
 
 ```powershell
 bun install --frozen-lockfile
-bun run agent:dev
+bun run desktop:setup-switching C:/Users/GuyMichaely/projects/teams-monitor
 bun run test:agent-sdk
 bun run test:agent-policy
 bun run test:agent-continuity
-bun run test:agent-preview
+bun run test:desktop-switching
 ```
 
-Open http://127.0.0.1:28090 with development-only token `agentic-local` (override
-with `AGENTIC_GUI_TOKEN`). The preview has separate ignored `.agentic-dev/` state,
-fixture Teams/model data, simulated phone alerts and disabled tunnel/real send
-controls. Stop/Start affects its separately owned monitor; Ctrl+C closes the
-preview stack. Nothing is copied from the live profile, registration or credentials.
+Setup adds **TM — Prod** and **TM — Agentic**, keeping the original TM shortcut.
+It copies local settings, credentials, brain context and current phone registration
+once into ignored trial files, not production logs, pending jobs or control state.
+It never overwrites existing trial files or starts/stops either stack. Quit the
+active tray before opening the other shortcut. The dashboard URL, phone connection
+settings and existing tunnel stay the same; configuration and state are separate.
 
-To test the real configured Gemini model, load an existing private credential file
-explicitly (the SDK command never copies it):
-
-```powershell
-bun --env-file=C:/path/to/private/.env scripts/agent-sdk-demo.mjs --live
-```
-
-This test exposes only a harmless local `read_probe` tool and verifies a model →
-tool → result → final-text round trip. The real adapter currently supports text
-and function tools, not streaming, images, hosted tools or server-side sessions.
-It retains Gemini part metadata/signatures in the returned history. The model
-still receives its prompts at Google's API; disabling SDK tracing is not offline
-inference.
-
-The SDK probe above uses only a harmless local tool. The preview model is a fixture
-by default; `AGENTIC_LIVE_MODEL=1` explicitly enables its configured Gemini model
-with an existing `GEMINI_API_KEY`. It still cannot perform real sends. SDK trace
-export is disabled; detailed execution records and notes stay local.
+Normal agentic startup uses real Teams, the configured Gemini model and real phone
+alerts. There is no fake-data preview or simulated application mode. Automated
+tests still use isolated fixtures, not live recipients. The adapter supports text
+and function tools, not streaming/images/hosted tools/server-side sessions.
+SDK trace export is disabled; execution records and notes stay local. Prompts
+still go to Google's API; this is not offline inference.
 
 Do not start this worktree's normal desktop/monitor/tunnel commands alongside
 stable. Continue using the stable checkout's desktop shortcut for normal operation.

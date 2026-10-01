@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { Usage } from '@openai/agents';
 import { agentTool, runAgent } from './runtime.mjs';
 import { actionAPI } from './plan.mjs';
 import { permissions, permissionCeiling, assertPermission, chatAllowed } from './permissions.mjs';
@@ -12,9 +11,6 @@ const writes = new Set(['send_message', 'alert', 'set_status', 'schedule', 'canc
 
 export async function agentReview({ prompt, options = {}, context, source, version, plan, store, configLoader, signal, model, savedCeiling, replay = false }) {
   try {
-    if (!model && process.env.TEAMS_MONITOR_DEV === '1' && process.env.AGENTIC_LIVE_MODEL !== '1') model = { async getResponse() {
-      return { output: [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Development model fixture. No proposed actions.' }] }], usage: new Usage({ requests: 1 }) };
-    } };
     const config = await configLoader();
     const deadline = Date.now() + Math.min(options.timeoutMs ?? 30000, config.agent?.timeoutMs ?? 30000);
     const reviewSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]) : AbortSignal.timeout(Math.max(1, deadline - Date.now()));

@@ -97,7 +97,6 @@ function launchTeams(port) {
  * existing instance if necessary) and wait for the app window to come up.
  */
 export async function ensureTeams(port = DEFAULT_PORT) {
-  if (process.env.TEAMS_MONITOR_DEV === '1') throw new Error('Development never restarts Teams; supply a mock CDP server.');
   if ((await listTargets(port))?.some(isTeamsPage)) return;
   if (process.platform !== "win32") {
     throw new Error("Teams auto-relaunch is only implemented on Windows.");
@@ -125,7 +124,6 @@ export async function ensureTeams(port = DEFAULT_PORT) {
  * opens one itself.
  */
 export async function getChatSession(port = DEFAULT_PORT) {
-  if (process.env.TEAMS_MONITOR_DEV === '1' && port !== 29222) throw new Error('Development requires mock CDP port 29222.');
   if (!(await listTargets(port))?.some(isTeamsPage)) {
     await ensureTeams(port);
   }

@@ -3,6 +3,7 @@
 !.env.example
 data/
 node_modules/
+# Retired preview output, never loaded by the application.
 .agentic-dev/
 config/config.json
 config/config.yaml

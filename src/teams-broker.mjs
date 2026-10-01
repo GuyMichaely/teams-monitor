@@ -11,7 +11,6 @@ import { agentStore } from './agent/store.mjs';
 export function teamsOperation(body, io = { unread: getUnreadChats, read: readChat, send: sendScheduledMessage, config: loadConfig }) {
   return teamsQueue.run(async () => {
     const cfg = await io.config();
-    if (process.env.TEAMS_MONITOR_DEV === '1' && cfg.port !== 29222) throw scheduleError('destination');
     if (body.operation === 'unread') return io.unread(cfg.port);
     if (typeof body.chat !== 'string' || !body.chat.trim() || body.chat.length > 300) throw scheduleError('destination');
     if (body.operation === 'read') return io.read(body.chat, 15, cfg.port);

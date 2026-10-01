@@ -19,7 +19,6 @@ import { sendPhoneHealth } from "./phone-health.mjs";
 const [, , cmd, arg] = process.argv;
 
 async function syncHealthControl(config, { force = false } = {}) {
-  if (process.env.TEAMS_MONITOR_DEV === '1') return;
   const hasWorker = workerEnabled(config);
   await syncWorkerHeartbeat(config, { force }).catch(() => {});
 
@@ -58,7 +57,7 @@ try {
           );
           if (Date.now() - lastAlertRecoveryAt >= recoveryIntervalMs) {
             lastAlertRecoveryAt = Date.now();
-            if (process.env.TEAMS_MONITOR_DEV !== '1') await recoverAlertTransport(config).catch(() => {});
+            await recoverAlertTransport(config).catch(() => {});
           }
         } catch { /* next health tick retries */ }
       }, 10_000);
@@ -66,7 +65,7 @@ try {
       try {
         const config = await loadConfig();
         await syncHealthControl(config, { force: true });
-        if (process.env.TEAMS_MONITOR_DEV !== '1') await recoverAlertTransport(config).catch(() => {});
+        await recoverAlertTransport(config).catch(() => {});
         lastAlertRecoveryAt = Date.now();
         await run();
       } finally {
