@@ -13,14 +13,19 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
   baseline, not this approved provider change. See AGENTIC.md for provider setup.
 
 - Stable checkout: C:/Users/GuyMichaely/projects/teams-monitor, main at
-  0efa442b9b31ef0e752a9587eb42db7612ff810e. Keep the stable checkout and its desktop
+  e0a691827a93bfc4742f96b4530137a350635e15. Keep the stable checkout and its desktop
   system intact while implementing.
-- Development checkout: C:/Users/GuyMichaely/.codex/worktrees/agentic/teams-monitor.
+- Development and installed agentic checkout:
+  C:/Users/GuyMichaely/projects/teams-monitor-agentic (manually managed Git worktree).
+  The former C:/Users/GuyMichaely/.codex/worktrees/agentic/teams-monitor is disposable
+  chat-managed storage, not the development/install target. Never put the installed
+  system, credentials or live state back under .codex/worktrees. See AGENTIC.md.
 - Branch name is exactly agentic (user correction; no codex/ prefix).
 - All six implementation increments are complete and locally verified (October 1).
   Launch/API/permissions/recovery instructions are in AGENTIC.md. Real trial files
   and shortcuts are now prepared; live switching and real recipient/phone checks
-  remain separate operational steps. No startup switch or merge was performed.
+  remain separate operational steps. The initial setup did not switch startup;
+  recovery later launched the real trial from the permanent checkout. No merge.
 - User approved real trial setup with separate TM — Prod / TM — Agentic shortcuts,
   one-time local config/credential/context/registration copy and independent state.
   Quit the active tray before opening the other. No setup-time process switch.
