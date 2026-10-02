@@ -168,11 +168,16 @@ namespace TeamsMonitorDesktop {
         readonly KeepAwake keepAwake = new KeepAwake();
         readonly Button start = new Button();
         readonly Button stop = new Button();
+        readonly Button quit = new Button();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
         readonly AwakeSignal awakeSignal;
         Process supervisor;
         bool busy, quitting, disposed, systemStopped, awakePolicyPending, keepAwakeEnabled = true;
         Task awakePolicyTask;
+        CancellationTokenSource startup;
+        // Self-test injection only; the installed app always uses real local control/processes.
+        Func<string, int, CancellationToken, Task<Dictionary<string, object>>> testControl;
+        Func<OwnedJob, Process> testSupervisor;
         int observedExitPid;
         string dashboard = "http://127.0.0.1:8090/";
         public TrayApplication(string project, string runtime, EventWaitHandle showEvent, bool agentic = false) {
@@ -180,7 +185,7 @@ namespace TeamsMonitorDesktop {
             logs = Path.Combine(root, "data", "desktop"); Directory.CreateDirectory(logs);
             session = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff");
             Log("started pid=" + Process.GetCurrentProcess().Id + " parentPid=" + OwnedJob.ParentPid() + " inheritedJob=" + OwnedJob.InAnyJob());
-            window.Text = agentic ? "TM — Agentic" : "TM"; window.Size = new Size(480, 295); window.MinimumSize = new Size(480, 295);
+            window.Text = agentic ? "TM — Agentic" : "TM"; window.Size = new Size(480, 340); window.MinimumSize = new Size(480, 340);
             window.StartPosition = FormStartPosition.CenterScreen; window.BackColor = Color.FromArgb(24, 27, 32);
             window.ForeColor = Color.WhiteSmoke; window.Font = new Font("Segoe UI", 10);
             window.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -191,7 +196,8 @@ namespace TeamsMonitorDesktop {
             AddButton("Open dashboard", 20, 150, delegate { Open(dashboard); });
             AddButton("Open logs", 235, 150, delegate { Open(Path.Combine(root, "data")); });
             start.Text = "Start system"; StyleButton(start); start.SetBounds(20, 195, 200, 34); start.Click += async delegate { await Start(); }; window.Controls.Add(start);
-            stop.Text = "Stop system"; StyleButton(stop); stop.SetBounds(235, 195, 200, 34); stop.Click += async delegate { await Stop(); }; window.Controls.Add(stop);
+            stop.Text = "Stop system"; StyleButton(stop); stop.SetBounds(235, 195, 200, 34); stop.Click += async delegate { if (startup != null) CancelStartup(); else await Stop(); }; window.Controls.Add(stop);
+            quit.Text = "Quit TM"; StyleButton(quit); quit.SetBounds(235, 240, 200, 34); quit.Click += async delegate { await Quit(); }; window.Controls.Add(quit);
             var menu = new ContextMenuStrip();
             menu.Items.Add(agentic ? "Show Agentic status" : "Show status", null, delegate { Show(); });
             menu.Items.Add("Open dashboard", null, delegate { Open(dashboard); });
@@ -199,7 +205,7 @@ namespace TeamsMonitorDesktop {
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit TM", null, async delegate { await Quit(); });
             tray = new NotifyIcon { Icon = window.Icon, Text = window.Text + " — starting", ContextMenuStrip = menu, Visible = true };
-            tray.DoubleClick += delegate { Show(); };
+            tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) Show(); };
             // Force the handle now so save notifications can always marshal to its UI thread.
             var windowHandle = window.Handle;
             awakeSignal = new AwakeSignal(root, delegate {
@@ -272,58 +278,81 @@ namespace TeamsMonitorDesktop {
                 } catch { Log("keep_awake_policy_read_failed save_again_required"); throw; }
             }
         }
-        async Task<Dictionary<string, object>> Control(string action, int ownerPid = 0) {
+        async Task<Dictionary<string, object>> Control(string action, int ownerPid = 0, CancellationToken cancellation = default(CancellationToken)) {
+            if (testControl != null) return await testControl(action, ownerPid, cancellation);
             return await Task.Run(() => {
+                cancellation.ThrowIfCancellationRequested();
                 using (var process = new Process()) {
                     process.StartInfo = new ProcessStartInfo(bun, "--env-file=.env " + OwnedJob.Quote(Path.Combine(root, "scripts", "tray-control.mjs")) + " " + action + (ownerPid > 0 ? " " + ownerPid : "")) {
                         WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
                     };
                     process.Start();
                     try { job.Attach(process); } catch { if (!process.HasExited) process.Kill(); throw; }
+                    // Kill only this handle-owned helper. Start unwinds before closing its job.
+                    using (cancellation.Register(delegate { try { if (!process.HasExited) process.Kill(); } catch (InvalidOperationException) { } catch (Win32Exception) { } })) {
                     var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
                     if (!process.WaitForExit(25000)) { process.Kill(); throw new TimeoutException(); }
                     Task.WaitAll(output, error);
+                    cancellation.ThrowIfCancellationRequested();
                     var result = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(output.Result);
                     if (process.ExitCode != 0 || result.ContainsKey("error")) throw new InvalidOperationException(result.ContainsKey("error") ? Convert.ToString(result["error"]) : "LOCAL_CONTROL_FAILED");
                     return result;
+                    }
                 }
             });
         }
         async Task Start() {
             if (busy || quitting) return;
-            busy = true; start.Enabled = false; stop.Enabled = false; systemStopped = false; status.Text = "Starting system…";
+            startup = new CancellationTokenSource(); var cancellation = startup.Token;
+            busy = true; start.Enabled = false; stop.Text = "Cancel startup"; stop.Enabled = true; systemStopped = false; status.Text = "Starting system…";
+            Exception startupError = null;
             try {
-                await ReadAwakePolicy();
+                try {
+                var policy = await Control("awake-policy", 0, cancellation);
+                cancellation.ThrowIfCancellationRequested(); keepAwakeEnabled = Convert.ToBoolean(policy["enabled"]);
                 SetAwake(keepAwakeEnabled);
                 if (supervisor != null && !supervisor.HasExited) {
-                    await Control("resume-components"); Log("components_resumed"); return;
+                    await Control("resume-components", 0, cancellation); cancellation.ThrowIfCancellationRequested(); Log("components_resumed"); return;
                 }
                 if (supervisor != null) {
                     Log("replacing_owned_tree supervisorExit=" + supervisor.ExitCode);
                     job.Dispose(); job = new OwnedJob(); supervisor.Dispose(); supervisor = null;
                 }
-                var description = await Control("describe"); dashboard = Convert.ToString(description["url"]);
-                await Control("prepare");
-                if (quitting) throw new OperationCanceledException();
-                supervisor = job.Start(bun, "--env-file=.env scripts/gui-supervisor.mjs start", root,
+                var description = await Control("describe", 0, cancellation); cancellation.ThrowIfCancellationRequested(); dashboard = Convert.ToString(description["url"]);
+                await Control("prepare", 0, cancellation);
+                cancellation.ThrowIfCancellationRequested();
+                supervisor = testSupervisor != null ? testSupervisor(job) : job.Start(bun, "--env-file=.env scripts/gui-supervisor.mjs start", root,
                     Path.Combine(logs, "supervisor-" + session + ".out.log"), Path.Combine(logs, "supervisor-" + session + ".err.log"));
                 Log("supervisor_started pid=" + supervisor.Id);
                 bool ready = false;
                 for (int attempt = 0; attempt < 30; attempt++) {
-                    if (quitting) throw new OperationCanceledException();
+                    cancellation.ThrowIfCancellationRequested();
                     if (supervisor.HasExited) throw new InvalidOperationException("SUPERVISOR_EXITED");
-                    try { var health = await Control("status"); ready = Convert.ToString(health["gui"]) == "Running"; } catch { }
+                    try { var health = await Control("status", 0, cancellation); ready = Convert.ToString(health["gui"]) == "Running"; } catch (OperationCanceledException) { throw; } catch { }
+                    cancellation.ThrowIfCancellationRequested();
                     if (ready) break;
-                    await Task.Delay(500);
+                    await Task.Delay(500, cancellation);
                 }
                 if (!ready) throw new TimeoutException();
-                if (quitting) throw new OperationCanceledException();
-                await Control("start-components");
+                cancellation.ThrowIfCancellationRequested();
+                await Control("start-components", 0, cancellation);
+                cancellation.ThrowIfCancellationRequested();
                 Log("components_started");
-                status.Text = "System started.\n\nUse the tray icon → Quit TM to stop it.";
+                status.Text = "System started.";
                 tray.Text = window.Text + " — running";
-                tray.ShowBalloonTip(4000, window.Text, "Running. Use tray → Quit to stop.", ToolTipIcon.Info);
-            } catch (Exception error) {
+                tray.ShowBalloonTip(4000, window.Text, "Running.", ToolTipIcon.Info);
+                } catch (Exception error) { startupError = error; }
+                if (startupError != null) {
+                var error = startupError;
+                if (cancellation.IsCancellationRequested) {
+                    systemStopped = true;
+                    try { await StopOwnedTree(); }
+                    catch (Exception cleanupError) { Log("startup_cancel_cleanup_failed type=" + cleanupError.GetType().Name); }
+                    Log("startup_cancelled");
+                    status.Text = quitting ? "Stopping system…" : "Startup cancelled.\nClick Start system to start it again.";
+                    tray.Text = window.Text + (quitting ? " — stopping" : " — stopped");
+                    return;
+                }
                 string code = error is InvalidOperationException ? error.Message : error.GetType().Name;
                 Log("startup_failed code=" + code);
                 status.Text = code == "EXISTING_GUI" ? "Another TM system is running.\nQuit its tray app before starting this version." :
@@ -331,19 +360,33 @@ namespace TeamsMonitorDesktop {
                     code == "EXISTING_MONITOR" ? "An external monitor is already running.\nStop it from its terminal or dashboard before starting here." :
                     "System needs attention.\nOpen logs for details; the tray remains available.\nIf the GUI started, use Open dashboard for controls.";
                 tray.Text = window.Text + " — needs attention";
-            } finally { SetAwake(keepAwakeEnabled && supervisor != null && !supervisor.HasExited); busy = false; start.Enabled = true; stop.Enabled = supervisor != null; }
+                }
+            } finally {
+                startup.Dispose(); startup = null;
+                SetAwake(keepAwakeEnabled && supervisor != null && !supervisor.HasExited);
+                busy = false; start.Enabled = !quitting; stop.Text = "Stop system"; stop.Enabled = !quitting && supervisor != null;
+            }
+        }
+        void CancelStartup() {
+            if (startup == null || startup.IsCancellationRequested) return;
+            systemStopped = true; stop.Enabled = false; SetAwake(false);
+            status.Text = "Cancelling startup…"; tray.Text = window.Text + " — stopping"; Log("startup_cancel_requested");
+            startup.Cancel();
         }
         async Task StopOwnedTree() {
             SetAwake(false);
+            try {
             if (supervisor != null) {
                 try { await Control("stop-owned", supervisor.Id); } catch { Log("api_stop_unavailable owned_tree_will_stop"); }
                 await Task.Run(() => supervisor.WaitForExit(5000));
             }
             if (awakePolicyTask != null) try { await awakePolicyTask; } catch { }
+            } finally {
             job.Dispose();
             if (supervisor != null) { supervisor.Dispose(); supervisor = null; }
             if (!quitting) job = new OwnedJob();
             Log("owned_process_tree_stopped");
+            }
         }
         async Task Stop() {
             if (busy || quitting) return;
@@ -376,15 +419,15 @@ namespace TeamsMonitorDesktop {
                     tray.Text = window.Text + " — supervisor stopped"; return;
                 }
                 var value = await Control("status");
-                status.Text = "GUI supervisor: " + value["gui"] + "\nMonitor: " + value["monitor"] + "\nTunnel: " + value["tunnel"] +
-                    "\n\nQuit using the tray icon.";
+                status.Text = "GUI supervisor: " + value["gui"] + "\nMonitor: " + value["monitor"] + "\nTunnel: " + value["tunnel"];
                 bool healthy = Convert.ToString(value["gui"]) == "Running" && Convert.ToString(value["monitor"]) == "Running" && Convert.ToString(value["tunnel"]) == "Running";
                 tray.Text = window.Text + (healthy ? " — running" : " — needs attention");
             } catch { status.Text = "GUI is not responding.\nThe supervisor may be recovering it.\nOpen logs for details."; tray.Text = window.Text + " — GUI unavailable"; }
             finally { busy = false; }
         }
         async Task Quit() {
-            if (quitting) return; quitting = true; timer.Stop(); start.Enabled = false; stop.Enabled = false;
+            if (quitting) return; quitting = true; timer.Stop(); quit.Enabled = false;
+            CancelStartup(); start.Enabled = false; stop.Enabled = false;
             SetAwake(false);
             Log("quit_requested"); status.Text = "Stopping system…"; tray.Text = window.Text + " — stopping";
             // Let an in-progress start/status operation finish before disposing its job.
@@ -394,6 +437,51 @@ namespace TeamsMonitorDesktop {
         }
         public void Run() { Application.Run(window); }
         public void Dispose() { disposed = true; awakeSignal.Dispose(); keepAwake.Dispose(); timer.Dispose(); tray.Dispose(); job.Dispose(); if (supervisor != null) supervisor.Dispose(); window.Dispose(); }
+        internal static void TestStartupCancellation(string home) {
+            string runtime = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".bun", "bin", "bun.exe");
+            foreach (string phase in new[] { "prepare", "status", "start-components", "quit" }) {
+                using (var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset))
+                using (var app = new TrayApplication(home, runtime, showEvent)) {
+                    app.timer.Stop(); bool entered = false; Process child = null;
+                    app.testControl = async delegate(string action, int pid, CancellationToken token) {
+                        if (action == (phase == "quit" ? "start-components" : phase)) {
+                            entered = true; await Task.Delay(Timeout.Infinite, token);
+                        }
+                        return new Dictionary<string, object> { { "enabled", false }, { "url", "http://127.0.0.1:1" }, { "gui", "Running" } };
+                    };
+                    app.testSupervisor = delegate(OwnedJob job) {
+                        var owned = job.Start(runtime, "--no-env-file -e " + OwnedJob.Quote("setInterval(()=>{},1000)"), home,
+                            Path.Combine(home, phase + ".out"), Path.Combine(home, phase + ".err"));
+                        child = Process.GetProcessById(owned.Id); return owned;
+                    };
+                    var starting = app.Start();
+                    PumpUntil(delegate { return entered; }, "Startup did not reach test phase.");
+                    if (!app.stop.Enabled || app.stop.Text != "Cancel startup") throw new Exception("Startup must expose Cancel startup.");
+                    Task closing = null;
+                    if (phase == "quit") closing = app.Quit(); else app.CancelStartup();
+                    PumpUntil(delegate { return starting.IsCompleted && (closing == null || closing.IsCompleted); }, "Cancellation did not finish promptly.");
+                    starting.GetAwaiter().GetResult(); if (closing != null) closing.GetAwaiter().GetResult();
+                    if (app.startup != null || app.supervisor != null || app.keepAwake.Active || !app.systemStopped || app.busy) throw new Exception("Cancelled startup left active state.");
+                    if (child != null) { if (!child.WaitForExit(2000)) throw new Exception("Cancelled startup left an owned process alive."); child.Dispose(); }
+                    if (phase == "quit") { if (!app.window.IsDisposed || app.tray.Visible) throw new Exception("Quit during startup must close window/tray."); }
+                    else {
+                        if (app.window.IsDisposed || !app.start.Enabled || app.stop.Enabled || !app.status.Text.StartsWith("Startup cancelled.")) throw new Exception("Cancel must leave restartable UI.");
+                        app.testControl = delegate(string action, int pid, CancellationToken token) {
+                            return Task.FromResult(new Dictionary<string, object> { { "enabled", false }, { "url", "http://127.0.0.1:1" }, { "gui", "Running" } });
+                        };
+                        var restarting = app.Start(); PumpUntil(delegate { return restarting.IsCompleted; }, "Restart after cancellation did not finish."); restarting.GetAwaiter().GetResult();
+                        if (app.supervisor == null || app.systemStopped || app.stop.Text != "Stop system") throw new Exception("Restart after cancellation failed.");
+                        var stopping = app.Stop(); PumpUntil(delegate { return stopping.IsCompleted; }, "Stop after restart did not finish."); stopping.GetAwaiter().GetResult();
+                        if (!child.WaitForExit(2000)) throw new Exception("Stop after restart left a child alive."); child.Dispose();
+                    }
+                }
+            }
+        }
+        static void PumpUntil(Func<bool> condition, string error) {
+            var deadline = Stopwatch.StartNew();
+            while (!condition() && deadline.ElapsedMilliseconds < 12000) { Application.DoEvents(); Thread.Sleep(5); }
+            if (!condition()) throw new Exception(error);
+        }
     }
 
     public static class Program {
@@ -444,6 +532,7 @@ namespace TeamsMonitorDesktop {
         }
         static void SelfTest(string report) {
             SelfTestSaveSignal(report);
+            TrayApplication.TestStartupCancellation(Path.GetDirectoryName(report));
             var requests = new List<uint>();
             var awake = new KeepAwake(delegate(uint flags) { requests.Add(flags); return 0x80000000; });
             awake.SetActive(true); awake.SetActive(true);
@@ -481,8 +570,13 @@ namespace TeamsMonitorDesktop {
             using (var job = new OwnedJob()) {
                 string script = "const {spawn}=await import('node:child_process'); const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}); c.unref(); await Bun.write(" + new JavaScriptSerializer().Serialize(childPidFile) + ",String(c.pid)); setInterval(()=>{},1000);";
                 parent = job.Start(runtime, "-e " + OwnedJob.Quote(script), temp, report + ".out", report + ".err");
-                for (int i = 0; i < 100 && !File.Exists(childPidFile); i++) Thread.Sleep(50);
-                child = Process.GetProcessById(int.Parse(File.ReadAllText(childPidFile)));
+                int childPid = 0;
+                for (int i = 0; i < 100 && childPid == 0; i++) {
+                    try { int.TryParse(File.ReadAllText(childPidFile), out childPid); }
+                    catch (IOException) { } // File exists before Bun finishes writing/closing it.
+                    if (childPid == 0) Thread.Sleep(50);
+                }
+                child = Process.GetProcessById(childPid);
                 if (!job.Contains(parent) || !job.Contains(child)) throw new Exception("Descendants must belong to owned job.");
                 parent.Kill(); parent.WaitForExit(5000);
                 if (child.HasExited) throw new Exception("Owned child should survive a parent exit until tray quit.");
@@ -495,7 +589,7 @@ namespace TeamsMonitorDesktop {
                 if (!first || second) throw new Exception("Duplicate launch lock failed.");
                 one.ReleaseMutex();
             }
-            File.WriteAllText(report, "Passed: immediate save signal from helper to UI thread, on/off, absent listener; keep-awake Windows acquire/release, flags, hide retention, stop/restart, failure retries and disposal; close hides; explicit quit closes; child starts in owned job; descendants inherit; job disposal stops entire tree; duplicate launch is locked.");
+            File.WriteAllText(report, "Passed: startup cancellation before launch/during health wait/component start, restart after cancel, quit during startup; immediate save signal from helper to UI thread, on/off, absent listener; keep-awake Windows acquire/release, flags, hide retention, stop/restart, failure retries and disposal; close hides; explicit quit closes; child starts in owned job; descendants inherit; job disposal stops entire tree; duplicate launch is locked.");
         }
         static void SelfTestSaveSignal(string report) {
             // A copied helper derives this private home, never the actual installed tray's event.

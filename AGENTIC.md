@@ -30,6 +30,13 @@ Both use the same dashboard URL/auth, Teams connection and existing tunnel;
 configuration and state remain independent. Do not run both stacks together.
 Agentic refuses startup if another GUI occupies the configured port.
 
+The Windows tray icon opens its status window on a single left click. During
+startup the Stop button becomes **Cancel startup**, which cancels the current
+startup operation, releases keep-awake and tears down only its owned process tree,
+leaving the app available to start again. **Quit TM** in the window or tray menu
+cancels startup if necessary, stops the owned stack and exits the native app.
+Closing the window with X still hides it without stopping the system.
+
 This runs real Teams, the configured model and real phone delivery. Reply policy
 still gates outgoing Teams messages. Agent Read only/Paused do not disable
 deterministic actions. No fake-data preview or simulated application mode exists;

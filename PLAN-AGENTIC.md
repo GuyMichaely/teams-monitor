@@ -37,6 +37,17 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
 
 ## Agreed design and latest corrections
 
+- October 2 design corrections (planned, not an implemented redesign): no first-
+  class work items/tickets or open/resolved states in the UI/structured model output.
+  The agent may organize work in its own notes. Conversation continuity should be
+  delineated by explicit user-code invocations; standalone chat/direct prompts are
+  not wanted except for intervening in an active thread. No automatic work-item
+  conversation scheme. Agent execution should support general Bun JavaScript within
+  a real OS isolation/resource boundary (filesystem/network/syscall restrictions,
+  time/memory/CPU limits and priority); host subprocess/timeouts are not that sandbox.
+  Permissions must govern access to host action functions, including delayed work.
+  No sandbox/code-execution capability has been added by these design corrections.
+
 - Use the JavaScript/TypeScript OpenAI Agents SDK for the model/tool loop. TM owns
   permissions, action execution, scheduling, storage, and its existing dashboard.
   SDK dependencies are an intentional exception to the old zero-dependency rule.
