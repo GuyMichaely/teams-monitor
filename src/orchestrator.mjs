@@ -29,6 +29,6 @@ export function hardStop({ maxHeartbeatAgeMs = 120000 } = {}) {
 export async function run() {
   const [{ runEngine }, { evaluatePolicy }] = await Promise.all([import('./agent/engine.mjs'), import('./agent/policy.mjs')]);
   return runEngine({ handle: evaluatePolicy,
-    onWake: (ctx, options) => evaluatePolicy(ctx, { ...options, handler: 'onWake' }),
+    onWake: (ctx, options) => evaluatePolicy(ctx, { ...options, handler: ctx.trigger === 'intervention' ? 'onIntervention' : 'onWake' }),
     onActionResult: (ctx, options) => evaluatePolicy(ctx, { ...options, handler: 'onActionResult' }) });
 }

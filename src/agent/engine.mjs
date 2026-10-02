@@ -12,6 +12,7 @@ import { createScheduleStore, runScheduledAction } from '../scheduled-actions.mj
 import { agentStore } from './store.mjs';
 import { intake, messageContext } from './intake.mjs';
 import { executeAction } from './executor.mjs';
+import { failure } from './errors.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -87,11 +88,17 @@ export async function runEngine({ handle, onWake, onActionResult, signal, client
       if (!work) return;
       try {
         const context = { ...work.value, trigger: work.kind, now: new Date().toISOString(), userProfile: await profileLoader() };
-        const result = await (work.kind === 'action_result' ? onActionResult : onWake)?.(context, { store, configLoader, signal: controller.signal, savedCeiling: context.ceiling });
+        if (context.conversationId && context.conversationEpoch !== undefined && store.session(context.conversationId).epoch !== context.conversationEpoch) {
+          store.finishWork(work.id, 'cancelled');
+          store.record(work.id, 'continuation_cancelled', { conversationId: context.conversationId, reason: 'Conversation reset after queueing' });
+          return;
+        }
+        const result = await (work.kind === 'action_result' ? onActionResult : onWake)?.(context, { store, configLoader, signal: controller.signal,
+          handler: work.kind === 'intervention' ? 'onIntervention' : undefined, savedCeiling: context.ceiling });
         if (stopped()) store.finishWork(work.id, 'uncertain');
         else if (result?.ok) store.commit(result.runId || work.id, result, null, work.id);
         else store.finishWork(work.id, result ? 'failed' : 'handled');
-      } catch { store.finishWork(work.id, 'failed'); store.record(work.id, 'policy_failed', { error: 'Queued policy work failed.' }); }
+      } catch (error) { store.finishWork(work.id, 'failed'); store.record(work.id, 'policy_failed', failure(error)); }
       return;
     }
     if (!row.value) { store.finishMessage(row.id, 'invalid'); return; }
@@ -108,7 +115,7 @@ export async function runEngine({ handle, onWake, onActionResult, signal, client
         effect: { message: 'scheduled_reply', alert: 'scheduled_phone', status: 'scheduled_status', wake: 'scheduled_wake' }[action.kind],
         status: 'ok', actionId: action.id, dueAt: new Date(action.due).toISOString(), reason: 'Saved for later execution' });
       if (!result.actions?.some(a => !a.cancelled)) await flow(row, 'effect', { effect: 'none', status: 'ignored' });
-    } catch { store.finishMessage(row.id, 'failed'); await flow(row, 'error', { source: 'policy', error: 'Policy processing failed.' }); }
+    } catch (error) { store.finishMessage(row.id, 'failed'); await flow(row, 'error', { source: 'policy', error: failure(error).error.message }); }
   };
   const execute = async () => {
     await executeAction({ store, client, loadConfig: configLoader, stopped,

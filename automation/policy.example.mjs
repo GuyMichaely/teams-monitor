@@ -6,6 +6,7 @@ export async function handle(ctx, { alert, llm }) {
     return;
   }
   const result = await llm('Consider this message and decide whether to alert me or propose a useful reply.', {
+    // Omit conversationId for fresh history. Opt in with e.g. `chat:${ctx.chatName}`.
     tools: ['list_conversations', 'read_conversation', 'search_conversations', 'list_notes', 'read_note', 'search_notes', 'write_note', 'send_message', 'alert'],
     readChats: [ctx.chatName], writeChats: [ctx.chatName], initiateActions: ['message', 'alert'],
   });
@@ -15,7 +16,7 @@ export async function handle(ctx, { alert, llm }) {
 }
 
 export async function onWake(ctx, { llm }) {
-  return llm(ctx.prompt, { ...ctx.ceiling, contextId: ctx.contextId });
+  return llm(ctx.prompt, { ...ctx.ceiling, conversationId: ctx.conversationId });
 }
 
 export async function onActionResult(ctx, actions) {

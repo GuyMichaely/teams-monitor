@@ -3,6 +3,8 @@ import { mkdirSync, writeFileSync, renameSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { DATA_DIR } from '../local-paths.mjs';
+import { conversationId } from './conversations.mjs';
+import { AgentRuntimeError } from './errors.mjs';
 
 export const normalize = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 export const messageKey = (chat, message) => createHash('sha256').update(JSON.stringify([normalize(chat), message.reaction ? message : message.id || [message.time, message.author, message.text]])).digest('hex');
@@ -36,6 +38,12 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
       if (value !== undefined) db.query('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run('current', JSON.stringify(value));
       try { return JSON.parse(db.query("SELECT value FROM settings WHERE key='current'").get()?.value || 'null'); } catch { return null; }
     },
+    cancelRun(runId) {
+      if (store.current()?.runId !== runId) throw Error('Run is no longer active');
+      db.query('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run('cancelRun', runId);
+      store.record(runId, 'cancel_requested', { runId });
+    },
+    runCancelled(runId) { return db.query("SELECT value FROM settings WHERE key='cancelRun'").get()?.value === runId; },
     enqueue(kind, value) {
       if (db.query("SELECT COUNT(*) n FROM work WHERE state='pending'").get().n >= 500) throw Error('Work queue is full');
       const id = randomUUID();
@@ -78,19 +86,50 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
       return { chat, text: db.query("SELECT text FROM documents WHERE kind='brief' AND path=?").get(normalize(chat))?.text || '' };
     },
     session(id, value) {
-      if (typeof id !== 'string' || !id || id.length > 300) throw Error('Invalid context ID');
-      if (value !== undefined) db.query('INSERT OR REPLACE INTO sessions(id,body,summary) VALUES(?,?,?)').run(id, JSON.stringify(value), value.summary || '');
+      if (!conversationId(id)) throw Error('Conversation ID is required');
+      if (value !== undefined) {
+        const previous = store.session(id);
+        const next = { ...value, revision: previous.revision + 1, epoch: previous.epoch, updatedAt: new Date().toISOString() };
+        delete next.expectedRevision;
+        db.query('INSERT OR REPLACE INTO sessions(id,body,summary) VALUES(?,?,?)').run(id, JSON.stringify(next), next.summary || '');
+      }
       const row = db.query('SELECT * FROM sessions WHERE id=?').get(id);
       try {
         const value = row ? JSON.parse(row.body) : { history: [], summary: '' };
         if (!Array.isArray(value.history)) throw Error();
-        return value;
+        return { ...value, exists: !!row, revision: Number.isSafeInteger(value.revision) ? value.revision : 0, epoch: Number.isSafeInteger(value.epoch) ? value.epoch : 0 };
       }
-      catch { return { history: [], summary: 'Invalid stored history; original run records remain available.' }; }
+      catch { return { exists: true, invalid: true, revision: 0, epoch: 0, history: [], summary: '' }; }
+    },
+    sessions() {
+      return db.query('SELECT id FROM sessions ORDER BY rowid DESC LIMIT 200').all().map(({ id }) => {
+        const s = store.session(id);
+        return { id, updatedAt: s.updatedAt, revision: s.revision, epoch: s.epoch, invalid: s.invalid || false,
+          turns: s.turns || 0, output: String(s.output || '').slice(0, 1600), chat: s.chatName || null };
+      });
+    },
+    resetSession(id) {
+      return db.transaction(() => {
+        const previous = store.session(id);
+        if (!previous.exists) throw Error('Conversation not found');
+        store.record('manual', 'conversation_reset', { conversationId: id, previous });
+        const next = { ...previous, history: [], summary: '', output: '', turns: 0, epoch: previous.epoch + 1,
+          revision: previous.revision + 1, updatedAt: new Date().toISOString() };
+        delete next.invalid;
+        db.query('UPDATE sessions SET body=?,summary=? WHERE id=?').run(JSON.stringify(next), '', id);
+        return { id, epoch: next.epoch, revision: next.revision };
+      }).immediate();
+    },
+    sessionArchives(id) {
+      return db.query("SELECT seq,at,body FROM records WHERE kind='conversation_reset' AND json_valid(body) AND json_extract(body,'$.conversationId')=? ORDER BY seq DESC LIMIT 10").all(id).map(decode);
     },
     commit(runId, plan, messageId, workId) {
       db.transaction(() => {
+        if (store.runCancelled(runId)) throw new AgentRuntimeError('CANCELLED', 'Policy was cancelled before commit; no effects committed');
         if (plan.modelWrites && store.mode() !== 'active') throw Error('Agent autonomy changed before commit; no effects committed');
+        for (const [id, session] of Object.entries(plan.sessions || {})) {
+          if (store.session(id).revision !== session.expectedRevision) throw new AgentRuntimeError('CONVERSATION_CONFLICT', 'Conversation changed before commit; no effects committed');
+        }
         store.plan(messageId || runId, plan.actions || []);
         for (const id of plan.cancellations || []) if (!store.cancel(id)) throw Error('Action is no longer pending; no plan committed');
         for (const [id, edit] of Object.entries(plan.modifications || {})) {
@@ -171,6 +210,7 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
         db.query("UPDATE messages SET state='uncertain' WHERE state='processing'").run();
         db.query("UPDATE work SET state='uncertain' WHERE state='processing'").run();
         db.query("DELETE FROM settings WHERE key='current'").run();
+        db.query("DELETE FROM settings WHERE key='cancelRun'").run();
         db.query("UPDATE messages SET state='observed' WHERE state='pending' AND time<?").run(Date.parse(activatedAt));
         db.query("UPDATE actions SET state='uncertain',result=? WHERE state='running'").run(JSON.stringify({ error: 'Interrupted attempt; no automatic retry.' }));
         db.query("UPDATE actions SET state='missed' WHERE state='pending' AND due<? AND COALESCE(CASE WHEN json_valid(body) THEN json_extract(body,'$.kind') END,'invalid')!='wake'").run(Date.parse(activatedAt));

@@ -435,7 +435,21 @@ function dashboardClient() {
   function renderAgent(value) {
     agentStatus = value;
     const current = value.current;
-    setText('agentCurrent', current ? `${current.trigger || 'Working'} · ${current.contextId || 'user'} · started ${time(current.startedAt)}` : 'Idle');
+    setText('agentCurrent', current ? `${current.trigger || 'Working'} · ${current.conversationId || 'Fresh history'} · started ${time(current.startedAt)}` : 'Idle');
+    $('agentRunCancel').disabled = !current || agentBusy;
+    const selected = $('agentConversationSelect'), selectedId = selected.value;
+    const choices = value.modelConversations || [];
+    const signature = JSON.stringify(choices.map(c => [c.id, c.turns, c.canIntervene, c.invalid]));
+    if (selected.dataset.signature !== signature) {
+      selected.replaceChildren(new Option(choices.length ? 'Select a conversation' : 'No named conversations yet', ''));
+      for (const c of choices) selected.add(new Option(`${c.id} · ${c.turns || 0} turns${c.invalid ? ' · Invalid history' : ''}`, c.id));
+      selected.value = choices.some(c => c.id === selectedId) ? selectedId : '';
+      selected.dataset.signature = signature;
+    }
+    const chosen = choices.find(c => c.id === selected.value);
+    $('agentInterveneSubmit').disabled = !chosen?.canIntervene || agentBusy;
+    $('agentConversationReset').disabled = !chosen || chosen.active || agentBusy;
+    $('agentConversationInspect').disabled = !chosen || chosen.active || agentBusy;
     const mode = value.mode || 'active'; if (!agentModeDirty) $('agentMode').value = mode;
     status('agentModeBadge', mode.replaceAll('_', ' '), mode === 'active' ? 'good' : mode === 'paused' ? 'warn' : 'neutral');
     syncAgentRecordList($('agentRecords'), (value.records || []).slice(0, 25), record =>
@@ -494,11 +508,33 @@ function dashboardClient() {
     e.preventDefault(); const button = $('agentModeSave');
     runAgentAction(button, async () => { const saved = await api('/api/agent/mode', 'PUT', { mode: $('agentMode').value }); agentModeDirty = false; $('agentMode').value = saved.mode; return saved; }, 'Agent mode saved');
   };
-  $('agentPromptForm').onsubmit = async e => {
-    e.preventDefault(); const prompt = $('agentPrompt').value.trim(); if (!prompt) return;
-    const button = $('agentPromptSubmit');
-    const queued = await runAgentAction(button, () => api('/api/agent/prompt', 'POST', { prompt, contextId: $('agentPromptContext').value.trim() || 'user' }), 'Prompt queued');
-    if (queued) $('agentPrompt').value = '';
+  $('agentInterveneForm').onsubmit = async e => {
+    e.preventDefault(); const prompt = $('agentIntervention').value.trim(), conversationId = $('agentConversationSelect').value;
+    if (!prompt || !conversationId) return;
+    const queued = await runAgentAction($('agentInterveneSubmit'), () => api('/api/agent/intervene', 'POST', { prompt, conversationId }), 'Intervention queued for the next turn');
+    if (queued) $('agentIntervention').value = '';
+  };
+  $('agentConversationSelect').onchange = () => { setText('agentConversationHistory', 'Choose View history to inspect this conversation.'); if (agentStatus) renderAgent(agentStatus); };
+  $('agentConversationInspect').onclick = () => {
+    const id = $('agentConversationSelect').value; if (!id) return;
+    runAgentAction($('agentConversationInspect'), async () => {
+      const history = await api('/api/agent/conversation?id=' + encodeURIComponent(id));
+      if ($('agentConversationSelect').value === id) showJson('agentConversationHistory', history);
+      return history;
+    });
+  };
+  $('agentConversationReset').onclick = () => {
+    const conversationId = $('agentConversationSelect').value;
+    if (!conversationId || !confirm('Reset this conversation? Old history stays in local records. Its active run and queued continuations will be invalidated; executed actions are unchanged.')) return;
+    runAgentAction($('agentConversationReset'), async () => {
+      const result = await api('/api/agent/conversation/reset', 'POST', { conversationId });
+      if ($('agentConversationSelect').value === conversationId) setText('agentConversationHistory', 'History reset. View history includes the archived version.');
+      return result;
+    }, 'Conversation reset');
+  };
+  $('agentRunCancel').onclick = () => {
+    const runId = agentStatus?.current?.runId; if (!runId) return;
+    runAgentAction($('agentRunCancel'), () => api('/api/agent/run/cancel', 'POST', { runId }), 'Cancellation requested; executed actions are unchanged');
   };
   $('agentReplayForm').onsubmit = e => {
     e.preventDefault(); const messageId = $('agentReplayId').value.trim(); if (!messageId) return;
@@ -511,7 +547,7 @@ function dashboardClient() {
   $('agentWakeForm').onsubmit = e => {
     e.preventDefault(); const prompt = $('agentWakePrompt').value.trim(), raw = $('agentWakeWhen').value, due = new Date(raw);
     if (!prompt || !Number.isFinite(due.getTime()) || due.getTime() <= Date.now()) { notify('Enter a prompt and a valid future time.', true); return; }
-    runAgentAction($('agentWakeSubmit'), () => api('/api/agent/wake', 'POST', { prompt, contextId: $('agentWakeContext').value.trim() || 'user', dueAt: due.toISOString() }), 'Agent wake scheduled');
+    runAgentAction($('agentWakeSubmit'), () => api('/api/agent/wake', 'POST', { prompt, conversationId: $('agentWakeConversation').value.trim() || null, dueAt: due.toISOString() }), 'Agent wake scheduled');
   };
   $('agentWakeWhen').value = localDateTime(Date.now() + 10 * 60000).slice(0, 16);
   $('agentWakeTimezone').textContent = 'Time zone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -649,11 +685,11 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <p class="hint">Paused stops model runs; deterministic policy still runs. Read-only prevents model-originated external actions and note edits; deterministic policy still runs. Neither mode changes manual messages/status scheduling.</p>
 <div class="agent-current"><strong>Current work</strong><span id="agentCurrent">Checking…</span><span id="agentRefreshState" class="save-state"></span></div>
 <form id="agentModeForm" class="agent-controls agent-mode-form"><label for="agentMode">Autonomy mode</label><select id="agentMode"><option value="active">Active</option><option value="read_only">Read only</option><option value="paused">Paused</option></select><button id="agentModeSave" class="small">Save mode</button></form>
-<form id="agentPromptForm" class="agent-form"><label for="agentPrompt">Direct prompt</label><textarea id="agentPrompt" rows="2" placeholder="Ask the agent to review or explain something…"></textarea><div class="agent-controls"><input id="agentPromptContext" value="user" aria-label="Context ID"><button id="agentPromptSubmit" class="primary small">Queue prompt</button></div><p class="hint">The response is returned as a result. It does not implicitly send a Teams message.</p></form>
+<form id="agentInterveneForm" class="agent-form"><label for="agentConversationSelect">Model conversation</label><select id="agentConversationSelect"><option value="">No named conversations yet</option></select><label for="agentIntervention">Intervention</label><textarea id="agentIntervention" rows="2" placeholder="Instructions for the selected conversation’s next turn…"></textarea><div class="button-row"><button id="agentInterveneSubmit" class="primary small" disabled>Queue intervention</button><button id="agentRunCancel" class="small danger" type="button" disabled>Cancel current run</button><button id="agentConversationInspect" class="small" type="button" disabled>View history</button><button id="agentConversationReset" class="small danger" type="button" disabled>Reset history</button></div><p class="hint">Named conversations are created by explicit policy calls. Intervention continues one with its previously granted permissions, limited by the current ceiling. It queues after the current run; it does not cancel it or undo actions already executed. Responses appear in Recent tools and results.</p><details><summary>Selected conversation history</summary><pre id="agentConversationHistory" class="agent-output">Select a conversation and choose View history.</pre></details></form>
 <div class="agent-tools"><form id="agentReplayForm"><label for="agentReplayId">Replay recorded message ID</label><div class="agent-controls"><input id="agentReplayId" placeholder="Recorded message ID"><button id="agentReplaySubmit" class="small">Replay safely</button></div><p class="hint">Replay disables model calls and external actions.</p><pre id="agentReplayResult" class="agent-output">No replay yet.</pre></form>
-<form id="agentWakeForm"><label for="agentWakePrompt">Schedule an agent wake</label><textarea id="agentWakePrompt" rows="2" placeholder="What should the agent check at that time?"></textarea><label for="agentWakeContext">Context ID</label><input id="agentWakeContext" value="user"><label for="agentWakeWhen">Run at</label><input id="agentWakeWhen" type="datetime-local"><p id="agentWakeTimezone" class="hint"></p><button id="agentWakeSubmit" class="small">Schedule wake</button><p class="hint">The server applies the current configured permission ceiling. Wakeups appear with other agent actions.</p></form></div>
+<form id="agentWakeForm"><label for="agentWakePrompt">Schedule an agent wake</label><textarea id="agentWakePrompt" rows="2" placeholder="What should the agent check at that time?"></textarea><label for="agentWakeConversation">Conversation ID · optional</label><input id="agentWakeConversation" placeholder="Blank starts with fresh history"><label for="agentWakeWhen">Run at</label><input id="agentWakeWhen" type="datetime-local"><p id="agentWakeTimezone" class="hint"></p><button id="agentWakeSubmit" class="small">Schedule wake</button><p class="hint">A named wake continues that history. Existing conversations retain their prior permission limits; fresh wakes use the current ceiling. All limits are rechecked at execution. Wakeups appear with other agent actions.</p></form></div>
 <div class="agent-columns"><div><div class="inline-heading"><h3>Recent tools and results</h3><span class="hint">Newest first</span></div><div id="agentRecords" class="agent-list">Loading…</div></div><div><div class="inline-heading"><h3>Actions</h3><span class="hint">Pending and completed</span></div><div id="agentActions" class="agent-list">Loading…</div></div></div>
-<div class="agent-memory"><div><div class="inline-heading"><h3>Conversation history</h3><span class="hint">Visible coverage</span></div><div id="agentConversations" class="agent-conversations">Loading…</div></div>
+<div class="agent-memory"><div><div class="inline-heading"><h3>Observed Teams chats</h3><span class="hint">Visible coverage</span></div><div id="agentConversations" class="agent-conversations">Loading…</div></div>
 <div><div class="inline-heading"><h3>Freeform notes</h3><button id="agentNotesRefresh" type="button" class="small">Refresh list</button></div><div class="agent-controls"><select id="agentNoteSelect" aria-label="Choose a note"><option value="">No notes loaded</option></select><button id="agentNoteNew" type="button" class="small">New note</button></div><label for="agentNotePath">Note path</label><input id="agentNotePath" placeholder="people/alex.md"><label for="agentNoteText">Note text</label><textarea id="agentNoteText" rows="7" placeholder="Private notes for continuity…"></textarea><div class="form-footer"><span id="agentNoteState" class="save-state"></span><button id="agentNoteSave" type="button" class="small">Save note</button></div></div>
 <div><h3>Chat brief</h3><label for="agentBriefChat">Exact chat name</label><div class="agent-controls"><input id="agentBriefChat" placeholder="Select from conversation history or type exact name"><button id="agentBriefLoad" type="button" class="small">Load</button></div><label for="agentBriefText">Brief</label><textarea id="agentBriefText" rows="5" placeholder="Optional context for this person or chat…"></textarea><div class="form-footer"><span id="agentBriefState" class="save-state"></span><button id="agentBriefSave" type="button" class="small">Save brief</button></div></div></div>
 </div></section>

@@ -218,6 +218,13 @@ SDK references:
 
 ## Progress
 
+October 2 conversation refinement implemented: explicit local `conversationId`
+continuation, fresh calls by default, same-handler staged history, serialized live
+decisions/RPC, conflict guards, reset archives/generations, and permission-scoped
+scheduled continuation. Dashboard input now intervenes in an existing conversation;
+run cancellation is separate. No ticket states or implicit per-chat model histories.
+Sandboxed general Bun execution remains a separate, unimplemented design item.
+
 - [x] Preserve stable main and create isolated agentic worktree.
 - [x] Save approved plan with the user's corrections before compaction.
 - [x] Increment 1: SDK integration.

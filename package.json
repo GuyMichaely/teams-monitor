@@ -13,6 +13,7 @@
     "test:agent-intake": "bun --no-env-file scripts/smoke-agent-intake.mjs",
     "test:agent-policy": "bun --no-env-file scripts/smoke-agent-policy.mjs",
     "test:agent-continuity": "bun --no-env-file scripts/smoke-agent-continuity.mjs",
+    "test:agent-conversations": "bun --no-env-file scripts/smoke-agent-conversations.mjs",
     "desktop:setup-switching": "bun --no-env-file scripts/setup-switching.mjs",
     "test:desktop-switching": "bun --no-env-file scripts/smoke-desktop-switching.mjs",
     "test:policy-conversion": "bun --no-env-file scripts/smoke-policy-conversion.mjs",

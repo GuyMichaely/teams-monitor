@@ -2,6 +2,7 @@ import { isReplyAllowed } from '../reply-policy.mjs';
 import { sendAlert } from '../alerts.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
 import { permissionCeiling, permissions, chatAllowed } from './permissions.mjs';
+import { conversationId } from './conversations.mjs';
 
 export function validateAction(value) {
   if (!value || typeof value !== 'object' || !['message', 'alert', 'status', 'wake'].includes(value.kind))
@@ -13,9 +14,14 @@ export function validateAction(value) {
     throw new AgentRuntimeError('INVALID_ACTION', 'Action needs a chat and text.');
   if (value.kind === 'status' && !['available', 'busy', 'dnd', 'brb', 'away', 'offline'].includes(value.presence))
     throw new AgentRuntimeError('INVALID_ACTION', 'Invalid Teams status.');
-  if (value.kind === 'wake' && (typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.length > 16000 || typeof value.contextId !== 'string' || !value.contextId || !value.ceiling))
-    throw new AgentRuntimeError('INVALID_ACTION', 'Wake needs a prompt, context ID and permission ceiling.');
-  if (value.kind === 'wake') permissions(value.ceiling, permissionCeiling());
+  if (value.kind === 'wake' && (typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.length > 16000 || !value.ceiling))
+    throw new AgentRuntimeError('INVALID_ACTION', 'Wake needs a prompt and permission ceiling.');
+  if (value.kind === 'wake') {
+    conversationId(value.conversationId);
+    if (value.conversationEpoch !== undefined && (!Number.isSafeInteger(value.conversationEpoch) || value.conversationEpoch < 0))
+      throw new AgentRuntimeError('INVALID_ACTION', 'Invalid conversation generation.');
+    permissions(value.ceiling, permissionCeiling());
+  }
   return value;
 }
 

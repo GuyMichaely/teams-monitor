@@ -21,6 +21,16 @@ local output validation, portable sessions, bounded/abortable calls and no retri
 Validate with smoke-nvidia and smoke-agent-nvidia plus existing SDK/policy smokes.
 
 Read PLAN-AGENTIC.md for the approved incremental agent implementation and progress.
+October 2: model history continuation is explicit via `llm(prompt,{conversationId,
+...permissions})`; omitting the ID is fresh, never inherited from incoming context.
+Same-handler calls share staged history; serialized decision/RPC workers and revision
+guards prevent lost updates. Read-scope changes omit old history/summary. Dashboard
+direct prompts were replaced with existing-conversation intervention, view/reset
+history and explicit current-run cancellation. Interventions/wakes capture permission
+ceilings and reset generations; reset archives history and invalidates old queued
+continuations. Whole-policy failure/cancellation never commits staged history/effects.
+See AGENTIC.md and smoke-agent-conversations for usage/invariants. No work-item UI
+or agent-generated Bun execution/sandbox was introduced.
 Changes stay in the separate `agentic` worktree; do not merge/deploy or restart the
 stable main installation during development. SDK dependencies are an intentional
 exception to main's zero-dependency rule. All six implementation increments are

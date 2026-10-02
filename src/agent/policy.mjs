@@ -87,26 +87,30 @@ export async function ensurePolicy() {
 
 export async function evaluatePolicy(context, { store, configLoader = loadConfig, signal, model, replay = false, handler = 'handle', savedCeiling } = {}) {
   const runId = randomUUID(), plan = blankPlan();
+  const cancellation = new AbortController();
+  let cancelWatch;
   const { source, version } = await ensurePolicy();
   // Freeze source per handler, including while a dashboard save activates the next version.
   const snapshot = POLICY_FILE + '.' + runId + '.mjs';
   await writeFile(snapshot, source, { flag: 'wx' });
   try {
   store.record(runId, 'policy_input', { handler, context, version, source, replay });
-  store.current({ runId, trigger: context.trigger, contextId: context.contextId, startedAt: new Date().toISOString() });
+  store.current({ runId, trigger: context.trigger, conversationId: null, startedAt: new Date().toISOString() });
+  cancelWatch = setInterval(() => { if (store.runCancelled(runId)) cancellation.abort(); }, 100);
   const { api } = actionAPI({ plan, context, configLoader, store, bounded: savedCeiling,
     llm: (prompt, options) => replay && !model ? Promise.resolve({ ok: false, error: { code: 'REPLAY_MODEL_DISABLED', message: 'Replay stages deterministic actions only; model and external effects are disabled.' } }) :
       agentReview({ prompt, options, context, source, version, plan, store, configLoader, signal: policySignal, model, savedCeiling, replay }) });
   const config = await configLoader();
   const timeoutMs = Math.min(300000, Math.max(1000, config.agent?.policyTimeoutMs || 90000));
-  const policySignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+  const policySignal = AbortSignal.any([cancellation.signal, ...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
     const result = await policySubprocess({ path: snapshot, context, handler, signal: policySignal, timeoutMs,
       dispatch: (name, args) => { if (!Object.hasOwn(api, name) || !Array.isArray(args)) throw new AgentRuntimeError('INVALID_ACTION', 'Unknown policy action.'); return api[name](...args); } });
     if (!result.ok || policySignal.aborted) {
-      const failed = policySignal.aborted && !signal?.aborted ? { ok: false, error: { code: 'POLICY_TIMEOUT', message: 'Policy exceeded its bounded execution window.' } } : result.ok ? failure(null, { aborted: true }) : result;
+      const failed = cancellation.signal.aborted ? { ok: false, error: { code: 'CANCELLED', message: 'Run cancelled; uncommitted proposals and history discarded.' } } :
+        policySignal.aborted && !signal?.aborted ? { ok: false, error: { code: 'POLICY_TIMEOUT', message: 'Policy exceeded its bounded execution window.' } } : result.ok ? failure(null, { aborted: true }) : result;
       store.record(runId, 'policy_failed', { ...failed, version });
       return { ...failed, runId, version };
     }
     return { ok: true, runId, version, ...plan, value: result.value, replay };
-  } finally { try { store.current(null); } finally { await unlink(snapshot).catch(() => {}); } }
+  } finally { clearInterval(cancelWatch); try { if (store.current()?.runId === runId) store.current(null); } finally { await unlink(snapshot).catch(() => {}); } }
 }

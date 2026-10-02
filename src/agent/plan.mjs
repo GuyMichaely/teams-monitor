@@ -4,6 +4,7 @@ import { normalizeStatus } from '../teams-presence.mjs';
 import { validateAction } from './executor.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
 import { permissions, permissionCeiling, assertPermission } from './permissions.mjs';
+import { conversationId } from './conversations.mjs';
 
 export const blankPlan = () => ({ actions: [], cancellations: [], modifications: {}, notes: {}, sessions: {} });
 const idOf = handle => typeof handle === 'string' ? handle : handle?.id;
@@ -70,7 +71,12 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
       if (stored) plan.modifications[id] = { expectedBody: plan.modifications[id]?.expectedBody || stored.body, action };
       return { ok: true, id, state: 'pending' };
     }, 'modify'),
-    wake: expected((prompt, options = {}) => add({ kind: 'wake', prompt, contextId: options.contextId || context.contextId || 'user', due: Date.parse(options.dueAt), ceiling: options.permissions || authority || bounded }), 'wake'),
+    wake: expected((prompt, options = {}) => {
+      if (Object.hasOwn(options, 'contextId')) bad('Use conversationId for explicit history continuation.');
+      const id = conversationId(options.conversationId);
+      return add({ kind: 'wake', prompt, conversationId: id, conversationEpoch: id ? store.session(id).epoch : undefined,
+        due: Date.parse(options.dueAt), ceiling: options.permissions || authority || bounded });
+    }, 'wake'),
     llm: expected((prompt, options) => llm(prompt, options), 'llm'),
   };
   return { api, add };

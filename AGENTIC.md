@@ -66,8 +66,11 @@ security sandbox for arbitrary code. Do not paste untrusted code into this edito
 Exports:
 
 - `handle(ctx, actions)` for incoming messages.
-- Optional `onWake(ctx, actions)` for scheduled/direct agent work. Without it,
+- Optional `onWake(ctx, actions)` for scheduled agent work. Without it,
   the runtime calls the model with the saved/current permission ceiling.
+- Optional `onIntervention(ctx, actions)` for a user intervention in an existing
+  named conversation. Without it, the runtime continues the selected history with
+  the intervention prompt and that invocation's saved permissions.
 - Optional `onActionResult(ctx, actions)` with `ctx.outcome` after an effect.
 
 `ctx` includes `message`, `history`, `chatName`, `authorName`, `isDM`, `mentionsMe`,
@@ -103,7 +106,7 @@ export async function handle(ctx, a) {
 Functions: `sendMessage(chat,text)`, `alert(textOrPayload)`, `setStatus(presence)`,
 `delay(handle, ISOTime | timestamp | {afterMs})`, `cancel(handleOrId)`,
 `modify(handleOrId,{text})`, `llm(prompt,permissions)`, and
-`wake(prompt,{contextId,dueAt,permissions})`. Delay stores a fixed action, not a
+`wake(prompt,{conversationId,dueAt,permissions})`. Delay stores a fixed action, not a
 closure or timer. Cancel/modify can target pending stored actions as well as this
 handler's proposals; an execution race rejects the whole commit.
 
@@ -140,6 +143,55 @@ Polling/heartbeat continue while the one active policy/model run waits. Original
 run records and SDK history stay local; older history is summarized when necessary.
 External SDK trace export is disabled.
 
+### Explicit conversations
+
+`conversationId` is a local history key, not an OpenAI-hosted conversation ID.
+Omit it from `llm` options for fresh model history, even in a Teams chat that has
+been handled before. Supply it to create or continue named history. Incoming
+`ctx.contextId` is trigger metadata only; it is never an implicit history key.
+Each invocation still supplies its own permissions; the ID grants no authority.
+
+```js
+const conversationId = `chat:${ctx.chatName.toLowerCase()}`;
+const readOnly = { tools: ['read_conversation'], readChats: [ctx.chatName] };
+const review = await actions.llm('Investigate this question without acting.', {
+  ...readOnly, conversationId,
+});
+if (!review.ok) return actions.alert('Review failed: ' + review.error.code);
+return actions.llm('Use the findings to decide what to do.', {
+  ...readOnly, conversationId, tools: ['read_conversation', 'send_message', 'alert'],
+  writeChats: [ctx.chatName], initiateActions: ['message', 'alert'],
+});
+```
+
+Use a per-chat ID for recurring exchanges, a project ID for a policy deliberately
+combining related chats, or a per-message ID for a later follow-up on one question.
+These are code-chosen conventions, not managed tickets or open/resolved states.
+Both calls above share staged history. The single decision worker serializes
+handlers through commit; policy RPC serializes calls even with `Promise.all`.
+Revision checks reject stale commits rather than overwriting newer history.
+If read scope changes, prior history and summary are omitted; originals remain
+in local run records. Long histories are summarized with no tools. Notes, chat
+briefs, introduction, observed Teams messages and action records are shared;
+model history/summary belong to the selected ID.
+
+The dashboard selects existing model conversations. **Queue intervention** adds
+the next turn, using the last/current invocation's permission grant intersected
+with the live ceiling. It does not interrupt the current run. **Cancel current
+run** aborts uncommitted policy/model work separately; executed actions remain.
+**View history** includes retained reset archives. **Reset history** starts a new
+generation, invalidates queued continuations of the old generation and prevents
+an in-flight stale plan from committing. Actions already committed are unchanged.
+IDs without a permission-bearing successful/current invocation cannot be used to
+create a standalone chat from this form. Responses appear in tools/results.
+
+Successful history and notes/actions commit together only after the whole policy
+returns successfully. Provider failures and later policy exceptions do not update
+history; `agent_result` records are explicitly marked staged-only. A custom
+`onIntervention` must pass `ctx.conversationId` to its `llm` call and remains bounded
+by `ctx.ceiling`. It may return a structured model failure to its caller just like
+ordinary policy code. Neither intervention nor continuation is a permission bypass.
+
 Freeform `.md`/`.txt` notes are transactional records in `data/agent/store.sqlite`,
 mirrored under `data/agent/notes/`. Edit through tools/dashboard (direct edits to a
 mirror are not imported). Briefs and the existing Brain context provide background.
@@ -154,7 +206,10 @@ permissions at execution. Replay has both model and external effects disabled.
 
 The existing message/status form remains. Agent jobs (including fixed alerts and
 wakeups) appear in the agent action list and can be cancelled while pending.
-The wake form stores prompt, context ID, due time and the current ceiling. `onWake`
+The wake form stores prompt, optional conversation ID, due time and a saved ceiling.
+Blank ID means fresh history; an ID explicitly continues that history. Existing
+named histories keep their prior grant on GUI-created wakes; new/fresh GUI wakes
+use the current ceiling. Code-created wakes specify `permissions`. `onWake`
 cannot expand that saved authority and sees `latenessMs` if a wake was overdue.
 The same saved limits also apply to direct deterministic calls inside `onWake`,
 not only its model calls. Resulting delayed actions retain those limits.
@@ -176,6 +231,7 @@ bun run test:agent-intake
 bun run test:policy-conversion
 bun run test:agent-policy
 bun run test:agent-continuity
+bun run test:agent-conversations
 bun run test:desktop-switching
 bun --no-env-file scripts/smoke-dashboard.mjs
 bun --no-env-file scripts/smoke-presence.mjs

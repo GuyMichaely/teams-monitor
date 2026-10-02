@@ -47,7 +47,9 @@ try {
       ["/api/agent/policy", "GET"], ["/api/agent/status", "GET"], ["/api/agent/notes", "GET"],
       ["/api/agent/permissions", "GET"], ["/api/agent/permissions", "PUT", { source: "tools: []" }],
       ["/api/agent/note?path=test.md", "GET"], ["/api/agent/brief?chat=Test%20chat", "GET"],
-      ["/api/agent/prompt", "POST", { prompt: "unauthorized" }],
+      ["/api/agent/intervene", "POST", { prompt: "unauthorized", conversationId: 'test' }],
+      ["/api/agent/conversation?id=test", "GET"], ["/api/agent/conversation/reset", "POST", { conversationId: 'test' }],
+      ["/api/agent/run/cancel", "POST", { runId: 'test' }],
     ]) assert.equal((await request(path, method, body, false)).status, 401, `auth required for ${path}`);
   }
 
@@ -113,11 +115,18 @@ try {
   assert.equal((await request("/api/agent/mode", "PUT", { mode: "active" })).status, 200);
   assert.equal((await request("/api/agent/mode", "PUT", { mode: "invalid" })).status, 400);
 
-  const prompt = await request("/api/agent/prompt", "POST", { prompt: "Return a summary only." });
+  assert.equal((await request('/api/agent/prompt', 'POST', { prompt: 'no standalone prompt endpoint' })).status, 400);
+  assert.equal((await request('/api/agent/intervene', 'POST', { prompt: 'unknown', conversationId: 'unknown' })).status, 400);
+  db.session('test', { history: [], summary: '', permissions: ceiling, readChats: ceiling.readChats });
+  const prompt = await request("/api/agent/intervene", "POST", { prompt: "Return a summary only.", conversationId: 'test' });
   assert.equal(prompt.status, 200);
   const queuedPrompt = await prompt.json();
   assert.equal(queuedPrompt.state, "pending");
   assert(queuedPrompt.id);
+  assert.equal((await (await request('/api/agent/conversation?id=test')).json()).id, 'test');
+  assert.equal((await request('/api/agent/conversation/reset', 'POST', { conversationId: 'test' })).status, 200);
+  assert.equal((await (await request('/api/agent/conversation?id=test')).json()).archives.length, 1);
+  assert.equal((await request('/api/agent/run/cancel', 'POST', { runId: 'test' })).status, 400);
 
   assert.deepEqual(await (await request("/api/agent/notes")).json(), { notes: [] });
   const savedNote = await request("/api/agent/note", "PUT", { path: "people/jordan.md", text: "Prefers concise updates." });
@@ -173,6 +182,8 @@ try {
   assert(page.includes("JavaScript policy") && !page.includes("Automation config YAML"));
   assert(page.includes('id="agentHeading"') && page.includes('id="agentMode"'));
   assert(page.includes('id="agentReplayForm"') && page.includes('id="agentWakeForm"'));
+  assert(page.includes('id="agentInterveneForm"') && page.includes('id="agentConversationSelect"'));
+  assert(!page.includes('id="agentPromptForm"'));
   assert(page.includes('id="agentNoteSelect"') && page.includes('id="agentBriefSave"'));
   assert(page.includes('function syncAgentRecordList(panel, rows, makeRow)'));
   assert.match(page, /syncAgentRecordList\(\$\(['"]agentRecords['"]\)/);

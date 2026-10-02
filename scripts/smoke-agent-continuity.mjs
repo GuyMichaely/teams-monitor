@@ -22,7 +22,7 @@ let store = agentStore(file);
 try {
   await savePolicy(`export async function handle(ctx,a) {
     await a.alert('deterministic');
-    return a.llm('keep notes', {tools:['write_note','read_note'],readChats:['Alice'],contextId:ctx.contextId});
+    return a.llm('keep notes', {tools:['write_note','read_note'],readChats:['Alice'],conversationId:'chat:Alice'});
   }`);
   const first = await evaluatePolicy(context, { store, model: fixtureModel(turn => response(turn === 1 ? [call('write_note', { path: 'projects/demo.md', text: 'Remember this fixture' })] : [message('Recorded')])) });
   assert.equal(first.ok, true); assert.equal(store.note('projects/demo.md').text, '');
@@ -80,7 +80,7 @@ try {
   const past = Date.now() - 60000;
   const ceiling = permissionCeiling(config);
   jobs.plan('seed', [{ id: 'old-alert', kind: 'alert', chat: 'Alice', text: 'missed', due: past },
-    { id: 'overdue-wake', kind: 'wake', prompt: 'reassess', contextId: 'saved', ceiling, due: past }]);
+    { id: 'overdue-wake', kind: 'wake', prompt: 'reassess', conversationId: 'saved', ceiling, due: past }]);
   jobs.recover(new Date().toISOString());
   assert.equal(jobs.action('old-alert').state, 'missed'); assert.equal(jobs.action('overdue-wake').state, 'pending');
   let wakeCount = 0;
@@ -89,7 +89,7 @@ try {
   } });
   assert.equal(outcome.state, 'completed'); assert.equal(wakeCount, 1);
   assert.equal(await executeAction({ store: jobs, client: {}, loadConfig }), null);
-  const wake = jobs.claimWork(); assert.equal(wake.value.contextId, 'saved');
+  const wake = jobs.claimWork(); assert.equal(wake.value.conversationId, 'saved');
   await savePolicy(`export async function handle() {} export async function onWake(ctx,a) {
     return a.llm('cannot expand authority', {tools:['alert'],readChats:['*'],initiateActions:['alert']});
   }`);
@@ -100,7 +100,7 @@ try {
   assert.equal(wakeModelCalls, 2, 'saved ceiling bounds the model tools, not access to llm itself');
   assert.equal(result.ok, true); assert.equal(result.actions.length, 0, 'wake cannot acquire a capability missing from its saved ceiling');
   await savePolicy('export async function handle() {}');
-  const defaultWake = await evaluatePolicy({ trigger: 'prompt', prompt: 'default onWake', contextId: 'direct', ceiling }, { store: jobs, handler: 'onWake', savedCeiling: ceiling,
+  const defaultWake = await evaluatePolicy({ trigger: 'wake', prompt: 'default onWake', conversationId: 'direct', ceiling }, { store: jobs, handler: 'onWake', savedCeiling: ceiling,
     model: fixtureModel(() => response([message('direct prompt response')])) });
   assert.equal(defaultWake.ok, true); assert.equal(defaultWake.value.output, 'direct prompt response', 'direct prompts work without a custom onWake export');
   await savePolicy(`export async function handle() {} export async function onWake(ctx,a) { return a.alert('direct hook proposal'); }`);
