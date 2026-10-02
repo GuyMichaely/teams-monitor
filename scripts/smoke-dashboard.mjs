@@ -45,6 +45,7 @@ try {
     for (const [path, method, body] of [
       ["/api/reply-policy", "GET"], ["/api/poll", "GET"], ["/api/activity/view", "GET"],
       ["/api/agent/policy", "GET"], ["/api/agent/status", "GET"], ["/api/agent/notes", "GET"],
+      ["/api/agent/permissions", "GET"], ["/api/agent/permissions", "PUT", { source: "tools: []" }],
       ["/api/agent/note?path=test.md", "GET"], ["/api/agent/brief?chat=Test%20chat", "GET"],
       ["/api/agent/prompt", "POST", { prompt: "unauthorized" }],
     ]) assert.equal((await request(path, method, body, false)).status, 401, `auth required for ${path}`);
@@ -78,6 +79,24 @@ try {
   assert.equal(badPolicy.status, 400);
   assert.equal(await readFile(POLICY_FILE, "utf8"), policyOnDisk, "invalid policy save keeps the active source");
   assert.deepEqual(await (await request("/api/agent/policy")).json(), savedPolicy);
+
+  const originalPermissions = await (await request('/api/agent/permissions')).json();
+  const configBeforePermissions = Bun.YAML.parse(await readFile(CONFIG_FILE, 'utf8'));
+  const ceiling = { tools: ['list_conversations', 'read_note'], readChats: ['Test chat'], writeChats: [],
+    initiateActions: [], cancelIds: [], modifyIds: {} };
+  assert.equal((await request('/api/agent/permissions', 'PUT', { source: Bun.YAML.stringify(ceiling) })).status, 200);
+  assert.deepEqual(Bun.YAML.parse((await (await request('/api/agent/permissions')).json()).source), ceiling);
+  const savedConfigText = await readFile(CONFIG_FILE, 'utf8');
+  const savedConfig = Bun.YAML.parse(savedConfigText);
+  assert.deepEqual(savedConfig.agent.ceiling, ceiling);
+  assert.deepEqual({ ...savedConfig, agent: configBeforePermissions.agent }, configBeforePermissions, 'Ceiling saves retain unrelated configuration');
+  for (const source of ['tools: [', 'tools: []', '[]', Bun.YAML.stringify({ ...ceiling, unknown: true }),
+    Bun.YAML.stringify({ ...ceiling, tools: ['execute_arbitrary_code'] }), Bun.YAML.stringify({ ...ceiling, readChats: null }),
+    Bun.YAML.stringify({ ...ceiling, modifyIds: { '*': ['destination'] } })]) {
+    assert.equal((await request('/api/agent/permissions', 'PUT', { source })).status, 400);
+    assert.equal(await readFile(CONFIG_FILE, 'utf8'), savedConfigText, 'Invalid ceiling does not alter saved configuration');
+  }
+  assert.equal((await request('/api/agent/permissions', 'PUT', originalPermissions)).status, 200);
 
   const agentState = await (await request("/api/agent/status")).json();
   assert.equal(agentState.mode, "active");

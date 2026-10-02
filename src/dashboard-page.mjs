@@ -50,6 +50,7 @@ function dashboardClient() {
   let deliveryDirty = false, policyDirty = false, profileDirty = false, pollDirty = false, rulesDirty = false;
   let agentBusy = false, agentRefreshing = false, agentStatus = null, agentPolicyVersion = null;
   let agentModeDirty = false, agentNoteDirty = false, agentNotePath = '', agentBriefDirty = false;
+  let agentPermissionsDirty = false, agentPermissionsSaving = false, agentPermissionsRevision = 0;
   let listFingerprint = "", flowFingerprint = "";
   const failures = new Map();
 
@@ -406,6 +407,17 @@ function dashboardClient() {
   $('profileForm').onsubmit = (e) => { e.preventDefault(); if (!profileReady) return; perform($('saveProfile'), async () => { await api('/api/profile', 'PUT', { text: $('brainContext').value }); profileDirty = false; setText('profileSaveState', 'Saved'); }, 'Brain context saved for the next poll'); };
   $('rulesForm').oninput = () => { rulesDirty = true; setText('rulesSaveState', 'Unsaved'); };
   $('rulesForm').onsubmit = (e) => { e.preventDefault(); if (!agentPolicyReady) return; perform($('ruleFields'), async () => { const saved = await api('/api/agent/policy', 'PUT', { source: $('alertRules').value }); agentPolicyVersion = saved.version; $('alertRules').value = saved.source; rulesDirty = false; setText('policyVersion', 'Version ' + saved.version); setText('rulesSaveState', 'Saved'); }, 'JavaScript policy saved'); };
+  $('agentPermissionsForm').oninput = () => { agentPermissionsDirty = true; agentPermissionsRevision++; setText('agentPermissionsState', 'Unsaved'); };
+  $('agentPermissionsForm').onsubmit = async e => {
+    e.preventDefault(); if (agentPermissionsSaving || $('agentPermissionsFields').disabled) return;
+    agentPermissionsSaving = true; agentPermissionsRevision++; $('agentPermissionsFields').disabled = true; setText('agentPermissionsState', 'Saving…');
+    try {
+      const saved = await api('/api/agent/permissions', 'PUT', { source: $('agentPermissions').value });
+      $('agentPermissions').value = saved.source; agentPermissionsDirty = false;
+      setText('agentPermissionsState', 'Saved');
+    } catch (error) { setText('agentPermissionsState', 'Save failed'); notify(error.message, true); }
+    finally { agentPermissionsSaving = false; $('agentPermissionsFields').disabled = false; }
+  };
 
   let agentNotes = [];
   function showJson(id, value) { $(id).textContent = JSON.stringify(value, null, 2); }
@@ -457,6 +469,15 @@ function dashboardClient() {
       agentPolicyVersion = policy.version; agentPolicyReady = true; $('ruleFields').disabled = false;
       setText('policyVersion', 'Version ' + policy.version);
       setText('agentRefreshState', 'Updated ' + time(new Date().toISOString()));
+      if (!agentPermissionsDirty && !agentPermissionsSaving) {
+        const revision = agentPermissionsRevision;
+        const ceiling = await api('/api/agent/permissions');
+        // An edit/save may have begun while the request was in flight.
+        if (!agentPermissionsDirty && !agentPermissionsSaving && revision === agentPermissionsRevision) {
+          if ($('agentPermissions').value !== ceiling.source) $('agentPermissions').value = ceiling.source;
+          $('agentPermissionsFields').disabled = false;
+        }
+      }
     } catch (e) { setText('agentRefreshState', e.message); }
     finally { agentRefreshing = false; }
   }
@@ -569,7 +590,7 @@ function dashboardClient() {
   };
   $('logSource').onchange = () => { for (const node of document.querySelectorAll('.log-output')) node.hidden = node.id !== $('logSource').value; };
   $('copyLog').onclick = async () => { try { await navigator.clipboard.writeText($($('logSource').value).textContent); notify('Log copied'); } catch { notify('Could not copy. Select the log text to copy it manually.', true); } };
-  window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty || agentModeDirty || agentNoteDirty || agentBriefDirty) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty || agentModeDirty || agentNoteDirty || agentBriefDirty || agentPermissionsDirty || agentPermissionsSaving) { e.preventDefault(); e.returnValue = ''; } });
   policySummary(); refresh(true);
   refreshSupervisor();
   // Supervisor safety status stays live even while message/log tailing is paused.
@@ -616,6 +637,10 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <div class="health-row"><span class="health-name"><span class="health-symbol">◈</span>Teams connection</span><span id="teamsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◎</span>Phone delivery</span><span id="phoneHealth" class="badge neutral">Checking</span></div><div class="health-row"><span class="health-name"><span class="health-symbol">◇</span>Brain</span><span id="brainHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Phone WebSocket</span><span id="wsHealth" class="badge neutral">Checking</span></div><div class="health-row"><span>Public tunnel probe</span><span id="publicHealth" class="badge neutral">Checking</span></div><p id="brainModel" class="hint"></p><p class="hint">Teams can connect when the monitor starts. FCM send acceptance does not confirm phone receipt.</p></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Teams reply permissions</h2></div><p class="hint">Controls outgoing Teams replies, including holding messages. Phone alerts are unaffected.</p><form id="policyForm"><label for="replyMode">Permission mode</label><select id="replyMode"><option value="whitelist">Whitelist · only listed chats</option><option value="blacklist">Blacklist · all except listed chats</option></select><label for="replyEntries">Chat names, one per line</label><textarea id="replyEntries" rows="4" placeholder="e.g. Project chat&#10;Alex Morgan"></textarea><p class="hint">Exact chat names, case-insensitive. No wildcards.</p><p id="policyHint" class="hint"></p><div class="form-footer"><span id="policySaveState" class="save-state"></span><button id="savePolicy" class="small">Save permissions</button></div></form><p class="hint">Default: an empty whitelist allows replies to nobody.</p></div></section>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Brain context</h2></div><p class="hint">Instructions used by the brain for phone alerts and permitted Teams replies.</p><form id="profileForm"><label for="brainContext">Context & instructions</label><textarea id="brainContext" class="brain-text" rows="8" placeholder="Enter monitoring context and alert instructions…"></textarea><div class="form-footer"><span id="profileSaveState" class="save-state"></span><button id="saveProfile" class="small">Save context</button></div></form><p class="hint">Saved locally and picked up on the next poll.</p></div></section>
+<section class="card"><div class="card-body"><div class="section-title"><h2>Agent permissions</h2></div>
+<p class="hint">Global maximum for model tools. Each policy call can grant less, never more. Teams reply permissions still apply. This does not sandbox trusted JavaScript policy.</p>
+<form id="agentPermissionsForm"><fieldset id="agentPermissionsFields" class="settings-fields" disabled><label for="agentPermissions">agent.ceiling · YAML</label><textarea id="agentPermissions" class="code-input" rows="18" spellcheck="false" aria-describedby="agentPermissionsHelp"></textarea><p id="agentPermissionsHelp" class="hint"><code>tools</code>: permitted tool names. <code>readChats</code>/<code>writeChats</code>: exact chat names or <code>'*'</code> for all. <code>initiateActions</code>: message, alert, status, wake. <code>cancelIds</code>: pending action IDs or <code>'*'</code>. <code>modifyIds</code>: IDs mapped to <code>[text]</code>, or <code>{}</code> for none. Empty lists permit none. Keep all six fields.</p><p class="hint">Tools: list_conversations, read_conversation, search_conversations, send_message, alert, set_status, schedule, cancel_action, modify_action, list_notes, read_note, search_notes, write_note.</p><div class="form-footer"><span id="agentPermissionsState" class="save-state" aria-live="polite"></span><button class="small">Save agent permissions</button></div></fieldset></form>
+<p class="hint">Restrictions are rechecked on tool calls and execution. Existing tasks cannot gain permission beyond their saved limits. Invalid saves leave the configuration unchanged.</p></div></section>
 <section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2><span id="policyVersion" class="badge neutral">Version —</span></div>
 <p class="hint">Policy runs for each message with <code>handle(ctx, actions)</code>. Use the scoped action functions in <code>actions</code>; model work is explicit through <code>actions.llm(...)</code>. Saves validate before activation. Replay disables model calls and external actions.</p>
 <form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules">automation/policy.mjs</label><textarea id="alertRules" class="code-input" rows="24" spellcheck="false" placeholder="export async function handle(ctx, actions) {&#10;  // Decide what to do with this message.&#10;}"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save JavaScript policy</button></div></fieldset></form></div></section>

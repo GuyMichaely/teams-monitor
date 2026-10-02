@@ -106,6 +106,16 @@ automation mapping is removed from active YAML. There is no old rules runtime/AP
 
 ## Agent permissions and continuity
 
+The dashboard's **Agent permissions** YAML editor edits the complete `agent.ceiling`
+mapping (not the whole config). It displays effective defaults, preserves unsaved
+edits, validates before atomic save and retains unrelated settings. Keep all six
+fields: `tools`, `readChats`, `writeChats`, `initiateActions`, `cancelIds`, `modifyIds`.
+Empty lists/`modifyIds: {}` deny the capability; quoted `'*'` permits all chats or
+action IDs in scope fields. Permissions are rechecked for each call and execution;
+saving a ceiling does not expand an already queued task's saved authority or grant
+tools omitted by policy. It does not sandbox trusted JavaScript. Authenticated
+GET/PUT `/api/agent/permissions` uses `{source: <YAML>}`.
+
 An `llm` call explicitly lists tools, `readChats`, `writeChats`, `initiateActions`,
 `cancelIds`, and `modifyIds` (only `text`). Omitted permissions deny that capability.
 Every call intersects `agent.ceiling` in YAML and any saved wake ceiling. Reply

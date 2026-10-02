@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { loadConfig, loadUserProfile } from '../context.mjs';
+import { loadConfig, loadUserProfile, saveConfig } from '../context.mjs';
+import { parseConfigYaml, configYaml } from '../config-format.mjs';
 import { agentStore } from './store.mjs';
 import { ensurePolicy, savePolicy, evaluatePolicy } from './policy.mjs';
-import { permissionCeiling } from './permissions.mjs';
+import { permissionCeiling, permissions } from './permissions.mjs';
 import { messageContext } from './intake.mjs';
 import { validateAction } from './executor.mjs';
 import { AgentRuntimeError } from './errors.mjs';
@@ -22,6 +23,28 @@ const presentRecord = row => {
 
 export async function agentAPI({ url, method, body, store, running = false }) {
   const path = url.pathname;
+  if (path === '/api/agent/permissions') {
+    if (method === 'GET') return { source: configYaml(permissionCeiling(await loadConfig())) };
+    if (method === 'PUT') {
+      let ceiling;
+      try {
+        const value = parseConfigYaml(input(body.source, 64000));
+        const fields = ['tools', 'readChats', 'writeChats', 'initiateActions', 'cancelIds', 'modifyIds'];
+        // Complete, explicit saves prevent an omitted/null field restoring broad defaults.
+        if (Object.keys(value).some(key => !fields.includes(key)) || fields.some(key => !Object.hasOwn(value, key)) ||
+            fields.slice(0, -1).some(key => !Array.isArray(value[key])) ||
+            !value.modifyIds || typeof value.modifyIds !== 'object' || Array.isArray(value.modifyIds)) throw Error();
+        ceiling = permissionCeiling({ agent: { ceiling: value } });
+        permissions(ceiling, ceiling);
+      } catch {
+        throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid permissions YAML. Keep all six fields; use lists for tools, readChats, writeChats, initiateActions and cancelIds, and an ID-to-[text] mapping for modifyIds.');
+      }
+      const config = await loadConfig();
+      config.agent = { ...config.agent, ceiling };
+      await saveConfig(config);
+      return { source: configYaml(ceiling) };
+    }
+  }
   if (path === '/api/agent/policy') {
     if (method === 'GET') return ensurePolicy();
     if (method === 'PUT') return savePolicy(body.source);
