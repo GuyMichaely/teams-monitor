@@ -5,6 +5,12 @@ remain unchanged. Do not start this branch against real Teams while stable is ru
 
 ## Live trial and rollback
 
+The installed agentic system lives in the permanent, manually managed Git worktree
+`C:/Users/GuyMichaely/projects/teams-monitor-agentic`. Production remains in
+`C:/Users/GuyMichaely/projects/teams-monitor`. Do not run the installed system from
+`~/.codex/worktrees`: archiving a Codex chat can remove its managed checkout,
+including ignored configuration, credentials and runtime data.
+
 Install the two named desktop shortcuts from this worktree:
 
 ```powershell

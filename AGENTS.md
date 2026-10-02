@@ -4,6 +4,15 @@ Read this before touching anything. It captures architecture, operational proced
 
 ## Agentic branch
 
+October 1 recovery: the live agentic installation is now the permanent, manually
+managed Git worktree `C:/Users/GuyMichaely/projects/teams-monitor-agentic`, not the
+disposable `.codex/worktrees/agentic/teams-monitor` checkout. The original chat's
+archive removed that checkout's configuration while its processes were running.
+The latest committed code, exact recorded policy and surviving runtime data were
+recovered; private setup came from production without modifying production.
+TM — Agentic targets this permanent folder. Keep installed runtime/state outside
+Codex-managed worktrees; do not remove the old leftovers until recovery is accepted.
+
 October 1 provider-only exception approved by the user: NVIDIA is configured in
 both agentic and main. Main keeps its original rules runtime and zero dependencies;
 no agentic code was merged there. This supersedes earlier keep-Gemini decisions.
