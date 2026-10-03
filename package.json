@@ -7,6 +7,8 @@
     "teams": "src/cli.mjs"
   },
   "scripts": {
+    "sandbox:build": "powershell.exe -NoProfile -File scripts/build-sandbox.ps1",
+    "test:agent-sandbox": "bun --no-env-file scripts/smoke-agent-sandbox.mjs",
     "test:agent-sdk": "bun --no-env-file scripts/smoke-agent-sdk.mjs",
     "test:agent-nvidia": "bun --no-env-file scripts/smoke-agent-nvidia.mjs",
     "test:agent-storage": "bun --no-env-file scripts/smoke-agent-storage.mjs",

@@ -138,6 +138,69 @@ the SDK run. Effects and note edits are staged; a provider error, timeout, inval
 output or policy fault cannot commit its incomplete plan. Final model text is never
 an implicit Teams send. No special takeover primitive, recursive or parallel agents.
 
+## Sandboxed Bun execution
+
+The model always has `execute_bun({code,inputJson})`, even if `tools: []`.
+`inputJson` is a JSON string or null. Code is an async JavaScript function body;
+it receives `ctx` (the invocation context), `input` (parsed inputJson), `tools`
+(the permitted host tools) and `actions`. Bun and built-in imports are available.
+
+```js
+// Code supplied to execute_bun, not the trusted policy editor:
+const messages = await tools.read_conversation({chat: ctx.chatName, limit: 20});
+if (!messages.ok) return messages;
+return messages.messages.map(row => row.message.text).join('\n');
+```
+
+The convenience API is `actions.sendMessage(chat,text)`, `alert(text)`,
+`setStatus(presence)`, `cancel(handle)`, `modify(handle,{text})` and
+`delay(handle,{afterMs})` (also accepts an absolute timestamp). Delay requires
+`schedule` permission and an action this model invocation proposed. Use
+`tools.schedule(...)` for the existing fixed-message/status/alert/wake scheduling.
+All bridge arguments, tools, chat scopes, action grants, UI mode and reply
+whitelist are checked on the host. Raw guest protocol messages confer no authority.
+The bridge is serialized. Await every call; unawaited calls make execution fail.
+
+Only a successful guest result merges its nested staged plan. Code errors,
+timeouts, cancellation, invalid output, resource limits or permission changes
+discard that execution's changes, without discarding earlier successful model
+tool calls. Failure is returned to the model so it can choose another approach.
+A later model or whole-policy failure still discards the entire model/policy plan.
+
+Native Windows x64 backend: LPAC with a unique per-run package identity, zero
+capabilities, explicit stdin/stdout/stderr inheritance, no Win32k calls, and a
+kill-on-close Job Object. Bun starts suspended until container identity, zero
+capabilities and job assignment are verified. Jobs bound aggregate/process memory,
+process count, total CPU capacity and priority. Wall time and combined output are
+bounded; root completion terminates descendants. No WSL, VM, admin account,
+loopback exemption, service or machine-wide ACL edits.
+
+Direct networking, host private files and filesystem writes are denied. Each run
+gets read-only copies of Bun/bootstrap plus a temporary read-only AppContainer
+profile, removed on normal cleanup. Cleanup failures are recorded; a hard helper/OS
+termination can leave a read-only bundle or profile, with no copied message contents
+or credentials. Built-in imports work; installing packages, writing scratch files
+and spawning subprocesses may be denied. Attempting a
+network API can terminate Bun during Winsock startup rather than yield a catchable
+exception; the host returns a sandbox failure and rolls back nested changes.
+This is OS process isolation, not protection against Windows/Bun kernel/runtime
+vulnerabilities. Some OS files exposed to LPAC remain readable. No claim of a
+hermetic virtual machine or configurable host mounts/network grants.
+
+Build once after checkout or native-helper changes: `bun run sandbox:build`.
+The dashboard's **Bun sandbox** section shows whether the helper is built/current
+and edits `agent.sandbox` resource limits. Limits default to 10s, 512MiB, 10% of
+total CPU capacity, four processes and 64KiB combined guest output. SDK/policy
+deadlines also apply and may be shorter. An `llm` call may provide a `sandbox`
+mapping to lower limits; queued wakes/interventions preserve those limits.
+Unsupported platforms or failed restrictions return `SANDBOX_UNAVAILABLE`; there
+is never an unsandboxed fallback. Linux/macOS backends and scheduling arbitrary
+code as a standalone job are not implemented by this increment.
+
+Diagnostics include sandbox start, mediated tool results, final output/result and
+whether effects were staged or discarded. Smoke: `bun run test:agent-sandbox`
+(real Windows boundary plus fixture SDK, no provider calls or real sends).
+
 Defaults: 30-second review deadline, 10 model turns, three outgoing Teams proposals.
 Polling/heartbeat continue while the one active policy/model run waits. Original
 run records and SDK history stay local; older history is summarized when necessary.

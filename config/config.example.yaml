@@ -58,6 +58,12 @@ agent:
   maxTurns: 10
   maxMessages: 3
   policyTimeoutMs: 90000
+  sandbox:
+    timeoutMs: 10000
+    memoryMb: 512
+    cpuPercent: 10
+    maxProcesses: 4
+    outputBytes: 65536
   # Code grants per-call authority; this ceiling and replyPolicy can only narrow it.
   ceiling:
     readChats: ['*']

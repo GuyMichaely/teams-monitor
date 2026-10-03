@@ -4,6 +4,8 @@ import { actionAPI } from './plan.mjs';
 import { permissions, permissionCeiling, assertPermission, chatAllowed } from './permissions.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
 import { conversationId, sameReadScope } from './conversations.mjs';
+import { executeSandbox } from './sandbox.mjs';
+import { validateAction } from './executor.mjs';
 
 const string = z.string().min(1).max(8000);
 const chat = z.string().min(1).max(300);
@@ -39,7 +41,9 @@ async function review({ prompt, options = {}, context, source, version, plan, st
     if (current) store.current({ ...current, conversationId: id, conversationEpoch: previous.epoch || 0, permissions: p });
     const maxMessages = Math.min(options.maxMessages ?? 3, config.agent?.maxMessages ?? 3);
     if (!Number.isInteger(maxMessages) || maxMessages < 0 || maxMessages > 20) throw new AgentRuntimeError('INVALID_CONFIG', 'Invalid outgoing message limit.');
-    const { api, add } = actionAPI({ plan: staged, context, configLoader, store, origin: 'agent', authority: p, maxMessages });
+    const makeDefinitions = (staged, newIds) => {
+    const { api, add } = actionAPI({ plan: staged, context, configLoader, store, origin: 'agent', authority: p,
+      maxMessages: Math.max(0, maxMessages - staged.actions.filter(a => a.kind === 'message' && newIds.has(a.id)).length) });
     const ownProposal = async operation => {
       const before = new Set(staged.actions.map(a => a.id));
       const result = await operation();
@@ -78,13 +82,28 @@ async function review({ prompt, options = {}, context, source, version, plan, st
       search_notes: { parameters: z.object({ query: string }), execute: args => ({ ok: true, notes: [...new Set([...store.notes().map(n => n.path), ...Object.keys(staged.notes)])].map(path => ({ path, text: staged.notes[path] ?? store.note(path).text })).filter(n => n.text.toLowerCase().includes(args.query.toLowerCase())).slice(0, 30) }) },
       write_note: { parameters: z.object({ path: chat, text: z.string().max(32000) }), execute: args => { store.note(args.path); staged.notes[args.path] = args.text; return { ok: true, path: args.path, state: 'staged' }; } },
     };
-    const tools = p.tools.map(name => agentTool({ name, description: `TM ${name}. External effects and note edits are staged until successful completion.`, parameters: definitions[name].parameters,
-      execute: async (args, runtime) => {
+    return definitions;
+    };
+    const definitions = makeDefinitions(staged, newIds);
+    const invoke = async (name, args, runtime, definitions, newIds, target) => {
         let result;
         try {
+        if (runtime.signal?.aborted) throw new AgentRuntimeError('CANCELLED', 'Agent run was cancelled.');
         // Recheck live ceilings and UI mode at each call, not only in the prompt.
         const current = permissions(p, permissionCeiling(await configLoader()), savedCeiling);
         livePermissions = current;
+        if (name === 'delay_action') {
+          if (!current.tools.includes('schedule') || store.mode() !== 'active' || !newIds.has(args?.id)) denied();
+          const parsed = z.object({ id: chat, dueAt: string }).strict().parse(args);
+          const action = target.actions.find(a => a.id === parsed.id);
+          if (!action || action.cancelled || !current.initiateActions.includes(action.kind)) denied();
+          const due = Date.parse(parsed.dueAt);
+          if (!Number.isFinite(due) || due <= Date.now()) throw new AgentRuntimeError('INVALID_ACTION', 'Choose a future time.');
+          validateAction({ ...action, due }); action.due = due;
+          result = { ok: true, id: action.id, state: 'pending', dueAt: new Date(due).toISOString() };
+        } else {
+        if (!Object.hasOwn(definitions, name)) denied();
+        args = definitions[name].parameters.strict().parse(args);
         if (!current.tools.includes(name) || store.mode() === 'paused' || (store.mode() === 'read_only' && writes.has(name))) denied();
         if (args.chat && ['read_conversation', 'search_conversations', 'send_message'].includes(name)) assertPermission(current, name, args.chat);
         if (name === 'schedule' && args.kind === 'message' && !chatAllowed(current.writeChats, args.chat)) denied();
@@ -94,12 +113,40 @@ async function review({ prompt, options = {}, context, source, version, plan, st
           const kind = { send_message: 'message', alert: 'alert', set_status: 'status' }[name] || args.kind;
           if (!current.initiateActions.includes(kind)) denied();
           if (name === 'schedule' && kind !== 'wake' && !current.tools.includes({ message: 'send_message', alert: 'alert', status: 'set_status' }[kind])) denied();
+          if (kind === 'message' && target.actions.filter(a => a.kind === 'message' && newIds.has(a.id)).length >= maxMessages)
+            throw new AgentRuntimeError('MESSAGE_LIMIT', 'Outgoing message limit reached.');
         }
         result = await definitions[name].execute(args);
-        } catch (error) { result = failure(error); }
-        if (runtime.signal.aborted) return failure(null, { aborted: true });
+        }
+        } catch (error) { result = error instanceof z.ZodError ? { ok: false, error: { code: 'INVALID_TOOL_CALL', message: 'Invalid tool arguments.' } } : failure(error); }
+        if (runtime.signal?.aborted) return failure(null, { aborted: true });
         store.record(runtime.runId, 'tool_result', { tool: name, input: args, result });
         return result;
+    };
+    const tools = p.tools.map(name => agentTool({ name, description: `TM ${name}. External effects and note edits are staged until successful completion.`, parameters: definitions[name].parameters,
+      execute: (args, runtime) => invoke(name, args, runtime, definitions, newIds, staged) }));
+    tools.push(agentTool({ name: 'execute_bun',
+      description: 'Execute arbitrary JavaScript/Bun in a native Windows sandbox. No direct host files, writes, credentials or network access. ctx is this invocation context; input is parsed inputJson. Use await tools.<permitted_tool>(args) or actions.sendMessage(chat,text), alert(text), setStatus(status), cancel(handle), modify(handle,{text}), delay(handle,{afterMs}). Only granted host tools are available. Return a JSON-serializable value. Console output is captured. Effects are staged, not sent; code failure/timeout discards this execution’s changes. No recursive LLM. Always available for computation.',
+      parameters: z.object({ code: z.string().min(1).max(100000), inputJson: z.string().max(100000).nullable() }),
+      execute: async (args, runtime) => {
+        try {
+          if (runtime.signal.aborted || store.mode() === 'paused') denied();
+          const current = permissions(p, permissionCeiling(await configLoader()), savedCeiling);
+          const nested = structuredClone(staged), nestedIds = new Set(newIds), nestedDefinitions = makeDefinitions(nested, nestedIds);
+          let input; try { input = args.inputJson ? JSON.parse(args.inputJson) : null; } catch { throw new AgentRuntimeError('INVALID_INPUT', 'inputJson must be valid JSON.'); }
+          const result = await executeSandbox({ code: args.code, input, context, tools: current.tools, limits: current.sandbox, signal: runtime.signal,
+            dispatch: (name, values, signal) => invoke(name, values, { ...runtime, signal }, nestedDefinitions, nestedIds, nested),
+            onActivity: event => store.record(runtime.runId, event.kind, event) });
+          const latest = permissions(p, permissionCeiling(await configLoader()), savedCeiling);
+          const changed = ['actions', 'cancellations', 'modifications', 'notes'].some(key => JSON.stringify(nested[key]) !== JSON.stringify(staged[key]));
+          if (runtime.signal.aborted || store.mode() === 'paused' || (store.mode() === 'read_only' && changed) || JSON.stringify(current) !== JSON.stringify(latest)) denied();
+          if (result.ok) {
+            // Keep outer closures bound to the same plan object; only swap its contents.
+            Object.assign(staged, nested); newIds.clear(); for (const id of nestedIds) newIds.add(id);
+          }
+          store.record(runtime.runId, 'sandbox_result', { ...result, effects: result.ok ? 'staged_only' : 'discarded' });
+          return result;
+        } catch (error) { const result = failure(error); store.record(runtime.runId, 'sandbox_result', { ...result, effects: 'discarded' }); return result; }
       } }));
     let history = previous.history, summary = previous.summary;
     if (previous.invalid || !sameReadScope(previous.readChats, p.readChats)) {

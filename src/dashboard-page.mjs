@@ -51,6 +51,7 @@ function dashboardClient() {
   let agentBusy = false, agentRefreshing = false, agentStatus = null, agentPolicyVersion = null;
   let agentModeDirty = false, agentNoteDirty = false, agentNotePath = '', agentBriefDirty = false;
   let agentPermissionsDirty = false, agentPermissionsSaving = false, agentPermissionsRevision = 0;
+  let sandboxDirty = false, sandboxSaving = false, sandboxRevision = 0;
   let listFingerprint = "", flowFingerprint = "";
   const failures = new Map();
 
@@ -418,6 +419,17 @@ function dashboardClient() {
     } catch (error) { setText('agentPermissionsState', 'Save failed'); notify(error.message, true); }
     finally { agentPermissionsSaving = false; $('agentPermissionsFields').disabled = false; }
   };
+  $('sandboxForm').oninput = () => { sandboxDirty = true; sandboxRevision++; setText('sandboxSaveState', 'Unsaved'); };
+  $('sandboxForm').onsubmit = async e => {
+    e.preventDefault(); if (sandboxSaving || $('sandboxFields').disabled) return;
+    sandboxSaving = true; sandboxRevision++; $('sandboxFields').disabled = true;
+    setText('sandboxSaveState', 'Saving…');
+    try {
+      const saved = await api('/api/agent/sandbox', 'PUT', { source: $('sandboxLimits').value });
+      $('sandboxLimits').value = saved.source; sandboxDirty = false; setText('sandboxSaveState', 'Saved');
+    } catch (error) { setText('sandboxSaveState', 'Save failed'); notify(error.message, true); }
+    finally { sandboxSaving = false; $('sandboxFields').disabled = false; }
+  };
 
   let agentNotes = [];
   function showJson(id, value) { $(id).textContent = JSON.stringify(value, null, 2); }
@@ -483,6 +495,14 @@ function dashboardClient() {
       agentPolicyVersion = policy.version; agentPolicyReady = true; $('ruleFields').disabled = false;
       setText('policyVersion', 'Version ' + policy.version);
       setText('agentRefreshState', 'Updated ' + time(new Date().toISOString()));
+      const sandboxVersion = sandboxRevision;
+      const sandbox = await api('/api/agent/sandbox');
+      status('sandboxStatus', sandbox.available ? 'Native helper ready' : 'Unavailable', sandbox.available ? 'good' : 'warn');
+      setText('sandboxInfo', sandbox.reason);
+      if (!sandboxDirty && !sandboxSaving && sandboxVersion === sandboxRevision) {
+        if ($('sandboxLimits').value !== sandbox.source) $('sandboxLimits').value = sandbox.source;
+        $('sandboxFields').disabled = false;
+      }
       if (!agentPermissionsDirty && !agentPermissionsSaving) {
         const revision = agentPermissionsRevision;
         const ceiling = await api('/api/agent/permissions');
@@ -676,7 +696,11 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Agent permissions</h2></div>
 <p class="hint">Global maximum for model tools. Each policy call can grant less, never more. Teams reply permissions still apply. This does not sandbox trusted JavaScript policy.</p>
 <form id="agentPermissionsForm"><fieldset id="agentPermissionsFields" class="settings-fields" disabled><label for="agentPermissions">agent.ceiling · YAML</label><textarea id="agentPermissions" class="code-input" rows="18" spellcheck="false" aria-describedby="agentPermissionsHelp"></textarea><p id="agentPermissionsHelp" class="hint"><code>tools</code>: permitted tool names. <code>readChats</code>/<code>writeChats</code>: exact chat names or <code>'*'</code> for all. <code>initiateActions</code>: message, alert, status, wake. <code>cancelIds</code>: pending action IDs or <code>'*'</code>. <code>modifyIds</code>: IDs mapped to <code>[text]</code>, or <code>{}</code> for none. Empty lists permit none. Keep all six fields.</p><p class="hint">Tools: list_conversations, read_conversation, search_conversations, send_message, alert, set_status, schedule, cancel_action, modify_action, list_notes, read_note, search_notes, write_note.</p><div class="form-footer"><span id="agentPermissionsState" class="save-state" aria-live="polite"></span><button class="small">Save agent permissions</button></div></fieldset></form>
+<p class="hint">Sandboxed <code>execute_bun</code> is always available for computation. Host tool access still requires the permissions above.</p>
 <p class="hint">Restrictions are rechecked on tool calls and execution. Existing tasks cannot gain permission beyond their saved limits. Invalid saves leave the configuration unchanged.</p></div></section>
+<section class="card"><div class="card-body"><div class="section-title"><h2>Bun sandbox</h2><span id="sandboxStatus" class="badge neutral">Checking…</span></div>
+<p id="sandboxInfo" class="hint"></p><p class="hint">Native Windows isolation; no VM or WSL. Direct network access and filesystem writes are blocked. Host tools retain permission checks. Code faults and limit failures discard that execution’s changes.</p>
+<form id="sandboxForm"><fieldset id="sandboxFields" class="settings-fields" disabled><label for="sandboxLimits">agent.sandbox · YAML</label><textarea id="sandboxLimits" class="code-input" rows="6" spellcheck="false"></textarea><p class="hint">Maximum per execution: timeoutMs (100–30000), memoryMb (256–2048), cpuPercent (1–25, total CPU capacity), maxProcesses (1–8), outputBytes (4096–262144). Policy calls and saved continuations can only lower these limits.</p><div class="form-footer"><span id="sandboxSaveState" class="save-state" aria-live="polite"></span><button class="small">Save sandbox limits</button></div></fieldset></form></div></section>
 <section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2><span id="policyVersion" class="badge neutral">Version —</span></div>
 <p class="hint">Policy runs for each message with <code>handle(ctx, actions)</code>. Use the scoped action functions in <code>actions</code>; model work is explicit through <code>actions.llm(...)</code>. Saves validate before activation. Replay disables model calls and external actions.</p>
 <form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules">automation/policy.mjs</label><textarea id="alertRules" class="code-input" rows="24" spellcheck="false" placeholder="export async function handle(ctx, actions) {&#10;  // Decide what to do with this message.&#10;}"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save JavaScript policy</button></div></fieldset></form></div></section>

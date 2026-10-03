@@ -1,5 +1,6 @@
 import { normalize } from './store.mjs';
 import { AgentRuntimeError } from './errors.mjs';
+import { sandboxLimits } from './sandbox-limits.mjs';
 
 export const TOOL_NAMES = ['list_conversations', 'read_conversation', 'search_conversations', 'send_message', 'alert', 'set_status', 'schedule', 'cancel_action', 'modify_action', 'list_notes', 'read_note', 'search_notes', 'write_note'];
 const actions = ['message', 'alert', 'status', 'wake'];
@@ -15,12 +16,12 @@ const strings = (value, allowed) => {
 export function permissionCeiling(config = {}) {
   const c = config.agent?.ceiling || {};
   return { tools: strings(c.tools ?? TOOL_NAMES, TOOL_NAMES), readChats: strings(c.readChats ?? ['*']), writeChats: strings(c.writeChats ?? ['*']),
-    initiateActions: strings(c.initiateActions ?? actions, actions), cancelIds: strings(c.cancelIds ?? ['*']), modifyIds: c.modifyIds ?? { '*': ['text'] } };
+    initiateActions: strings(c.initiateActions ?? actions, actions), cancelIds: strings(c.cancelIds ?? ['*']), modifyIds: c.modifyIds ?? { '*': ['text'] }, sandbox: sandboxLimits(config.agent?.sandbox) };
 }
 
 export function permissions(options = {}, global, saved) {
   const requested = { tools: strings(options.tools ?? [], TOOL_NAMES), readChats: strings(options.readChats ?? []), writeChats: strings(options.writeChats ?? []),
-    initiateActions: strings(options.initiateActions ?? [], actions), cancelIds: strings(options.cancelIds ?? []), modifyIds: options.modifyIds ?? {} };
+    initiateActions: strings(options.initiateActions ?? [], actions), cancelIds: strings(options.cancelIds ?? []), modifyIds: options.modifyIds ?? {}, sandbox: sandboxLimits(options.sandbox, global.sandbox, ...(saved ? [saved.sandbox] : [])) };
   if (!requested.modifyIds || typeof requested.modifyIds !== 'object' || Array.isArray(requested.modifyIds)) throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid editable-action permissions.');
   for (const [id, fields] of Object.entries(requested.modifyIds)) {
     if (!id || id.length > 300) throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid action ID.');

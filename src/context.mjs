@@ -31,7 +31,7 @@ function validateDesktop(config) {
 function validateAgent(config) {
   if (config.agent !== undefined && (!config.agent || typeof config.agent !== 'object' || Array.isArray(config.agent))) throw Error('agent must be a mapping');
   const agent = config.agent || {};
-  const allowed = ['timeoutMs', 'maxTurns', 'maxMessages', 'policyTimeoutMs', 'ceiling'];
+  const allowed = ['timeoutMs', 'maxTurns', 'maxMessages', 'policyTimeoutMs', 'ceiling', 'sandbox'];
   if (Object.keys(agent).some(key => !allowed.includes(key))) throw Error('Unknown agent setting');
   if (agent.ceiling !== undefined && (!agent.ceiling || typeof agent.ceiling !== 'object' || Array.isArray(agent.ceiling))) throw Error('agent.ceiling must be a mapping');
   if (Object.keys(agent.ceiling || {}).some(key => !['tools', 'readChats', 'writeChats', 'initiateActions', 'cancelIds', 'modifyIds'].includes(key))) throw Error('Unknown permission ceiling setting');

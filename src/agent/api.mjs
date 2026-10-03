@@ -8,6 +8,8 @@ import { messageContext } from './intake.mjs';
 import { validateAction } from './executor.mjs';
 import { AgentRuntimeError } from './errors.mjs';
 import { conversationId } from './conversations.mjs';
+import { sandboxStatus } from './sandbox.mjs';
+import { sandboxLimits } from './sandbox-limits.mjs';
 
 const input = (value, max = 16000) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new AgentRuntimeError('INVALID_INPUT', 'Invalid or oversized input.');
@@ -25,7 +27,7 @@ const presentRecord = row => {
 export async function agentAPI({ url, method, body, store, running = false }) {
   const path = url.pathname;
   if (path === '/api/agent/permissions') {
-    if (method === 'GET') return { source: configYaml(permissionCeiling(await loadConfig())) };
+    if (method === 'GET') { const { sandbox, ...ceiling } = permissionCeiling(await loadConfig()); return { source: configYaml(ceiling) }; }
     if (method === 'PUT') {
       let ceiling;
       try {
@@ -35,8 +37,9 @@ export async function agentAPI({ url, method, body, store, running = false }) {
         if (Object.keys(value).some(key => !fields.includes(key)) || fields.some(key => !Object.hasOwn(value, key)) ||
             fields.slice(0, -1).some(key => !Array.isArray(value[key])) ||
             !value.modifyIds || typeof value.modifyIds !== 'object' || Array.isArray(value.modifyIds)) throw Error();
-        ceiling = permissionCeiling({ agent: { ceiling: value } });
-        permissions(ceiling, ceiling);
+        const { sandbox, ...parsed } = permissionCeiling({ agent: { ceiling: value } });
+        ceiling = parsed;
+        permissions(ceiling, permissionCeiling({ agent: { ceiling } }));
       } catch {
         throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid permissions YAML. Keep all six fields; use lists for tools, readChats, writeChats, initiateActions and cancelIds, and an ID-to-[text] mapping for modifyIds.');
       }
@@ -44,6 +47,14 @@ export async function agentAPI({ url, method, body, store, running = false }) {
       config.agent = { ...config.agent, ceiling };
       await saveConfig(config);
       return { source: configYaml(ceiling) };
+    }
+  }
+  if (path === '/api/agent/sandbox') {
+    if (method === 'GET') return { ...sandboxStatus(), source: configYaml(sandboxLimits((await loadConfig()).agent?.sandbox)) };
+    if (method === 'PUT') {
+      const settings = sandboxLimits(parseConfigYaml(input(body.source, 4000)));
+      const config = await loadConfig(); config.agent = { ...config.agent, sandbox: settings }; await saveConfig(config);
+      return { ...sandboxStatus(), source: configYaml(settings) };
     }
   }
   if (path === '/api/agent/policy') {

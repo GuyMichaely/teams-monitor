@@ -29,8 +29,17 @@ direct prompts were replaced with existing-conversation intervention, view/reset
 history and explicit current-run cancellation. Interventions/wakes capture permission
 ceilings and reset generations; reset archives history and invalidates old queued
 continuations. Whole-policy failure/cancellation never commits staged history/effects.
-See AGENTIC.md and smoke-agent-conversations for usage/invariants. No work-item UI
-or agent-generated Bun execution/sandbox was introduced.
+See AGENTIC.md and smoke-agent-conversations for usage/invariants. No work-item UI.
+October 3: model execute_bun uses a native Windows x64 LPAC/Job Object sandbox;
+no WSL/VM. Build with sandbox:build, validate with test:agent-sandbox. Bun/bootstrap
+and per-run profile files are read-only, zero capabilities/no network, explicit
+stdio handles, container SID/zero-capability verification before resume, memory/CPU/
+process/output/time bounds and descendant cleanup. Always-available computation
+does not grant host tools: RPC schemas/permissions/scopes/mode/whitelist are checked
+outside the guest. Each execution stages a nested plan, folded in only on success;
+errors/cancellation discard it. Global agent.sandbox intersects per-call and saved
+limits. Dashboard has status/limits editor. Failed boundaries never run unsandboxed.
+Trusted local policy remains unsandboxed. See AGENTIC.md for restrictions/limitations.
 Changes stay in the separate `agentic` worktree; do not merge/deploy or restart the
 stable main installation during development. SDK dependencies are an intentional
 exception to main's zero-dependency rule. All six implementation increments are

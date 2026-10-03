@@ -223,7 +223,11 @@ continuation, fresh calls by default, same-handler staged history, serialized li
 decisions/RPC, conflict guards, reset archives/generations, and permission-scoped
 scheduled continuation. Dashboard input now intervenes in an existing conversation;
 run cancellation is separate. No ticket states or implicit per-chat model histories.
-Sandboxed general Bun execution remains a separate, unimplemented design item.
+October 3: native Windows LPAC/Job Object Bun execution added without virtualization.
+Always-present model compute tool, permission-checked host bridge, nested atomic
+staging, per-call/global/saved resource ceilings, dashboard settings and real native
+boundary tests. See AGENTIC.md. Linux/macOS and standalone scheduled code remain
+future increments; the trusted policy editor is not sandboxed.
 
 - [x] Preserve stable main and create isolated agentic worktree.
 - [x] Save approved plan with the user's corrections before compaction.

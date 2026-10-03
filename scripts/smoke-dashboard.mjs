@@ -46,6 +46,7 @@ try {
       ["/api/reply-policy", "GET"], ["/api/poll", "GET"], ["/api/activity/view", "GET"],
       ["/api/agent/policy", "GET"], ["/api/agent/status", "GET"], ["/api/agent/notes", "GET"],
       ["/api/agent/permissions", "GET"], ["/api/agent/permissions", "PUT", { source: "tools: []" }],
+      ["/api/agent/sandbox", "GET"], ["/api/agent/sandbox", "PUT", { source: "timeoutMs: 1000" }],
       ["/api/agent/note?path=test.md", "GET"], ["/api/agent/brief?chat=Test%20chat", "GET"],
       ["/api/agent/intervene", "POST", { prompt: "unauthorized", conversationId: 'test' }],
       ["/api/agent/conversation?id=test", "GET"], ["/api/agent/conversation/reset", "POST", { conversationId: 'test' }],
@@ -99,6 +100,18 @@ try {
     assert.equal(await readFile(CONFIG_FILE, 'utf8'), savedConfigText, 'Invalid ceiling does not alter saved configuration');
   }
   assert.equal((await request('/api/agent/permissions', 'PUT', originalPermissions)).status, 200);
+
+  const originalSandbox = await (await request('/api/agent/sandbox')).json();
+  assert.equal(originalSandbox.available, false, 'Isolated home has no installed helper');
+  const newLimits = { ...Bun.YAML.parse(originalSandbox.source), timeoutMs: 700, memoryMb: 256 };
+  assert.equal((await request('/api/agent/sandbox', 'PUT', { source: Bun.YAML.stringify(newLimits) })).status, 200);
+  assert.deepEqual(Bun.YAML.parse((await (await request('/api/agent/sandbox')).json()).source), newLimits);
+  const configAfterSandbox = await readFile(CONFIG_FILE, 'utf8');
+  for (const source of ['[]', 'timeoutMs: 0', 'cpuPercent: 100', 'memoryMb: 4', 'unknown: true', 'timeoutMs: broken']) {
+    assert.equal((await request('/api/agent/sandbox', 'PUT', { source })).status, 400);
+    assert.equal(await readFile(CONFIG_FILE, 'utf8'), configAfterSandbox);
+  }
+  assert.equal((await request('/api/agent/sandbox', 'PUT', { source: originalSandbox.source })).status, 200);
 
   const agentState = await (await request("/api/agent/status")).json();
   assert.equal(agentState.mode, "active");
