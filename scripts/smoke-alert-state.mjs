@@ -217,6 +217,43 @@ try {
   state = await recordTransportSuccess("fcm", "fcm");
   assert(state.delivery.state === "primary_working", "primary-only success recovers primary state");
 
+  // Reproduce a copied/restored FID without the separate delivery-health file.
+  await clean();
+  const restored = await saveFcmRegistration({ fid: "smoke-restored-fid-123456789" });
+  await rm(ALERT_RUNTIME_FILE, { force: true });
+  state = await readAlertRuntime("fcm");
+  assert(state.fcm.registration === "unknown", "restored registration starts with unknown health");
+  const duplicate = await saveFcmRegistration({ fid: "smoke-restored-fid-123456789" });
+  state = await readAlertRuntime("fcm");
+  assert(duplicate.generation === restored.generation, "restored-FID sync keeps its generation");
+  assert(state.fcm.registration === "synced", "restored-FID sync repairs unknown registration health");
+  assert(state.fcm.lastSuccessAt === null, "registration sync does not manufacture send acceptance");
+
+  await rm(ALERT_RUNTIME_FILE, { force: true });
+  await recordTransportFailure("fcm", "fcm", {
+    error: "temporary", failureLimit: 1, registrationGeneration: restored.generation,
+  });
+  const backedOff = await recordFcmBackoff("fcm", {
+    error: "quota", delayMs: 60_000, registrationGeneration: restored.generation,
+  });
+  await saveFcmRegistration({ fid: "smoke-restored-fid-123456789" });
+  state = await readAlertRuntime("fcm");
+  assert(state.fcm.registration === "synced", "unknown registration can sync while delivery is degraded");
+  assert(state.delivery.state === "fallback" && state.websocketWanted, "duplicate sync does not recover failed delivery");
+  assert(state.delivery.failures.fcm === backedOff.delivery.failures.fcm, "duplicate sync preserves failure count");
+  assert(state.fcm.lastError === backedOff.fcm.lastError && state.fcm.nextAttemptAt === backedOff.fcm.nextAttemptAt &&
+    state.fcm.backoffMs === backedOff.fcm.backoffMs, "duplicate sync preserves errors and retry backoff");
+
+  await rm(ALERT_RUNTIME_FILE, { force: true });
+  const ignoredUpload = await saveFcmRegistration({ fid: "smoke-stale-fid-123456789", observedAt: "2020-01-01T00:00:00.000Z" });
+  state = await readAlertRuntime("fcm");
+  assert(ignoredUpload.ignoredStale && state.fcm.registration === "unknown", "stale different FID cannot repair unknown health");
+  const ignoredSend = await recordTransportSuccess("fcm", "fcm", { registrationGeneration: restored.generation - 1 });
+  state = await readAlertRuntime("fcm");
+  assert(ignoredSend.ignoredStaleFcmResult && state.fcm.registration === "unknown", "stale send cannot repair unknown health");
+  state = await recordTransportSuccess("fcm", "fcm", { registrationGeneration: restored.generation });
+  assert(state.fcm.registration === "synced" && state.fcm.lastSuccessAt, "current-generation send repairs unknown health");
+
   console.log("alert runtime smoke: ok");
 } finally {
   await clean();

@@ -196,20 +196,23 @@ export async function saveFcmRegistration({ fid, token, source = "phone", observ
     // Keep the old presence check/UI working during the FID migration. New sends
     // read FCM_REGISTRATION_FILE and know whether this value is a fid or token.
     await writeFile(LEGACY_FCM_TOKEN_FILE, value + "\n", { mode: 0o600 });
-  });
 
-  // A duplicate upload of the same registration must not clear a failure that
-  // was observed after that upload was queued. Only a genuinely new generation
-  // resets registration/backoff state.
-  if (registrationChanged && !registration?.ignoredStale) {
+    // Keep registration and health changes under the same registration lock so
+    // another generation or send result cannot be overwritten after this upload.
     await updateAlertRuntime(null, (runtime) => {
-      runtime.fcm.registration = "synced";
-      runtime.fcm.lastError = null;
-      runtime.fcm.nextAttemptAt = null;
-      runtime.fcm.backoffMs = 0;
+      if (registrationChanged) {
+        runtime.fcm.registration = "synced";
+        runtime.fcm.lastError = null;
+        runtime.fcm.nextAttemptAt = null;
+        runtime.fcm.backoffMs = 0;
+      } else if (runtime.fcm.registration === "unknown") {
+        // A restored FID with no health state is now confirmed synced. Duplicate
+        // uploads must not repair a known failure or reset delivery/backoff.
+        runtime.fcm.registration = "synced";
+      }
       return runtime;
     });
-  }
+  });
   return registration;
 }
 
@@ -261,7 +264,7 @@ function applyTransportSuccess(runtime, transport, primaryTransport) {
     runtime.fcm.lastError = null;
     runtime.fcm.nextAttemptAt = null;
     runtime.fcm.backoffMs = 0;
-    if (runtime.fcm.registration === "suspect") runtime.fcm.registration = "synced";
+    runtime.fcm.registration = "synced";
   }
 
   if (transport === primaryTransport) {
