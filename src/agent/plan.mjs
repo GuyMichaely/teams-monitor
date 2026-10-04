@@ -5,17 +5,11 @@ import { validateAction } from './executor.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
 import { permissions, permissionCeiling, assertPermission } from './permissions.mjs';
 import { conversationId } from './conversations.mjs';
+import { notificationPayload, messageNotification } from '../phone-notification.mjs';
 
 export const blankPlan = () => ({ actions: [], cancellations: [], modifications: {}, notes: {}, sessions: {} });
 const idOf = handle => typeof handle === 'string' ? handle : handle?.id;
 const bad = message => { throw new AgentRuntimeError('INVALID_ACTION', message); };
-const alertPayload = payload => {
-  if (typeof payload === 'string') return { text: payload };
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).some(key => !['chat', 'author', 'text', 'time'].includes(key)) ||
-      ['chat', 'author', 'text'].some(key => payload[key] !== undefined && typeof payload[key] !== 'string') ||
-      (payload.time !== undefined && payload.time !== null && typeof payload.time !== 'string')) bad('Alert payload accepts only chat, author, text and time.');
-  return payload;
-};
 
 export function actionAPI({ plan, context, configLoader, store, llm, origin = 'policy', authority, bounded, maxMessages = Infinity }) {
   let messages = 0;
@@ -24,7 +18,7 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
     const action = validateAction({ ...value, due: value.due ?? Date.now() });
     if (action.kind === 'message' && !isReplyAllowed(await configLoader(), action.chat)) throw new AgentRuntimeError('DENIED', 'Current reply policy blocks this chat.');
     if (action.kind === 'message' && messages >= maxMessages) throw new AgentRuntimeError('MESSAGE_LIMIT', 'Outgoing message limit reached.');
-    const key = a => JSON.stringify([a.kind, a.chat, a.text, a.presence, a.kind === 'wake' ? a : null, a.due > Date.now() + 1000 ? a.due : 0]);
+    const key = a => JSON.stringify([a.kind, a.chat, a.text, a.title, a.body, a.presence, a.kind === 'wake' ? a : null, a.due > Date.now() + 1000 ? a.due : 0]);
     const same = plan.actions.find(a => !a.cancelled && key(a) === key(action));
     if (same) return { ok: true, id: same.id, state: 'pending' };
     if (plan.actions.length >= 100) throw new AgentRuntimeError('ACTION_LIMIT', 'Handler action limit reached.');
@@ -37,12 +31,14 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
     try {
       if (bounded && method !== 'llm') {
         const p = permissions(bounded, permissionCeiling(await configLoader()));
-        const capability = { readReactions: 'read_reactions', sendMessage: 'send_message', alert: 'alert', setStatus: 'set_status', delay: 'schedule', wake: 'schedule', cancel: 'cancel_action', modify: 'modify_action' }[method];
+        const capability = { readReactions: 'read_reactions', sendMessage: 'send_message', alert: 'alert', alertMessage: 'alert', setStatus: 'set_status', delay: 'schedule', wake: 'schedule', cancel: 'cancel_action', modify: 'modify_action' }[method];
         const own = plan.actions.some(action => action.id === idOf(args[0]));
         if (own && ['cancel', 'modify'].includes(method)) {
           if (!p.tools.includes(capability)) throw new AgentRuntimeError('DENIED', 'Saved wake permissions block this action.');
-        } else assertPermission(p, capability, ['sendMessage', 'readReactions'].includes(method) ? args[0] : null, idOf(args[0]), method === 'modify' ? 'text' : undefined);
-        const kind = { sendMessage: 'message', alert: 'alert', setStatus: 'status', wake: 'wake' }[method];
+        } else if (method === 'modify') {
+          for (const field of Object.keys(args[1] || {})) assertPermission(p, capability, null, idOf(args[0]), field);
+        } else assertPermission(p, capability, ['sendMessage', 'readReactions'].includes(method) ? args[0] : null, idOf(args[0]));
+        const kind = { sendMessage: 'message', alert: 'alert', alertMessage: 'alert', setStatus: 'status', wake: 'wake' }[method];
         if (kind && !p.initiateActions.includes(kind)) throw new AgentRuntimeError('DENIED', 'Saved wake permissions block this action.');
       }
       return await fn(...args);
@@ -51,7 +47,10 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
   const api = {
     readReactions: expected((chat, messageId) => store.reactions(chat, messageId), 'readReactions'),
     sendMessage: expected((chat, text) => add({ kind: 'message', chat, text }), 'sendMessage'),
-    alert: expected((payload = {}) => add({ kind: 'alert', chat: context.chatName || 'TM', author: context.authorName || 'TM', text: context.message?.text || 'Attention requested', time: context.now, ...alertPayload(payload) }), 'alert'),
+    alert: expected(payload => add({ kind: 'alert', ...notificationPayload(payload), time: context.now }), 'alert'),
+    alertMessage: expected(() => add({ kind: 'alert', ...messageNotification(context), time: context.message?.time || context.now,
+      teamsMessage: { chat: context.chatName || 'TM', author: context.authorName || context.message?.author || 'TM',
+        text: context.message?.text, time: context.message?.time || context.now } }), 'alertMessage'),
     setStatus: expected(presence => add({ kind: 'status', presence: normalizeStatus(presence) }), 'setStatus'),
     delay: expected((handle, time) => {
       const action = plan.actions.find(a => a.id === idOf(handle));
@@ -73,9 +72,13 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
     modify: expected((handle, changes) => {
       const id = idOf(handle), local = plan.actions.find(a => a.id === id), stored = local ? null : store.action(id);
       const action = local || (stored?.state === 'pending' ? stored.value : null);
-      if (!action || action.cancelled || plan.cancellations.includes(id) || !changes || !['alert', 'message'].includes(action.kind) || Object.keys(changes).some(key => key !== 'text')) bad('Only pending proposal text can be modified.');
-      validateAction({ ...action, ...changes }); Object.assign(action, changes);
-      if (bounded && stored) action.review = { authority: bounded, field: 'text' };
+      if (!action || action.cancelled || plan.cancellations.includes(id) || !changes || Array.isArray(changes) ||
+          !['alert', 'message'].includes(action.kind) || !Object.keys(changes).length ||
+          Object.keys(changes).some(key => !(action.kind === 'alert' ? ['title', 'body'] : ['text']).includes(key))) bad('Only pending message text or notification title/body can be modified.');
+      validateAction({ ...action, ...changes, ...(action.kind === 'alert' ? { teamsMessage: undefined } : {}) }); Object.assign(action, changes);
+      // Edited display content is a general notification, not a Teams-message alert.
+      if (action.kind === 'alert') delete action.teamsMessage;
+      if (bounded && stored) action.review = { authority: bounded, fields: [...new Set([...(action.review?.fields || []), ...Object.keys(changes)])] };
       if (stored) plan.modifications[id] = { expectedBody: plan.modifications[id]?.expectedBody || stored.body, action };
       return { ok: true, id, state: 'pending' };
     }, 'modify'),

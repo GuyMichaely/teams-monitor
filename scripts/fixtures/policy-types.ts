@@ -5,7 +5,7 @@ import type {
 
 export async function handle(ctx: PolicyContext, actions: PolicyActions) {
   if (ctx.isDM || ctx.mentionsMe) {
-    const result = await actions.alert({ chat: ctx.chatName, text: ctx.message.text });
+    const result = await actions.alert({ title: 'Incoming message', body: ctx.message.text });
     if (!result.ok) return result.error.code;
     await actions.delay(result, { afterMs: 1000 });
   }

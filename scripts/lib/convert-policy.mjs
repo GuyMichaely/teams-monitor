@@ -79,7 +79,7 @@ export async function handle(ctx = {}, actions = {}) {
   const message = ctx.message ?? {};
   const chat = ctx.chatName ?? '';
   const author = ctx.authorName ?? message.author ?? '';
-  if (${js(notifyAll === true)}) return actions.alert({ chat, author, text: message.text || '', time: message.time });
+  if (${js(notifyAll === true)}) return actions.alertMessage();
   const evaluations = RULES.filter(rule => rule.enabled).map(rule => {
     const evidence = evaluate(rule.when, ctx);
     return { ruleId: rule.id, matched: evidence.matched, action: rule.action, permissions: rule.agent, evidence };
@@ -102,7 +102,7 @@ export async function handle(ctx = {}, actions = {}) {
   for (const group of groups.values()) {
     const result = group.action.type === 'reply'
       ? await callAction(actions.sendMessage, chat, group.action.text)
-      : await callAction(actions.alert, { chat, author, text: group.effective.text, time: message.time });
+      : await callAction(actions.alert, { title: author + ' · ' + chat, body: group.effective.text.replace(/\\s+/g, ' ').trim().slice(0, 200) });
     group.result = result;
     group.handle = result?.ok && typeof result.id === 'string' ? result.id : null;
     proposals.push({ ruleIds: group.ruleIds, action: group.action, effectiveAction: group.effective, result, permissions: { cancel: group.cancel, modify: group.modify } });
@@ -111,7 +111,7 @@ export async function handle(ctx = {}, actions = {}) {
   const initiationAllowed = INITIATE.when === 'always' || (INITIATE.when === 'unmatched' && evaluations.every(item => !item.matched));
   const initiateActions = initiationAllowed ? INITIATE.actions.map(type => type === 'reply' ? 'message' : 'alert') : [];
   const cancelIds = [...groups.values()].filter(group => group.handle && group.cancel).map(group => group.handle);
-  const modifyIds = Object.fromEntries([...groups.values()].filter(group => group.handle && group.modify && group.action.type !== 'ignore').map(group => [group.handle, ['text']]));
+  const modifyIds = Object.fromEntries([...groups.values()].filter(group => group.handle && group.modify && group.action.type !== 'ignore').map(group => [group.handle, [group.action.type === 'reply' ? 'text' : 'body']]));
   const hasReview = cancelIds.length || Object.keys(modifyIds).length || initiateActions.length;
   let review = null;
   if (hasReview && typeof actions.llm === 'function') {

@@ -60,6 +60,7 @@ await savePolicy(source, POLICY_FILE);
     assert.equal(result.value.evaluations.every(item => item.matched), true);
     assert.equal(result.actions.some(action => action.kind === 'message' && action.text === 'Original deterministic reply'), true);
     assert.equal(result.actions.filter(action => action.kind === 'alert').length, 1, 'identical mention/DM phone proposals deduplicate');
+    assert(result.actions.filter(action => action.kind === 'alert').every(action => typeof action.title === 'string' && typeof action.body === 'string' && !('chat' in action) && !('text' in action) && !('author' in action)), 'planned phone actions contain title/body only');
     assert.equal(result.value.proposals.find(item => item.action.type === 'alert_phone').permissions.cancel, false);
     assert.equal(result.value.proposals.find(item => item.action.type === 'alert_phone').permissions.modify, false);
     assert.deepEqual(result.value.review.error, { code: 'PROVIDER_ERROR', message: 'Mock model unavailable.' });

@@ -213,8 +213,14 @@ class AlertService : Service() {
                 NotificationTransport.sync(this@AlertService)
                 return
             }
-            if (kind != "alert") {
+            if (kind != "alert" && kind != "notification") {
                 AppLog.event(this@AlertService, "ws_message_ignored", "kind=$kind length=${text.length}")
+                return
+            }
+
+            val payload = AlertPayloadParser.fromWebSocket(msg)
+            if (payload == null) {
+                AppLog.event(this@AlertService, "ws_alert_invalid", "kind=$kind")
                 return
             }
 
@@ -224,17 +230,13 @@ class AlertService : Service() {
                 return
             }
 
-            val chat = msg.optString("chat")
-            val author = msg.optString("author")
-            val alertText = msg.optString("text")
-            val alertTime = msg.optString("time")
             AppLog.event(
                 this@AlertService,
                 "alert_received",
-                "alertId=$alertId transport=websocket chat=$chat author=$author serverTime=$alertTime textLength=${alertText.length}"
+                "alertId=$alertId transport=websocket titleLength=${payload.title.length} bodyLength=${payload.body.length} serverTime=${payload.time}"
             )
-            AlertState.onAlert(this@AlertService, chat, author, alertText, alertTime)
-            AlertNotifier.alert(this@AlertService, chat, author, alertText, alertId)
+            AlertState.onAlert(this@AlertService, payload.title, payload.body, payload.time)
+            AlertNotifier.alert(this@AlertService, payload.title, payload.body, alertId)
         }
 
         /** The current socket died: forget it, then schedule a reconnect. */

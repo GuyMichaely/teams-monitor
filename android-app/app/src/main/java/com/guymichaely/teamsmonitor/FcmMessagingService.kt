@@ -29,7 +29,7 @@ class FcmMessagingService : FirebaseMessagingService() {
                 "fcmSendStartedAt=${fcmSendStartedAt.ifBlank { "unknown" }} approxPcToPhoneLatencyMs=${pcToPhoneMs?.takeIf { it >= 0 } ?: "unknown"} pcPhoneClock=${if (pcToPhoneMs == null) "send_time_unavailable" else if (pcToPhoneMs < 0) "negative_clock_skew" else "approximate_clocks"} " +
                 "device=${AppLog.receiptDeviceState(this)}"
         )
-        val kind = data["kind"].orEmpty().ifBlank { "alert" }
+        val kind = data["kind"].orEmpty()
 
         if (kind == "control") {
             val actions = data["actions"].orEmpty()
@@ -78,7 +78,7 @@ class FcmMessagingService : FirebaseMessagingService() {
             return
         }
 
-        if (kind != "alert") {
+        if (kind != "alert" && kind != "notification") {
             AppLog.event(this, "fcm_message_ignored", "kind=$kind messageId=${message.messageId ?: ""}")
             return
         }
@@ -96,24 +96,26 @@ class FcmMessagingService : FirebaseMessagingService() {
             )
         }
 
+        val payload = AlertPayloadParser.fromFcm(data)
+        if (payload == null) {
+            AppLog.event(this, "fcm_alert_invalid", "alertId=${data["alertId"].orEmpty()} kind=$kind")
+            return
+        }
+
         val alertId = data["alertId"].orEmpty()
         if (!AlertDeduper.shouldHandle(this, alertId)) {
             AppLog.event(this, "alert_duplicate_ignored", "transport=fcm alertId=$alertId")
             return
         }
 
-        val chat = data["chat"].orEmpty()
-        val author = data["author"].orEmpty()
-        val text = data["text"].orEmpty()
-        val time = data["time"].orEmpty()
         AppLog.event(
             this,
             "fcm_message_received",
-            "messageId=${message.messageId ?: ""} alertId=$alertId chat=$chat author=$author messageTime=$time textLength=${text.length} priority=${message.priority}"
+            "messageId=${message.messageId ?: ""} alertId=$alertId titleLength=${payload.title.length} bodyLength=${payload.body.length} messageTime=${payload.time} priority=${message.priority}"
         )
 
-        AlertState.onAlert(this, chat, author, text, time)
-        AlertNotifier.alert(this, chat, author, text, alertId)
+        AlertState.onAlert(this, payload.title, payload.body, payload.time)
+        AlertNotifier.alert(this, payload.title, payload.body, alertId)
     }
 
     override fun onDeletedMessages() {

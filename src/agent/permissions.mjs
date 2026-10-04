@@ -16,7 +16,7 @@ const strings = (value, allowed) => {
 export function permissionCeiling(config = {}) {
   const c = config.agent?.ceiling || {};
   return { tools: strings(c.tools ?? TOOL_NAMES, TOOL_NAMES), readChats: strings(c.readChats ?? ['*']), writeChats: strings(c.writeChats ?? ['*']),
-    initiateActions: strings(c.initiateActions ?? actions, actions), cancelIds: strings(c.cancelIds ?? ['*']), modifyIds: c.modifyIds ?? { '*': ['text'] }, sandbox: sandboxLimits(config.agent?.sandbox) };
+    initiateActions: strings(c.initiateActions ?? actions, actions), cancelIds: strings(c.cancelIds ?? ['*']), modifyIds: c.modifyIds ?? { '*': ['text', 'title', 'body'] }, sandbox: sandboxLimits(config.agent?.sandbox) };
 }
 
 export function permissions(options = {}, global, saved) {
@@ -25,7 +25,7 @@ export function permissions(options = {}, global, saved) {
   if (!requested.modifyIds || typeof requested.modifyIds !== 'object' || Array.isArray(requested.modifyIds)) throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid editable-action permissions.');
   for (const [id, fields] of Object.entries(requested.modifyIds)) {
     if (!id || id.length > 300) throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid action ID.');
-    strings(fields, ['text']);
+    strings(fields, ['text', 'title', 'body']);
   }
   const intersect = ceiling => {
     requested.tools = subset(requested.tools, ceiling.tools);

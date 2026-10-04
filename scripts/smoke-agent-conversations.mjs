@@ -61,7 +61,7 @@ try {
   assert(seenTurns[1] > seenTurns[0], 'same-plan concurrent invocations serialize');
 
   const stale = blankPlan(); await review(options, stale);
-  stale.actions.push({ id: 'must-rollback', kind: 'alert', chat: 'Alice', text: 'not committed' });
+  stale.actions.push({ id: 'must-rollback', kind: 'alert', title: 'Fixture', body: 'not committed' });
   const queued = await api('/api/agent/intervene', 'POST', { conversationId: 'chosen', prompt: 'change direction' });
   assert(queued.ok);
   const work = store.claimWork();
@@ -94,7 +94,7 @@ try {
   assert.equal(wakePlan.actions[1].conversationEpoch, store.session('chosen').epoch);
 
   // Cancelling a non-cooperative model aborts the handler and discards earlier proposals.
-  await savePolicy(`export async function handle(ctx,a) { await a.alert('must not execute'); return a.llm('wait', {tools:[],conversationId:'cancel'}); }`);
+  await savePolicy(`export async function handle(ctx,a) { await a.alert({title:'Fixture',body:'must not execute'}); return a.llm('wait', {tools:[],conversationId:'cancel'}); }`);
   let entered;
   const started = new Promise(resolve => { entered = resolve; });
   const pending = evaluatePolicy(context, { store, model: { getResponse: async () => { entered(); return new Promise(() => {}); } } });

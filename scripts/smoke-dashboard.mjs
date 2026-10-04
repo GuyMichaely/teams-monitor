@@ -73,7 +73,7 @@ try {
   assert.equal(originalPolicy.editorUrl, 'vscode://file' + pathToFileURL(POLICY_FILE).pathname);
   assert.equal(originalPolicy.version, createHash("sha256").update(originalPolicy.source).digest("hex"));
   assert.equal((await request("/api/agent/policy", "POST", {})).status, 400);
-  const harmlessPolicy = 'export async function handle(ctx, actions) { await actions.alert("replay-only"); }';
+  const harmlessPolicy = 'export async function handle(ctx, actions) { await actions.alert({ title: "Replay", body: "replay-only" }); }';
   const saved = await request("/api/agent/policy", "PUT", { source: harmlessPolicy });
   assert.equal(saved.status, 200);
   const savedPolicy = await saved.json();

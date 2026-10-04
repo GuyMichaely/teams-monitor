@@ -42,7 +42,7 @@ export async function agentAPI({ url, method, body, store, running = false }) {
         ceiling = parsed;
         permissions(ceiling, permissionCeiling({ agent: { ceiling } }));
       } catch {
-        throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid permissions YAML. Keep all six fields; use lists for tools, readChats, writeChats, initiateActions and cancelIds, and an ID-to-[text] mapping for modifyIds.');
+        throw new AgentRuntimeError('INVALID_PERMISSIONS', 'Invalid permissions YAML. Keep all six fields; use lists for tools, readChats, writeChats, initiateActions and cancelIds. modifyIds maps IDs to editable fields: text for Teams messages, title/body for notifications.');
       }
       const config = await loadConfig();
       config.agent = { ...config.agent, ceiling };

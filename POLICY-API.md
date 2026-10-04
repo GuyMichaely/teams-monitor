@@ -107,12 +107,7 @@ For ordinary incoming messages, the useful minimal pattern is:
 ```js
 export async function handle(ctx, actions) {
   if (!ctx.isDM && !ctx.mentionsMe) return;
-  return actions.alert({
-    chat: ctx.chatName,
-    author: ctx.authorName,
-    text: ctx.message?.text ?? '',
-    time: ctx.message?.time,
-  });
+  return actions.alertMessage();
 }
 ```
 
@@ -124,19 +119,37 @@ mean the external effect has already completed.
 
 ### `actions.alert(value)`
 
-Proposes a phone alert. `value` may be a string or a structured payload, for
-example:
+Proposes a phone notification with exactly the supplied display content:
 
 ```js
-await actions.alert('You were mentioned');
-await actions.alert({ chat: ctx.chatName, text: ctx.message.text });
+await actions.alert({
+  title: 'Build failed',
+  body: 'Project X failed its checks.\nPlease investigate.',
+});
 ```
 
-`AlertPayload` accepts exactly `chat?: string`, `author?: string`,
-`text?: string`, and `time?: string | null`. Omitted fields inherit the chat,
-author, message text (or `Attention requested`) and invocation time.
-An empty resulting text/chat is rejected. Additional fields are rejected;
-transport IDs and action metadata are owned by the runtime.
+`AlertPayload` requires `title: string` and `body: string`, and accepts no other
+fields. Both must be nonempty. The limits are 256 UTF-8 bytes for the title and
+3000 UTF-8 bytes for the body; JSON-encoded content must also fit 3500 bytes,
+leaving room for FCM transport metadata (escaping control characters uses space). Content
+is not flattened or silently shortened; line breaks are preserved. Invalid
+content returns `INVALID_ACTION` without staging an action. Transport IDs and
+delivery timestamps are owned by the runtime.
+
+These notifications still obey the phone's notification/alarm preferences and
+use the configured primary/fallback transports and duplicate suppression.
+They do not override ringtone, DND, or alarm settings. An updated APK is required.
+
+### `actions.alertMessage()`
+
+Proposes an alert for the current incoming Teams message. Its title is
+`author · chat`; the body is flattened to one line and shortened to 200
+characters, matching the previous message-alert presentation. It returns the
+same action handle as `alert`, so it can be delayed, cancelled or modified.
+Use it in `handle`; a hook without a message returns `INVALID_ACTION`.
+Unmodified message alerts retain the Teams-message wire format, so they still
+work with the currently installed APK. Editing their title/body converts them
+to general notifications and requires the updated APK.
 
 ### `actions.readReactions(chat, messageId)`
 
@@ -169,7 +182,7 @@ recipients.
 
 ```js
 const result = await actions.sendMessage(ctx.chatName, 'I will look into it.');
-if (!result.ok) await actions.alert(`Reply blocked: ${result.error.code}`);
+if (!result.ok) await actions.alert({ title: 'Reply blocked', body: result.error.code });
 ```
 
 ### `actions.setStatus(presence)`
@@ -188,10 +201,23 @@ milliseconds, or `{ afterMs: number }`.
 Proposes cancellation of a pending action that this invocation is allowed to
 cancel.
 
-### `actions.modify(handleOrId, { text })`
+### `actions.modify(handleOrId, changes)`
 
-Proposes changing the text of a pending action. Modification cannot change the
-action type or recipient.
+Changes `{ text }` for a pending Teams message, or `{ title }`, `{ body }`, or
+both for a pending notification. Modification cannot change the action type or
+recipient. Agent `modifyIds` grants those exact fields independently: a `text`
+grant does not grant notification edits. The model's `modify_action` tool takes
+`{ id, field: 'text' | 'title' | 'body', value }`. The sandbox convenience function
+changes one field per call; trusted policy can change title and body together.
+
+The model's `alert` tool takes `{ title, body }`. To schedule a notification using
+the model's `schedule` tool, use `kind: 'alert'`, `title`, `body`, and `dueAt`;
+unrelated schema fields are `null`. For policy code:
+
+```ts
+const alert = await actions.alert({ title: 'Reminder', body: 'Review the build.' });
+if (alert.ok) await actions.delay(alert, { afterMs: 60_000 });
+```
 
 ### `actions.llm(prompt, permissions)`
 
@@ -297,7 +323,7 @@ async function userCode(ctx, actions, tools, input) {
 ```
 
 `input` is parsed from the caller's JSON input. `tools` contains only granted
-host tools. `actions` provides mediated versions of alert, message, status,
+host tools. `actions` provides mediated versions of alert, alertMessage, message, status,
 delay, cancel, and modify. It has no direct host filesystem or network access.
 On Windows it runs in a native LPAC/Job Object boundary with resource limits;
 there is no unsandboxed fallback.

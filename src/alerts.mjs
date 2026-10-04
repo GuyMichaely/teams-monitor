@@ -16,6 +16,7 @@ import {
 import { resolveFcmConfig } from "./fcm-config.mjs";
 import { logDiagnostic } from "./gui-diagnostics.mjs";
 import { publishWorkerEvent, workerEnabled } from "./worker-control.mjs";
+import { notificationPayload } from './phone-notification.mjs';
 
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,6 +81,18 @@ function transportResultOptions(transport, resultOrError) {
  * that second attempt from ringing twice.
  */
 export async function sendAlert(payload, config) {
+  return deliverPhonePayload({ kind: 'alert', alertId: payload.alertId || randomUUID(),
+    chat: String(payload.chat ?? ''), author: String(payload.author ?? ''),
+    text: truncate(payload.text), time: payload.time || null }, config);
+}
+
+export async function sendNotification(payload, config) {
+  const content = notificationPayload({ title: payload.title, body: payload.body });
+  return deliverPhonePayload({ kind: 'notification', ...content,
+    alertId: payload.alertId || randomUUID(), time: payload.time || null }, config);
+}
+
+async function deliverPhonePayload(payload, config) {
   const a = config?.alerts || {};
   const primary = a.transport || "websocket";
   if (!["websocket", "fcm"].includes(primary)) {
@@ -87,16 +100,7 @@ export async function sendAlert(payload, config) {
   }
 
   const secondary = resolveFallbackTransport(config, primary);
-  const alertId = payload.alertId || randomUUID();
-  const body = {
-    kind: "alert",
-    alertId,
-    chat: String(payload.chat ?? ""),
-    author: String(payload.author ?? ""),
-    text: truncate(payload.text),
-    time: payload.time || null,
-    primaryTransport: primary,
-  };
+  const body = { ...payload, primaryTransport: primary };
 
   if (!secondary) return await sendPrimaryOnly(body, config, primary);
 
@@ -476,8 +480,11 @@ export async function requestCurrentFcmRegistration(projectId, accessToken, buil
     };
     logDiagnostic("fcm_send_started", trace);
     try {
+      const data = { ...message.data, fcmSendStartedAt };
+      if (Buffer.byteLength(JSON.stringify(data), 'utf8') > 4096)
+        throw Object.assign(new Error('FCM data payload exceeds 4096 bytes.'), { code: 'FCM_PAYLOAD_TOO_LARGE' });
       const response = await fcmRequest(projectId, accessToken, {
-        message: { ...target, ...message, data: { ...message.data, fcmSendStartedAt } },
+        message: { ...target, ...message, data },
       });
       const timing = { fcmSendStartedAt, fcmAcceptedAt: new Date().toISOString(), requestDurationMs: Math.round(performance.now() - started) };
       // API acceptance is not proof of phone delivery. The same alertId joins phone logs.
@@ -525,11 +532,10 @@ async function sendViaFcm(body, fcm) {
 
   const accessToken = await fcmAccessToken(resolved.serviceAccount);
   const data = {
-    kind: "alert",
+    kind: body.kind,
     alertId: String(body.alertId || ""),
-    chat: body.chat,
-    author: body.author,
-    text: body.text,
+    ...(body.kind === 'notification' ? { title: body.title, body: body.body } :
+      { chat: body.chat, author: body.author, text: body.text }),
     time: body.time || "",
     primaryTransport: String(body.primaryTransport || ""),
     websocketWanted: String(body.websocketWanted || "false"),

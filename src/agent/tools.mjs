@@ -57,9 +57,9 @@ async function review({ prompt, options = {}, context, source, version, plan, st
       read_reactions: { parameters: z.object({ chat, messageId: chat }), execute: args => store.reactions(args.chat, args.messageId) },
       search_conversations: { parameters: z.object({ query: string, chat: chat.nullable() }), execute: args => { if (args.chat) assertPermission(livePermissions, 'search_conversations', args.chat); return { ok: true, messages: store.search(args.query, args.chat).filter(r => chatAllowed(livePermissions.readChats, r.chat)).map(r => ({ id: r.id, chat: r.chat, message: publicMessage(r.value) })) }; } },
       send_message: { parameters: z.object({ chat, text: string }), execute: args => { assertPermission(p, 'send_message', args.chat); if (!p.initiateActions.includes('message')) denied(); return ownProposal(() => api.sendMessage(args.chat, args.text)); } },
-      alert: { parameters: z.object({ text: string }), execute: args => { if (!p.initiateActions.includes('alert')) denied(); return ownProposal(() => api.alert(args.text)); } },
+      alert: { parameters: z.object({ title: string, body: string }), execute: args => { if (!p.initiateActions.includes('alert')) denied(); return ownProposal(() => api.alert(args)); } },
       set_status: { parameters: z.object({ presence: z.enum(['available', 'busy', 'dnd', 'brb', 'away', 'offline']) }), execute: args => { if (!p.initiateActions.includes('status')) denied(); return ownProposal(() => api.setStatus(args.presence)); } },
-      schedule: { parameters: z.object({ kind: z.enum(['message', 'alert', 'status', 'wake']), chat: chat.nullable(), text: string.nullable(), presence: string.nullable(), dueAt: string, conversationId: chat.nullable() }), execute: async args => {
+      schedule: { parameters: z.object({ kind: z.enum(['message', 'alert', 'status', 'wake']), chat: chat.nullable(), text: string.nullable(), title: string.nullable(), body: string.nullable(), presence: string.nullable(), dueAt: string, conversationId: chat.nullable() }), execute: async args => {
         if (!p.initiateActions.includes(args.kind)) denied();
         if (args.kind === 'message') { if (!p.tools.includes('send_message') || !chatAllowed(p.writeChats, args.chat)) denied(); }
         if (args.kind === 'alert' && !p.tools.includes('alert')) denied();
@@ -69,14 +69,15 @@ async function review({ prompt, options = {}, context, source, version, plan, st
         const wakeId = conversationId(args.conversationId);
         return ownProposal(() => add(args.kind === 'wake' ? { kind: 'wake', prompt: args.text, conversationId: wakeId,
           conversationEpoch: wakeId ? store.session(wakeId).epoch : undefined, due, ceiling: p } :
+          args.kind === 'alert' ? { kind: 'alert', title: args.title, body: args.body, due } :
           { kind: args.kind, chat: args.chat || context.chatName || 'TM', text: args.text, presence: args.presence, due }));
       } },
       cancel_action: { parameters: z.object({ id: chat }), execute: args => { if (!newIds.has(args.id)) assertPermission(p, 'cancel_action', null, args.id); return api.cancel(args.id); } },
-      modify_action: { parameters: z.object({ id: chat, text: string }), execute: async args => {
-        if (!newIds.has(args.id)) assertPermission(p, 'modify_action', null, args.id, 'text');
-        const result = await api.modify(args.id, { text: args.text });
+      modify_action: { parameters: z.object({ id: chat, field: z.enum(['text', 'title', 'body']), value: string }), execute: async args => {
+        if (!newIds.has(args.id)) assertPermission(p, 'modify_action', null, args.id, args.field);
+        const result = await api.modify(args.id, { [args.field]: args.value });
         const action = staged.actions.find(a => a.id === args.id) || staged.modifications[args.id]?.action;
-        if (result.ok && action.origin !== 'agent') action.review = { authority: p, field: 'text' };
+        if (result.ok && !newIds.has(args.id)) action.review = { authority: p, fields: [...new Set([...(action.review?.fields || []), args.field])] };
         return result;
       } },
       list_notes: { parameters: z.object({}), execute: () => ({ ok: true, notes: [...new Set([...store.notes().map(n => n.path), ...Object.keys(staged.notes)])] }) },
@@ -110,7 +111,7 @@ async function review({ prompt, options = {}, context, source, version, plan, st
         if (args.chat && ['read_conversation', 'read_reactions', 'search_conversations', 'send_message'].includes(name)) assertPermission(current, name, args.chat);
         if (name === 'schedule' && args.kind === 'message' && !chatAllowed(current.writeChats, args.chat)) denied();
         if (name === 'cancel_action' && !newIds.has(args.id)) assertPermission(current, name, null, args.id);
-        if (name === 'modify_action' && !newIds.has(args.id)) assertPermission(current, name, null, args.id, 'text');
+        if (name === 'modify_action' && !newIds.has(args.id)) assertPermission(current, name, null, args.id, args.field);
         if (['send_message', 'alert', 'set_status', 'schedule'].includes(name)) {
           const kind = { send_message: 'message', alert: 'alert', set_status: 'status' }[name] || args.kind;
           if (!current.initiateActions.includes(kind)) denied();
@@ -128,7 +129,7 @@ async function review({ prompt, options = {}, context, source, version, plan, st
     const tools = p.tools.map(name => agentTool({ name, description: `TM ${name}. External effects and note edits are staged until successful completion.`, parameters: definitions[name].parameters,
       execute: (args, runtime) => invoke(name, args, runtime, definitions, newIds, staged) }));
     tools.push(agentTool({ name: 'execute_bun',
-      description: 'Execute arbitrary JavaScript/Bun in a native Windows sandbox. No direct host files, writes, credentials or network access. ctx is this invocation context; input is parsed inputJson. Use await tools.<permitted_tool>(args) or actions.sendMessage(chat,text), alert(text), setStatus(status), cancel(handle), modify(handle,{text}), delay(handle,{afterMs}). Only granted host tools are available. Return a JSON-serializable value. Console output is captured. Effects are staged, not sent; code failure/timeout discards this execution’s changes. No recursive LLM. Always available for computation.',
+      description: 'Execute arbitrary JavaScript/Bun in a native Windows sandbox. No direct host files, writes, credentials or network access. ctx is this invocation context; input is parsed inputJson. Use await tools.<permitted_tool>(args) or actions.sendMessage(chat,text), alert({title,body}), alertMessage(), setStatus(status), cancel(handle), modify(handle,{text}) for messages or {title} / {body} for notifications, delay(handle,{afterMs}). Only granted host tools are available. Return a JSON-serializable value. Console output is captured. Effects are staged, not sent; code failure/timeout discards this execution’s changes. No recursive LLM. Always available for computation.',
       parameters: z.object({ code: z.string().min(1).max(100000), inputJson: z.string().max(100000).nullable() }),
       execute: async (args, runtime) => {
         try {

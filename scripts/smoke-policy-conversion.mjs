@@ -39,6 +39,7 @@ assert.deepEqual(llmCalls[0].options.tools.includes('send_message'), false, 'ini
 assert.deepEqual(llmCalls[0].options.tools.includes('alert'), false, 'initiate never grants no new alert tool');
 assert.equal(llmCalls[0].options.initiateActions.length, 0);
 assert.equal(Object.keys(llmCalls[0].options.modifyIds).length, 1);
+assert.deepEqual(Object.values(llmCalls[0].options.modifyIds)[0], ['text'], 'reply modification grants only the message text field');
 assert.equal(llmCalls[0].options.cancelIds.length, 1);
 
 const deniedPolicy = await loadPolicy({ rules: [
@@ -117,7 +118,8 @@ const customResult = await customPolicy.handle(customContext, api);
 await compareRuleMatches(customAlertAutomation, customContext, ['old name'], []);
 assert.equal(customResult.proposals.length, 2, 'custom and default alerts with the same effective text dedupe');
 assert.equal(alerts.length - beforeCustom, 2, 'the default-equivalent group and distinct custom summary each run once');
-assert.deepEqual(alerts.slice(-2).map(item => item.text).sort(), ['custom summary', 'hello']);
+assert.deepEqual(alerts.slice(-2).map(item => item.body).sort(), ['custom summary', 'hello']);
+assert(alerts.slice(-2).every(item => typeof item.title === 'string' && !('chat' in item) && !('text' in item) && !('author' in item)), 'phone proposals use only title/body');
 assert.equal(customResult.evaluations.find(item => item.ruleId === 'custom-matches-default').matched, true, 'dynamic mentions replace captured names');
 await compareRuleMatches({ rules: [
   { id: 'mention', when: { type: 'mention' }, action: { type: 'alert_phone' } },

@@ -184,16 +184,16 @@ object AlertNotifier {
     }
 
     /** Applies the user's alert settings: notification on/off, alarm on/off + screen-on rule. */
-    fun alert(context: Context, chat: String, author: String, text: String, alertId: String = "") {
+    fun alert(context: Context, title: String, body: String, alertId: String = "") {
         val prefs = Prefs(context)
         val screenOn = context.getSystemService(PowerManager::class.java)?.isInteractive == true
         val alarmWillPlay = prefs.alarmEnabled && (prefs.alarmWhenScreenOn || !screenOn)
         AppLog.event(
             context,
             "alert_dispatch",
-            "alertId=$alertId chat=$chat author=$author notifEnabled=${prefs.notifEnabled} alarmEnabled=${prefs.alarmEnabled} screenOn=$screenOn alarmWhenScreenOn=${prefs.alarmWhenScreenOn} alarmWillPlay=$alarmWillPlay"
+            "alertId=$alertId titleLength=${title.length} bodyLength=${body.length} notifEnabled=${prefs.notifEnabled} alarmEnabled=${prefs.alarmEnabled} screenOn=$screenOn alarmWhenScreenOn=${prefs.alarmWhenScreenOn} alarmWillPlay=$alarmWillPlay"
         )
-        if (prefs.notifEnabled) show(context, chat, author, text, alertId)
+        if (prefs.notifEnabled) show(context, title, body, alertId)
         else AppLog.event(context, "notification_suppressed", "alertId=$alertId reason=app_setting")
 
         if (alarmWillPlay) {
@@ -210,7 +210,7 @@ object AlertNotifier {
         }
     }
 
-    fun show(context: Context, chat: String, author: String, text: String, alertId: String = "") {
+    fun show(context: Context, title: String, body: String, alertId: String = "") {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -237,9 +237,9 @@ object AlertNotifier {
 
         val n = NotificationCompat.Builder(context, CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("$author · $chat")
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(tap)
@@ -247,6 +247,6 @@ object AlertNotifier {
 
         val id = nextId.incrementAndGet()
         compatManager.notify(id, n)
-        AppLog.event(context, "notification_posted", "id=$id alertId=$alertId chat=$chat author=$author")
+        AppLog.event(context, "notification_posted", "id=$id alertId=$alertId titleLength=${title.length} bodyLength=${body.length}")
     }
 }

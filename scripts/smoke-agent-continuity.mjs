@@ -21,7 +21,7 @@ const file = join(DATA_DIR, 'agent', 'continuity.sqlite');
 let store = agentStore(file);
 try {
   await savePolicy(`export async function handle(ctx,a) {
-    await a.alert('deterministic');
+    await a.alertMessage();
     return a.llm('keep notes', {tools:['write_note','read_note'],readChats:['Alice'],conversationId:'chat:Alice'});
   }`);
   const first = await evaluatePolicy(context, { store, model: fixtureModel(turn => response(turn === 1 ? [call('write_note', { path: 'projects/demo.md', text: 'Remember this fixture' })] : [message('Recorded')])) });
@@ -39,6 +39,9 @@ try {
     return response([message('Continuing same session')]);
   }) });
   assert.equal(second.ok, true); assert(continued, 'SDK history survives restart');
+  assert.deepEqual(first.actions.map(({ kind, title, body }) => ({ kind, title, body })), [
+    { kind: 'alert', title: 'Alice · Alice', body: 'Fixture' },
+  ], 'alertMessage uses the current author/chat and normalized message body');
   const failed = await evaluatePolicy(context, { store, model: fixtureModel(turn => {
     if (turn === 1) return response([call('write_note', { path: 'projects/demo.md', text: 'Must not persist' })]);
     throw Error('provider failed');
@@ -53,7 +56,7 @@ try {
   assert.equal(fault.ok, false); assert.equal(store.note('discard.md').text, '');
 
   // Expected read-only/paused errors never disable deterministic alerts.
-  await savePolicy(`export async function handle(ctx,a) { await a.alert('always'); return a.llm('write', {tools:['write_note'],readChats:['Alice']}); }`);
+  await savePolicy(`export async function handle(ctx,a) { await a.alertMessage(); return a.llm('write', {tools:['write_note'],readChats:['Alice']}); }`);
   store.mode('read_only');
   const readonly = await evaluatePolicy(context, { store, model: fixtureModel(turn => response(turn === 1 ? [call('write_note', { path: 'denied.md', text: 'deny' })] : [message('handled denial')])) });
   assert.equal(readonly.ok, true); assert.equal(readonly.actions.length, 1); assert.deepEqual(readonly.notes, {});
@@ -64,22 +67,22 @@ try {
   store.mode('active');
 
   // Stored pending text edits are guarded against an execution/cancellation race.
-  store.plan('seed', [{ id: 'editable', kind: 'alert', chat: 'Alice', text: 'old', due: Date.now() + 60000 }]);
+  store.plan('seed', [{ id: 'editable', kind: 'alert', title: 'Old title', body: 'old', due: Date.now() + 60000 }]);
   const plan = blankPlan(), api = actionAPI({ plan, context, store, configLoader: loadConfig }).api;
-  assert.equal((await api.modify('editable', { text: 'new' })).ok, true);
-  assert.equal(store.action('editable').value.text, 'old');
-  store.commit('edit', plan); assert.equal(store.action('editable').value.text, 'new');
+  assert.equal((await api.modify('editable', { title: 'New title', body: 'new' })).ok, true);
+  assert.equal(store.action('editable').value.body, 'old');
+  store.commit('edit', plan); assert.equal(store.action('editable').value.title, 'New title'); assert.equal(store.action('editable').value.body, 'new');
   const conflict = blankPlan(), stale = actionAPI({ plan: conflict, context, store, configLoader: loadConfig }).api;
-  await stale.modify('editable', { text: 'stale' }); store.cancel('editable');
+  await stale.modify('editable', { body: 'stale' }); store.cancel('editable');
   assert.throws(() => store.commit('conflict', conflict), /changed|execution/);
-  assert.equal(store.action('editable').value.text, 'new');
+  assert.equal(store.action('editable').value.body, 'new');
 } finally { store.close(); }
 
 const jobs = agentStore(':memory:');
 try {
   const past = Date.now() - 60000;
   const ceiling = permissionCeiling(config);
-  jobs.plan('seed', [{ id: 'old-alert', kind: 'alert', chat: 'Alice', text: 'missed', due: past },
+  jobs.plan('seed', [{ id: 'old-alert', kind: 'alert', title: 'Fixture', body: 'missed', due: past },
     { id: 'overdue-wake', kind: 'wake', prompt: 'reassess', conversationId: 'saved', ceiling, due: past }]);
   jobs.recover(new Date().toISOString());
   assert.equal(jobs.action('old-alert').state, 'missed'); assert.equal(jobs.action('overdue-wake').state, 'pending');
@@ -96,24 +99,24 @@ try {
   const narrow = { ...ceiling, tools: ['alert'], readChats: ['Alice'], initiateActions: [] };
   let wakeModelCalls = 0;
   const result = await evaluatePolicy({ ...wake.value, trigger: 'wake' }, { store: jobs, handler: 'onWake', savedCeiling: narrow,
-    model: fixtureModel(turn => { wakeModelCalls++; return response(turn === 1 ? [call('alert', { text: 'not allowed' })] : [message('handled denial')]); }) });
+    model: fixtureModel(turn => { wakeModelCalls++; return response(turn === 1 ? [call('alert', { title: 'Denied', body: 'not allowed' })] : [message('handled denial')]); }) });
   assert.equal(wakeModelCalls, 2, 'saved ceiling bounds the model tools, not access to llm itself');
   assert.equal(result.ok, true); assert.equal(result.actions.length, 0, 'wake cannot acquire a capability missing from its saved ceiling');
   await savePolicy('export async function handle() {}');
   const defaultWake = await evaluatePolicy({ trigger: 'wake', prompt: 'default onWake', conversationId: 'direct', ceiling }, { store: jobs, handler: 'onWake', savedCeiling: ceiling,
     model: fixtureModel(() => response([message('direct prompt response')])) });
   assert.equal(defaultWake.ok, true); assert.equal(defaultWake.value.output, 'direct prompt response', 'direct prompts work without a custom onWake export');
-  await savePolicy(`export async function handle() {} export async function onWake(ctx,a) { return a.alert('direct hook proposal'); }`);
+  await savePolicy(`export async function handle() {} export async function onWake(ctx,a) { return a.alert({title:'Wake',body:'direct hook proposal'}); }`);
   const direct = await evaluatePolicy({ ...wake.value, trigger: 'wake' }, { store: jobs, handler: 'onWake', savedCeiling: narrow });
   assert.equal(direct.ok, true); assert.equal(direct.value.error.code, 'DENIED'); assert.equal(direct.actions.length, 0, 'wake hook cannot bypass its saved ceiling by using deterministic functions');
   const permitted = await evaluatePolicy({ ...wake.value, trigger: 'wake' }, { store: jobs, handler: 'onWake', savedCeiling: { ...narrow, initiateActions: ['alert'] } });
   assert.equal(permitted.value.ok, true); assert.equal(permitted.actions.length, 1); assert(permitted.actions[0].authority, 'wake proposals preserve authority for delayed execution');
 
-  jobs.plan('seed', [{ id: 'interrupted', kind: 'alert', chat: 'Alice', text: 'uncertain' }]);
+  jobs.plan('seed', [{ id: 'interrupted', kind: 'alert', title: 'Fixture', body: 'uncertain' }]);
   assert.equal(jobs.claimAction().id, 'interrupted');
   jobs.recover(new Date().toISOString()); assert.equal(jobs.action('interrupted').state, 'uncertain');
   const p = { ...ceiling, tools: ['alert'], initiateActions: ['alert'] };
-  jobs.plan('seed', [{ id: 'revoked', kind: 'alert', origin: 'agent', authority: p, chat: 'Alice', text: 'blocked' }]);
+  jobs.plan('seed', [{ id: 'revoked', kind: 'alert', origin: 'agent', authority: p, title: 'Fixture', body: 'blocked' }]);
   jobs.mode('read_only');
   let alerts = 0;
   assert.equal((await executeAction({ store: jobs, client: {}, loadConfig, alert: async () => { alerts++; } })).state, 'blocked');

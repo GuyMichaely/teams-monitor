@@ -38,10 +38,19 @@ lines.on('line', line => {
       const tools = Object.fromEntries(item.tools.map(name => [name, args => call(name, args || {})]));
       const actions = {
         sendMessage: (chat, text) => call('send_message', { chat, text }),
-        alert: text => call('alert', { text }),
+        alert: payload => call('alert', payload),
+        alertMessage: () => {
+          const ctx = item.context, text = String(ctx.message?.text ?? '').replace(/\s+/g, ' ').trim();
+          return call('alert', { title: `${ctx.authorName || ctx.message?.author || 'TM'} · ${ctx.chatName || 'TM'}`,
+            body: text.length > 200 ? text.slice(0, 199) + '…' : text });
+        },
         setStatus: presence => call('set_status', { presence }),
         cancel: h => call('cancel_action', { id: handleId(h) }),
-        modify: (h, changes) => call('modify_action', { id: handleId(h), ...changes }),
+        modify: async (h, changes) => {
+          if (!changes || Object.keys(changes).length !== 1) return { ok: false, error: { code: 'INVALID_ACTION', message: 'Change one field per sandbox modify call.' } };
+          const [field, value] = Object.entries(changes)[0];
+          return call('modify_action', { id: handleId(h), field, value });
+        },
         delay: (h, time) => call('delay_action', { id: handleId(h), dueAt: typeof time === 'string' ? time : new Date(typeof time === 'number' ? time : Date.now() + time.afterMs).toISOString() }),
       };
       const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;

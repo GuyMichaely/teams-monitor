@@ -112,12 +112,12 @@ Await action calls. They return `{ok:true,id,state:'pending'}` or a structured
 ```js
 export async function handle(ctx, a) {
   if (ctx.isDM || ctx.mentionsMe) {
-    await a.alert();
+    await a.alertMessage();
     return; // The model has no veto here.
   }
   if (ctx.message.text.includes('1234')) {
     const reply = await a.sendMessage(ctx.chatName, 'I will check that.');
-    if (!reply.ok) return a.alert('Reply blocked: ' + reply.error.code);
+    if (!reply.ok) return a.alert({ title: 'Reply blocked', body: reply.error.code });
     const reviewed = await a.llm('Review the proposed reply.', {
       tools: ['read_conversation', 'cancel_action', 'modify_action'],
       readChats: [ctx.chatName],
@@ -129,7 +129,7 @@ export async function handle(ctx, a) {
 }
 ```
 
-Functions: `sendMessage(chat,text)`, `alert(textOrPayload)`, `setStatus(presence)`,
+Functions: `sendMessage(chat,text)`, `alert({title,body})`, `alertMessage()`, `setStatus(presence)`,
 `delay(handle, ISOTime | timestamp | {afterMs})`, `cancel(handleOrId)`,
 `modify(handleOrId,{text})`, `llm(prompt,permissions)`, and
 `wake(prompt,{conversationId,dueAt,permissions})`. Delay stores a fixed action, not a
@@ -155,7 +155,7 @@ tools omitted by policy. It does not sandbox trusted JavaScript. Authenticated
 GET/PUT `/api/agent/permissions` uses `{source: <YAML>}`.
 
 An `llm` call explicitly lists tools, `readChats`, `writeChats`, `initiateActions`,
-`cancelIds`, and `modifyIds` (only `text`). Omitted permissions deny that capability.
+`cancelIds`, and `modifyIds` (`text` for messages, `title`/`body` for notifications). Omitted permissions deny that capability.
 Every call intersects `agent.ceiling` in YAML and any saved wake ceiling. Reply
 policy is an additional ceiling, checked again after navigation: an empty whitelist
 still permits **zero** Teams replies. Tools cannot change authoritative configuration.
@@ -180,7 +180,7 @@ if (!messages.ok) return messages;
 return messages.messages.map(row => row.message.text).join('\n');
 ```
 
-The convenience API is `actions.sendMessage(chat,text)`, `alert(text)`,
+The convenience API is `actions.sendMessage(chat,text)`, `alert({title,body})`, `alertMessage()`,
 `setStatus(presence)`, `cancel(handle)`, `modify(handle,{text})` and
 `delay(handle,{afterMs})` (also accepts an absolute timestamp). Delay requires
 `schedule` permission and an action this model invocation proposed. Use
@@ -248,7 +248,7 @@ const readOnly = { tools: ['read_conversation'], readChats: [ctx.chatName] };
 const review = await actions.llm('Investigate this question without acting.', {
   ...readOnly, conversationId,
 });
-if (!review.ok) return actions.alert('Review failed: ' + review.error.code);
+if (!review.ok) return actions.alert({ title: 'Review failed', body: review.error.code });
 return actions.llm('Use the findings to decide what to do.', {
   ...readOnly, conversationId, tools: ['read_conversation', 'send_message', 'alert'],
   writeChats: [ctx.chatName], initiateActions: ['message', 'alert'],

@@ -1,5 +1,6 @@
 import { isReplyAllowed } from '../reply-policy.mjs';
-import { sendAlert } from '../alerts.mjs';
+import { sendNotification, sendAlert } from '../alerts.mjs';
+import { notificationPayload, messageNotification } from '../phone-notification.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
 import { permissionCeiling, permissions, chatAllowed } from './permissions.mjs';
 import { conversationId } from './conversations.mjs';
@@ -9,9 +10,19 @@ export function validateAction(value) {
     throw new AgentRuntimeError('INVALID_ACTION', 'Unknown action kind.');
   if (value.due !== undefined && (!Number.isSafeInteger(value.due) || value.due < 0 || value.due > Date.now() + 366 * 86400000))
     throw new AgentRuntimeError('INVALID_ACTION', 'Invalid action time.');
-  if (['message', 'alert'].includes(value.kind) && (typeof value.chat !== 'string' || !value.chat.trim() || value.chat.length > 300 ||
+  if (value.kind === 'message' && (typeof value.chat !== 'string' || !value.chat.trim() || value.chat.length > 300 ||
       typeof value.text !== 'string' || !value.text.trim() || value.text.length > 8000))
     throw new AgentRuntimeError('INVALID_ACTION', 'Action needs a chat and text.');
+  if (value.kind === 'alert') notificationPayload({ title: value.title, body: value.body });
+  if (value.teamsMessage) {
+    if (value.kind !== 'alert') throw new AgentRuntimeError('INVALID_ACTION', 'Invalid Teams-message notification.');
+    const expected = messageNotification({ chatName: value.teamsMessage.chat, authorName: value.teamsMessage.author, message: value.teamsMessage });
+    if (expected.title !== value.title || expected.body !== value.body)
+      throw new AgentRuntimeError('INVALID_ACTION', 'Teams-message notification content does not match.');
+  }
+  if (value.review && (!Array.isArray(value.review.fields) || !value.review.fields.length ||
+      value.review.fields.some(field => !(value.kind === 'alert' ? ['title', 'body'] : ['text']).includes(field))))
+    throw new AgentRuntimeError('INVALID_ACTION', 'Invalid action review fields.');
   if (value.kind === 'status' && !['available', 'busy', 'dnd', 'brb', 'away', 'offline'].includes(value.presence))
     throw new AgentRuntimeError('INVALID_ACTION', 'Invalid Teams status.');
   if (value.kind === 'wake' && (typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.length > 16000 || !value.ceiling))
@@ -33,12 +44,16 @@ export function assertActionAuthority(action, cfg, store) {
   }
   if (action.review) {
     const p = permissions(action.review.authority, permissionCeiling(cfg));
-    if (store.mode() !== 'active' || !p.tools.includes('modify_action') || !(p.modifyIds[action.id] || p.modifyIds['*'] || []).includes('text'))
+    if (store.mode() !== 'active' || !p.tools.includes('modify_action') ||
+        !action.review.fields.every(field => (p.modifyIds[action.id] || p.modifyIds['*'] || []).includes(field)))
       throw new AgentRuntimeError('DENIED', 'Current permissions block the reviewed action.');
   }
 }
 
-export async function executeAction({ store, client, loadConfig, stopped = () => false, alert = sendAlert, wake, onResult = () => {}, now = Date.now }) {
+const deliverAlert = (action, config) => action.teamsMessage ?
+  sendAlert({ ...action.teamsMessage, alertId: action.alertId }, config) : sendNotification(action, config);
+
+export async function executeAction({ store, client, loadConfig, stopped = () => false, alert = deliverAlert, wake, onResult = () => {}, now = Date.now }) {
   if (stopped()) return null;
   const job = store.claimAction(now());
   if (!job) return null;

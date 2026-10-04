@@ -32,12 +32,10 @@ export interface TeamsMessage {
   reaction?: Reaction;
 }
 
-/** Omitted fields inherit this invocation's chat, author, text and time. */
+/** Exact display content; 256/3000 UTF-8 bytes, JSON-encoded total <= 3500 bytes. */
 export interface AlertPayload {
-  chat?: string;
-  author?: string;
-  text?: string;
-  time?: string | null;
+  title: string;
+  body: string;
 }
 
 export interface PolicyError {
@@ -76,7 +74,7 @@ export interface AgentPermissions {
   writeChats?: string[];
   initiateActions?: ActionKind[];
   cancelIds?: string[];
-  modifyIds?: Record<string, ('text')[]>;
+  modifyIds?: Record<string, ('text' | 'title' | 'body')[]>;
   sandbox?: SandboxLimits;
 }
 export interface AgentOptions extends AgentPermissions {
@@ -100,10 +98,11 @@ export interface MessageAction extends PlannedActionBase {
 }
 export interface AlertAction extends PlannedActionBase {
   kind: 'alert';
-  chat: string;
-  text: string;
-  author?: string;
+  title: string;
+  body: string;
   time?: string | null;
+  /** Present only on unmodified alertMessage proposals; owned by the runtime. */
+  teamsMessage?: { chat: string; author: string; text: string; time: string | null };
 }
 export interface StatusAction extends PlannedActionBase {
   kind: 'status';
@@ -193,12 +192,14 @@ export type ReactionsResult = Failure | {
 export interface PolicyActions {
   /** Reads the last observed snapshot; messageId is ctx.messageId / a conversation tool's row ID. */
   readReactions(chat: string, messageId: string): Promise<ReactionsResult>;
-  alert(value?: string | AlertPayload): Promise<ActionResult>;
+  alert(value: AlertPayload): Promise<ActionResult>;
+  /** Current incoming Teams message: author · chat title, flattened 200-character body. */
+  alertMessage(): Promise<ActionResult>;
   sendMessage(chat: string, text: string): Promise<ActionResult>;
   setStatus(presence: Presence): Promise<ActionResult>;
   delay(action: ActionHandle | string, when: DelayTime): Promise<ActionResult>;
   cancel(action: ActionHandle | string): Promise<ActionResult>;
-  modify(action: ActionHandle | string, changes: { text: string }): Promise<ActionResult>;
+  modify(action: ActionHandle | string, changes: { text: string } | { title?: string; body?: string }): Promise<ActionResult>;
   llm(prompt: string, permissions?: AgentOptions): Promise<AgentResult>;
   wake(prompt: string, options: { conversationId?: string; dueAt: string; permissions: AgentPermissions }): Promise<ActionResult>;
 }

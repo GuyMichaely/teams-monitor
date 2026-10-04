@@ -403,9 +403,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.server).text =
             "Server: ${prefs.serverUrl.ifBlank { "(not set)" }}"
         findViewById<TextView>(R.id.last_alert).text =
-            if (AlertState.lastAlertText != null) {
-                "${AlertState.lastAlertAuthor} · ${AlertState.lastAlertChat}\n" +
-                    "${AlertState.lastAlertText}\n${AlertState.lastAlertAt}"
+            if (AlertState.lastAlertBody != null) {
+                "${AlertState.lastAlertTitle}\n" +
+                    "${AlertState.lastAlertBody}\n${AlertState.lastAlertAt}"
             } else {
                 "No alerts received yet"
             }

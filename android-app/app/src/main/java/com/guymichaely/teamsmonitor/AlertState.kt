@@ -15,11 +15,9 @@ object AlertState {
 
     @Volatile var connection = Connection.DISCONNECTED
         private set
-    @Volatile var lastAlertChat: String? = null
+    @Volatile var lastAlertTitle: String? = null
         private set
-    @Volatile var lastAlertAuthor: String? = null
-        private set
-    @Volatile var lastAlertText: String? = null
+    @Volatile var lastAlertBody: String? = null
         private set
     @Volatile var lastAlertAt: String? = null
         private set
@@ -29,10 +27,9 @@ object AlertState {
         broadcast(context)
     }
 
-    fun onAlert(context: Context, chat: String, author: String, text: String, at: String) {
-        lastAlertChat = chat
-        lastAlertAuthor = author
-        lastAlertText = text
+    fun onAlert(context: Context, title: String, body: String, at: String) {
+        lastAlertTitle = title
+        lastAlertBody = body
         lastAlertAt = at
         broadcast(context)
     }

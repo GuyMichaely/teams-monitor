@@ -1,4 +1,5 @@
 import { loadConfig, saveConfig } from "./context.mjs";
+import { notificationPayload } from './phone-notification.mjs';
 // Monitoring/management GUI — a single-page dashboard + JSON API served from
 // this machine. Zero-dependency (node:http), same style as the TFS dispatcher.
 //
@@ -464,6 +465,10 @@ export function startGui(config, websocketOptions) {
           payload = JSON.parse(await readBody(req));
         } catch {
           return sendJson(res, 400, { ok: false, error: "invalid JSON" });
+        }
+        if (payload?.kind === 'notification') {
+          try { notificationPayload({ title: payload.title, body: payload.body }); }
+          catch { return sendJson(res, 400, { ok: false, error: 'invalid notification content' }); }
         }
         const delivered = broadcastAlert({ kind: "alert", ...payload, at: new Date().toISOString() });
         return sendJson(res, 200, { ok: true, delivered });

@@ -91,24 +91,24 @@ try {
       return { result, plan };
     } finally { store.close(); }
   }
-  let reviewed = await reviewCode('await actions.alert("staged"); await tools.write_note({path:"sandbox.md",text:"test"}); return 7;', r => assert.equal(r.result, 7));
+  let reviewed = await reviewCode('await actions.alert({title:"Policy",body:"staged"}); await tools.write_note({path:"sandbox.md",text:"test"}); return 7;', r => assert.equal(r.result, 7));
   assert.equal(reviewed.result.ok, true); assert.equal(reviewed.plan.actions.length, 1); assert.equal(reviewed.plan.notes['sandbox.md'], 'test');
-  reviewed = await reviewCode('await actions.alert("discarded"); await tools.write_note({path:"discard.md",text:"test"}); throw Error("oops");', r => assert.equal(r.error.code, 'CODE_ERROR'));
+  reviewed = await reviewCode('await actions.alert({title:"Policy",body:"discarded"}); await tools.write_note({path:"discard.md",text:"test"}); throw Error("oops");', r => assert.equal(r.error.code, 'CODE_ERROR'));
   assert.equal(reviewed.result.ok, true); assert.equal(reviewed.plan.actions.length, 0); assert.deepEqual(reviewed.plan.notes, {});
   reviewed = await reviewCode('return await actions.sendMessage("Alice","blocked");', r => assert.equal(r.result.error.code, 'DENIED'));
   assert.equal(reviewed.plan.actions.length, 0);
-  reviewed = await reviewCode('return await tools.alert({text:42});', r => assert.equal(r.result.error.code, 'INVALID_TOOL_CALL'));
-  reviewed = await reviewCode('await actions.alert("never committed"); return 1;', r => assert.equal(r.ok, true), { failModel: true });
+  reviewed = await reviewCode('return await tools.alert({title:"bad",body:42});', r => assert.equal(r.result.error.code, 'INVALID_TOOL_CALL'));
+  reviewed = await reviewCode('await actions.alert({title:"Policy",body:"never committed"}); return 1;', r => assert.equal(r.ok, true), { failModel: true });
   assert.equal(reviewed.result.ok, false); assert.equal(reviewed.plan.actions.length, 0);
-  reviewed = await reviewCode('await actions.alert("never committed"); return 1;', r => assert.equal(r.ok, true), { onSecondTurn: store => store.mode('read_only') });
+  reviewed = await reviewCode('await actions.alert({title:"Policy",body:"never committed"}); return 1;', r => assert.equal(r.ok, true), { onSecondTurn: store => store.mode('read_only') });
   assert.equal(reviewed.result.ok, false); assert.equal(reviewed.plan.actions.length, 0);
   reviewed = await reviewCode('return 5;', r => assert.equal(r.result, 5), { options: { tools: [], initiateActions: [] } });
   assert.equal(reviewed.result.ok, true);
   reviewed = await reviewCode('process.stdout.write(JSON.stringify({kind:"call",id:1,name:"set_status",args:{presence:"offline"}})+"\\n"); await Bun.sleep(100); return 5;', r => assert.equal(r.result, 5));
   assert.equal(reviewed.plan.actions.length, 0, 'Forged RPC cannot grant unlisted tools');
-  reviewed = await reviewCode('const a=await actions.alert("delayed"); const d=await actions.delay(a,{afterMs:5000}); const m=await actions.modify(a,{text:"modified"}); return {d,m};', r => { assert.equal(r.result.d.ok, true); assert.equal(r.result.m.ok, true); },
+  reviewed = await reviewCode('const a=await actions.alert({title:"Policy",body:"delayed"}); const d=await actions.delay(a,{afterMs:5000}); const m=await actions.modify(a,{body:"modified"}); return {d,m};', r => { assert.equal(r.result.d.ok, true); assert.equal(r.result.m.ok, true); },
     { options: { tools: ['alert', 'schedule', 'modify_action'], initiateActions: ['alert'] } });
-  assert.equal(reviewed.plan.actions[0].text, 'modified'); assert(reviewed.plan.actions[0].due > Date.now());
+  assert.equal(reviewed.plan.actions[0].title, 'Policy'); assert.equal(reviewed.plan.actions[0].body, 'modified'); assert(reviewed.plan.actions[0].due > Date.now());
   assert.deepEqual(await readdir(join(SANDBOX_DIRECTORY, 'runs')), [], 'Normal execution cleanup removes private bundles');
   console.log('PASS native Bun execution, file/network/env isolation, limits, descendants, cancellation, scoped bridge, atomic staging and model rollback');
 } finally { server.stop(true); delete process.env.TM_SANDBOX_SECRET_FIXTURE; }
