@@ -12,6 +12,6 @@ config/config.yaml.automation.bak
 config/*.json.migrated.bak
 config/fcm-service-account.json
 context/user-profile.md
-automation/policy.mjs
-automation/policy.mjs.*.mjs
+automation/policy.ts
+automation/policy.ts.*.ts
 android-app/app/google-services.json

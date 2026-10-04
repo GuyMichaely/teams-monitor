@@ -118,7 +118,7 @@ AGENTS.md decisions about automation YAML and zero dependencies on this branch.
 
 ## Increment 3 - JavaScript policy
 
-- Use automation/policy.mjs, editable in the dashboard. Other settings stay YAML.
+- Use automation/policy.ts, editable in the dashboard. Other settings stay YAML.
 - Export handle(ctx, actions); optionally export onWake and onActionResult.
 - Context includes message/history, chat/author names, isDM, mentionsMe, reaction
   details, time, and trigger type.

@@ -13,7 +13,7 @@ export async function initializeLiveTrial(productionRoot, agenticRoot) {
     await mkdir(path, { recursive: true });
     if ((await realpath(path)).toLowerCase() !== path.toLowerCase()) throw Error('Trial directories must not be links to other folders.');
   }
-  for (const relative of ['.env', 'config/config.yaml', 'config/fcm-service-account.json', 'context/user-profile.md', 'data/fcm-registration.json', 'automation/policy.mjs']) {
+  for (const relative of ['.env', 'config/config.yaml', 'config/fcm-service-account.json', 'context/user-profile.md', 'data/fcm-registration.json', 'automation/policy.ts']) {
     const path = join(agentic, relative);
     if (existsSync(path) && (await lstat(path)).isSymbolicLink()) throw Error('Trial setup files must not be links to production.');
   }

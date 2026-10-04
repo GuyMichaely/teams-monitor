@@ -10,7 +10,7 @@ import { agentReview } from './tools.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
 import { convertAutomationToPolicy } from './convert-policy.mjs';
 
-export const POLICY_FILE = join(LOCAL_HOME, 'automation', 'policy.mjs');
+export const POLICY_FILE = join(LOCAL_HOME, 'automation', 'policy.ts');
 const worker = join(ROOT, 'src', 'agent', 'policy-worker.mjs');
 const queue = operationQueue();
 const versionOf = source => createHash('sha256').update(source).digest('hex');
@@ -58,7 +58,7 @@ export async function savePolicy(source, path = POLICY_FILE) {
   return queue.run(async () => {
     if (typeof source !== 'string' || !source.trim() || source.length > 100000) throw new AgentRuntimeError('INVALID_POLICY', 'Policy must be JavaScript source up to 100000 characters.');
     await mkdir(dirname(path), { recursive: true });
-    const temp = path + '.' + randomUUID() + '.mjs';
+    const temp = path + '.' + randomUUID() + '.ts';
     try {
       await writeFile(temp, source, { flag: 'wx' });
       const result = await policySubprocess({ path: temp, validate: true, timeoutMs: 3000 });
@@ -72,7 +72,7 @@ export async function savePolicy(source, path = POLICY_FILE) {
 export async function ensurePolicy() {
   if (!existsSync(POLICY_FILE)) {
     const config = await loadConfig();
-    const source = config.automation ? convertAutomationToPolicy(config.automation, config.alerts) : await readFile(join(ROOT, 'automation', 'policy.example.mjs'), 'utf8');
+    const source = config.automation ? convertAutomationToPolicy(config.automation, config.alerts) : await readFile(join(ROOT, 'automation', 'policy.example.ts'), 'utf8');
     await savePolicy(source);
     // One-time conversion leaves YAML settings but removes its obsolete runtime rules.
     if (config.automation) {
@@ -91,7 +91,7 @@ export async function evaluatePolicy(context, { store, configLoader = loadConfig
   let cancelWatch;
   const { source, version } = await ensurePolicy();
   // Freeze source per handler, including while a dashboard save activates the next version.
-  const snapshot = POLICY_FILE + '.' + runId + '.mjs';
+  const snapshot = POLICY_FILE + '.' + runId + '.ts';
   await writeFile(snapshot, source, { flag: 'wx' });
   try {
   store.record(runId, 'policy_input', { handler, context, version, source, replay });

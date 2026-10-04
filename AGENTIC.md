@@ -58,7 +58,7 @@ Free API Catalog access has trial-use/confidential-input restrictions; see READM
 ## Policy
 
 Other settings remain YAML. The dashboard edits the trusted local JavaScript file
-`automation/policy.mjs` under the selected application home. Invalid syntax/exports
+`automation/policy.ts` under the selected application home. Invalid syntax/exports
 leave the active file unchanged. Each invocation uses a frozen source version in
 a bounded Bun subprocess. This prevents a loop from wedging intake, **not** a
 security sandbox for arbitrary code. Do not paste untrusted code into this editor.

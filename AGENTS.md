@@ -61,7 +61,7 @@ The GUI owns a shared Teams broker queue; sends retain exact recipient/draft
 checks, fresh reply permission and owner run nonce checks. SQLite records claims
 before effects; uncertain attempts are never retried. Trusted JS policy runs in
 a bounded Bun child (not an OS security sandbox), with atomic validated saves.
-`automation/policy.mjs` replaces YAML automation through one-time conversion;
+`automation/policy.ts` replaces YAML automation through one-time conversion;
 the old rules execution/API is removed, not a permanent compatibility layer.
 SDK tools enforce per-call/global/wake ceilings and stage effects/notes until
 successful policy commit. Originals, notes and sessions stay local in SQLite;

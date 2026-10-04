@@ -197,7 +197,7 @@ try {
   assert(page.includes('id="pauseUpdates"') && page.includes('id="clearActivity"'));
   assert(page.includes('id="activitySince"'));
   assert(page.includes('id="rulesForm"') && page.includes('id="alertRules"'));
-  assert(page.includes('<a id="policyFile" class="policy-file">policy.mjs</a>'));
+  assert(page.includes('<a id="policyFile" class="policy-file">policy.ts</a>'));
   assert(page.includes('link.textContent = policy.path') && page.includes('link.href = policy.editorUrl'));
   assert(page.includes("JavaScript policy") && !page.includes("Automation config YAML"));
   assert(page.includes('id="agentHeading"') && page.includes('id="agentMode"'));
