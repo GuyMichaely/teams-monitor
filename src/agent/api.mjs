@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { loadConfig, loadUserProfile, saveConfig } from '../context.mjs';
 import { parseConfigYaml, configYaml } from '../config-format.mjs';
 import { agentStore } from './store.mjs';
-import { ensurePolicy, savePolicy, evaluatePolicy } from './policy.mjs';
+import { ensurePolicy, savePolicy, evaluatePolicy, POLICY_FILE } from './policy.mjs';
 import { permissionCeiling, permissions } from './permissions.mjs';
 import { messageContext } from './intake.mjs';
 import { validateAction } from './executor.mjs';
@@ -58,8 +59,12 @@ export async function agentAPI({ url, method, body, store, running = false }) {
     }
   }
   if (path === '/api/agent/policy') {
-    if (method === 'GET') return ensurePolicy();
-    if (method === 'PUT') return savePolicy(body.source);
+    if (method === 'GET' || method === 'PUT') {
+      const policy = method === 'GET' ? await ensurePolicy() : await savePolicy(body.source);
+      // HTTP pages cannot navigate to file:// resources; use the local editor's
+      // file protocol without asking the server to execute a .mjs association.
+      return { ...policy, path: POLICY_FILE, editorUrl: 'vscode://file' + pathToFileURL(POLICY_FILE).pathname };
+    }
   }
   if (path === '/api/agent/status' && method === 'GET') {
     const active = running ? store.current() : null;

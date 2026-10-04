@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { CONFIG_FILE, DATA_DIR, LOCAL_HOME } from "../src/local-paths.mjs";
 import { replyPolicy, isReplyAllowed, validateReplyPolicy } from "../src/reply-policy.mjs";
 import { createPoll, readPoll } from "../src/poll-status.mjs";
@@ -68,6 +69,8 @@ try {
   assert.equal(originalPolicyResponse.status, 200);
   const originalPolicy = await originalPolicyResponse.json();
   assert.equal(typeof originalPolicy.source, "string");
+  assert.equal(originalPolicy.path, POLICY_FILE, "policy link points to the active application home's file");
+  assert.equal(originalPolicy.editorUrl, 'vscode://file' + pathToFileURL(POLICY_FILE).pathname);
   assert.equal(originalPolicy.version, createHash("sha256").update(originalPolicy.source).digest("hex"));
   assert.equal((await request("/api/agent/policy", "POST", {})).status, 400);
   const harmlessPolicy = 'export async function handle(ctx, actions) { await actions.alert("replay-only"); }';
@@ -75,6 +78,8 @@ try {
   assert.equal(saved.status, 200);
   const savedPolicy = await saved.json();
   assert.equal(savedPolicy.source, harmlessPolicy);
+  assert.equal(savedPolicy.path, POLICY_FILE);
+  assert.equal(savedPolicy.editorUrl, originalPolicy.editorUrl);
   assert.equal(savedPolicy.version, createHash("sha256").update(harmlessPolicy).digest("hex"));
   const policyOnDisk = await readFile(POLICY_FILE, "utf8");
   assert.equal(policyOnDisk, harmlessPolicy);
@@ -192,6 +197,8 @@ try {
   assert(page.includes('id="pauseUpdates"') && page.includes('id="clearActivity"'));
   assert(page.includes('id="activitySince"'));
   assert(page.includes('id="rulesForm"') && page.includes('id="alertRules"'));
+  assert(page.includes('<a id="policyFile" class="policy-file">policy.mjs</a>'));
+  assert(page.includes('link.textContent = policy.path') && page.includes('link.href = policy.editorUrl'));
   assert(page.includes("JavaScript policy") && !page.includes("Automation config YAML"));
   assert(page.includes('id="agentHeading"') && page.includes('id="agentMode"'));
   assert(page.includes('id="agentReplayForm"') && page.includes('id="agentWakeForm"'));

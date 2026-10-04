@@ -34,6 +34,12 @@ export function syncAgentRecordList(panel, rows, makeRow) {
 // One page owns presentation and refresh state; the existing authenticated APIs own controls.
 function dashboardClient() {
   const $ = (id) => document.getElementById(id);
+  function showPolicyFile(policy) {
+    const link = $('policyFile');
+    link.textContent = policy.path;
+    link.href = policy.editorUrl;
+    link.title = 'Open this file in VS Code on this computer';
+  }
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const time = (at) => at ? new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
   const age = (at) => { const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 1000)); return seconds < 60 ? seconds + "s ago" : seconds < 3600 ? Math.floor(seconds / 60) + "m ago" : Math.floor(seconds / 3600) + "h ago"; };
@@ -241,7 +247,7 @@ function dashboardClient() {
       await Promise.all([
         policyReady ? null : readPart('Reply policy', '/api/reply-policy', (v) => { if (!policyDirty) { $('replyMode').value = v.mode; $('replyEntries').value = v.entries.join('\n'); } policyReady = true; policySummary(); }),
         profileReady ? null : readPart('Brain context', '/api/profile', (v) => { if (!profileDirty) $('brainContext').value = v.text; profileReady = true; }),
-        agentPolicyReady ? null : readPart('JavaScript policy', '/api/agent/policy', (v) => { if (!rulesDirty) $('alertRules').value = v.source; agentPolicyVersion = v.version; setText('policyVersion', 'Version ' + v.version); agentPolicyReady = true; $('ruleFields').disabled = false; }),
+        agentPolicyReady ? null : readPart('JavaScript policy', '/api/agent/policy', (v) => { showPolicyFile(v); if (!rulesDirty) $('alertRules').value = v.source; agentPolicyVersion = v.version; setText('policyVersion', 'Version ' + v.version); agentPolicyReady = true; $('ruleFields').disabled = false; }),
       ]);
       renderStatus(); renderPoll(); renderMessages(); renderFlow(); renderLogs(logData);
       $('connectionError').hidden = !failures.size;
@@ -491,6 +497,7 @@ function dashboardClient() {
     try {
       const [value, policy] = await Promise.all([api('/api/agent/status'), api('/api/agent/policy')]);
       renderAgent(value);
+      showPolicyFile(policy);
       if (!rulesDirty) $('alertRules').value = policy.source;
       agentPolicyVersion = policy.version; agentPolicyReady = true; $('ruleFields').disabled = false;
       setText('policyVersion', 'Version ' + policy.version);
@@ -676,6 +683,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 .settings-fields{border:0;padding:0;margin:0;min-width:0}.settings-fields .check{margin:12px 0}.settings-fields:disabled{opacity:.6}
 .schedule-layout{display:grid;grid-template-columns:minmax(220px,.85fr) minmax(280px,1.15fr);gap:24px}.schedule-job{padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:9px;background:#151e23}.schedule-job strong{font-size:12px;overflow-wrap:anywhere}.schedule-job time{font-size:12px}.scheduled-text{white-space:pre-wrap;font-size:12px;margin-top:8px}.schedule-queue{max-height:430px;overflow:auto}.schedule-layout details{margin:0}.schedule-layout summary{font-size:12px}@media(max-width:900px){.schedule-layout{grid-template-columns:1fr}}
 .agent-current{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;background:#131d21;border:1px solid var(--line);border-radius:8px;font-size:12px}.agent-current span:nth-child(2){color:#c2d0d7}.agent-controls{display:flex;align-items:center;gap:8px}.agent-controls>*{min-width:0}.agent-controls input,.agent-controls select{flex:1}.agent-mode-form{margin-top:12px}.agent-form{margin-top:13px}.agent-tools,.agent-columns,.agent-memory{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:17px;padding-top:15px;border-top:1px solid var(--line)}.agent-memory{grid-template-columns:repeat(3,minmax(0,1fr))}.agent-columns h3,.agent-memory h3{font-size:12px}.agent-list{display:grid;gap:8px;margin-top:8px;max-height:340px;overflow:auto}.agent-entry{border:1px solid var(--line);border-radius:7px;background:#141e23;padding:9px;min-width:0}.agent-entry strong{font-size:11px;overflow-wrap:anywhere}.agent-entry .inline-heading>span{font-size:10px;color:var(--muted)}.agent-entry pre,.agent-output{background:#10191d;border:1px solid #2a363c;border-radius:5px;padding:8px;margin:7px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.55 Consolas,monospace;color:#c4d2d9}.agent-entry .hint{white-space:pre-wrap}.agent-entry button{margin-top:8px}.agent-conversations{display:grid;gap:6px;max-height:300px;overflow:auto;margin-top:8px}.agent-conversation{width:100%;text-align:left;font-size:10px;padding:7px 9px;overflow-wrap:anywhere}.agent-tools form{min-width:0}.agent-memory>div{min-width:0}.agent-memory .agent-controls{align-items:stretch}.agent-memory .agent-controls button{flex:0 0 auto}.agent-memory textarea{min-height:100px}.agent-current .save-state{margin-left:auto}@media(max-width:900px){.agent-memory{grid-template-columns:1fr 1fr}}@media(max-width:600px){.agent-tools,.agent-columns,.agent-memory{grid-template-columns:1fr}.agent-controls{flex-wrap:wrap}.agent-current .save-state{margin-left:0}}
+.policy-file{color:var(--green);overflow-wrap:anywhere;text-decoration:underline}.policy-file:focus-visible{outline:3px solid #75c9a7;outline-offset:2px}
 </style></head><body>
 <header><div class="brand"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>TM <span class="workspace-label">/ LOCAL CONTROL</span></div><div class="header-right"><span id="lastRefresh" class="sync-time">Waiting for server</span><button id="pauseUpdates" class="live-toggle warn" aria-pressed="true" title="Connecting · Pause live log tailing">Pause live log tailing</button><button id="refreshButton" title="Manually sync tail" aria-label="Manually sync tail">↻</button><button id="accountButton">Access token</button></div></header>
 <main class="shell">
@@ -703,7 +711,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <form id="sandboxForm"><fieldset id="sandboxFields" class="settings-fields" disabled><label for="sandboxLimits">agent.sandbox · YAML</label><textarea id="sandboxLimits" class="code-input" rows="6" spellcheck="false"></textarea><p class="hint">Maximum per execution: timeoutMs (100–30000), memoryMb (256–2048), cpuPercent (1–25, total CPU capacity), maxProcesses (1–8), outputBytes (4096–262144). Policy calls and saved continuations can only lower these limits.</p><div class="form-footer"><span id="sandboxSaveState" class="save-state" aria-live="polite"></span><button class="small">Save sandbox limits</button></div></fieldset></form></div></section>
 <section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2><span id="policyVersion" class="badge neutral">Version —</span></div>
 <p class="hint">Policy runs for each message with <code>handle(ctx, actions)</code>. Use the scoped action functions in <code>actions</code>; model work is explicit through <code>actions.llm(...)</code>. Saves validate before activation. Replay disables model calls and external actions.</p>
-<form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules">automation/policy.mjs</label><textarea id="alertRules" class="code-input" rows="24" spellcheck="false" placeholder="export async function handle(ctx, actions) {&#10;  // Decide what to do with this message.&#10;}"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save JavaScript policy</button></div></fieldset></form></div></section>
+<form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules"><a id="policyFile" class="policy-file">policy.mjs</a></label><textarea id="alertRules" class="code-input" rows="24" spellcheck="false" placeholder="export async function handle(ctx, actions) {&#10;  // Decide what to do with this message.&#10;}"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save JavaScript policy</button></div></fieldset></form></div></section>
 </aside><section class="main-column" aria-label="Live monitoring">
 <section class="card" aria-labelledby="agentHeading"><div class="card-body"><div class="section-title"><h2 id="agentHeading">Agent</h2><div class="button-row"><span id="agentModeBadge" class="badge neutral">Checking</span><button id="agentRefresh" class="small" type="button">Refresh agent</button></div></div>
 <p class="hint">Paused stops model runs; deterministic policy still runs. Read-only prevents model-originated external actions and note edits; deterministic policy still runs. Neither mode changes manual messages/status scheduling.</p>
