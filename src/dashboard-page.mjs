@@ -55,7 +55,7 @@ function dashboardClient() {
   let items = [], groups = [], selected = null, lastSuccess = null, paused = false, refreshing = false, slowAt = 0;
   let deliveryReady = false, policyReady = false, profileReady = false, agentPolicyReady = false;
   let deliveryDirty = false, policyDirty = false, profileDirty = false, pollDirty = false, rulesDirty = false;
-  let agentBusy = false, agentRefreshing = false, agentStatus = null, agentPolicyVersion = null;
+  let agentBusy = false, agentRefreshing = false, agentStatus = null;
   let agentModeDirty = false, agentNoteDirty = false, agentNotePath = '', agentBriefDirty = false;
   let agentPermissionsDirty = false, agentPermissionsSaving = false, agentPermissionsRevision = 0;
   let sandboxDirty = false, sandboxSaving = false, sandboxRevision = 0;
@@ -247,7 +247,7 @@ function dashboardClient() {
       await Promise.all([
         policyReady ? null : readPart('Reply policy', '/api/reply-policy', (v) => { if (!policyDirty) { $('replyMode').value = v.mode; $('replyEntries').value = v.entries.join('\n'); } policyReady = true; policySummary(); }),
         profileReady ? null : readPart('Brain context', '/api/profile', (v) => { if (!profileDirty) $('brainContext').value = v.text; profileReady = true; }),
-        agentPolicyReady ? null : readPart('JavaScript policy', '/api/agent/policy', (v) => { showPolicyFile(v); if (!rulesDirty) $('alertRules').value = v.source; agentPolicyVersion = v.version; setText('policyVersion', 'Version ' + v.version); agentPolicyReady = true; $('ruleFields').disabled = false; }),
+        agentPolicyReady ? null : readPart('JavaScript policy', '/api/agent/policy', (v) => { showPolicyFile(v); if (!rulesDirty) $('alertRules').value = v.source; agentPolicyReady = true; $('ruleFields').disabled = false; }),
       ]);
       renderStatus(); renderPoll(); renderMessages(); renderFlow(); renderLogs(logData);
       $('connectionError').hidden = !failures.size;
@@ -438,7 +438,7 @@ function dashboardClient() {
   $('brainContext').oninput = () => { profileDirty = true; setText('profileSaveState', 'Unsaved'); };
   $('profileForm').onsubmit = (e) => { e.preventDefault(); if (!profileReady) return; perform($('saveProfile'), async () => { await api('/api/profile', 'PUT', { text: $('brainContext').value }); profileDirty = false; setText('profileSaveState', 'Saved'); }, 'Brain context saved for the next poll'); };
   $('rulesForm').oninput = () => { rulesDirty = true; setText('rulesSaveState', 'Unsaved'); };
-  $('rulesForm').onsubmit = (e) => { e.preventDefault(); if (!agentPolicyReady) return; perform($('ruleFields'), async () => { const saved = await api('/api/agent/policy', 'PUT', { source: $('alertRules').value }); agentPolicyVersion = saved.version; $('alertRules').value = saved.source; rulesDirty = false; setText('policyVersion', 'Version ' + saved.version); setText('rulesSaveState', 'Saved'); }, 'JavaScript policy saved'); };
+  $('rulesForm').onsubmit = (e) => { e.preventDefault(); if (!agentPolicyReady) return; perform($('ruleFields'), async () => { const saved = await api('/api/agent/policy', 'PUT', { source: $('alertRules').value }); $('alertRules').value = saved.source; rulesDirty = false; setText('rulesSaveState', 'Saved'); }, 'JavaScript policy saved'); };
   $('agentPermissionsForm').oninput = () => { agentPermissionsDirty = true; agentPermissionsRevision++; setText('agentPermissionsState', 'Unsaved'); };
   $('agentPermissionsForm').onsubmit = async e => {
     e.preventDefault(); if (agentPermissionsSaving || $('agentPermissionsFields').disabled) return;
@@ -524,8 +524,7 @@ function dashboardClient() {
       renderAgent(value);
       showPolicyFile(policy);
       if (!rulesDirty) $('alertRules').value = policy.source;
-      agentPolicyVersion = policy.version; agentPolicyReady = true; $('ruleFields').disabled = false;
-      setText('policyVersion', 'Version ' + policy.version);
+      agentPolicyReady = true; $('ruleFields').disabled = false;
       setText('agentRefreshState', 'Updated ' + time(new Date().toISOString()));
       const sandboxVersion = sandboxRevision;
       const sandbox = await api('/api/agent/sandbox');
@@ -735,7 +734,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <section class="card"><div class="card-body"><div class="section-title"><h2>Bun sandbox</h2><span id="sandboxStatus" class="badge warn" hidden>Unavailable</span></div>
 <p id="sandboxInfo" class="hint"></p><p class="hint">Native Windows isolation; no VM or WSL. Direct network access and filesystem writes are blocked. Host tools retain permission checks. Code faults and limit failures discard that execution’s changes.</p>
 <form id="sandboxForm"><fieldset id="sandboxFields" class="settings-fields" disabled><label for="sandboxLimits">agent.sandbox · YAML</label><textarea id="sandboxLimits" class="code-input" rows="6" spellcheck="false"></textarea><p class="hint">Maximum per execution: timeoutMs (100–30000), memoryMb (256–2048), cpuPercent (1–25, total CPU capacity), maxProcesses (1–8), outputBytes (4096–262144). Policy calls and saved continuations can only lower these limits.</p><div class="form-footer"><span id="sandboxSaveState" class="save-state" aria-live="polite"></span><button class="small">Save sandbox limits</button></div></fieldset></form></div></section>
-<section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2><span id="policyVersion" class="badge neutral">Version —</span></div>
+<section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2></div>
 <p class="hint">Policy runs for each message with <code>handle(ctx, actions)</code>. Use the scoped action functions in <code>actions</code>; model work is explicit through <code>actions.llm(...)</code>. Saves validate before activation. Replay disables model calls and external actions.</p>
 <form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules"><a id="policyFile" class="policy-file">policy.ts</a></label><textarea id="alertRules" class="code-input" rows="24" spellcheck="false" placeholder="export async function handle(ctx: PolicyContext, actions: PolicyActions) {&#10;  // Decide what to do with this message.&#10;}"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save TypeScript policy</button></div></fieldset></form></div></section>
 </aside><section class="main-column" aria-label="Live monitoring">
