@@ -1,94 +1,208 @@
-export interface TeamsMessage {
-  id?: string;
-  type?: string;
-  author?: string;
-  text?: string;
-  time?: string;
-  chat?: string;
-  mentions?: string[];
-  reactions?: unknown[];
-  reaction?: Reaction | null;
-  [key: string]: unknown;
+/** A visible Teams badge snapshot. Counts include your own reaction, if self is true. */
+export interface ReactionBadge {
+  key: string;
+  emoji: string;
+  count: number;
+  self: boolean;
 }
 
+/** A change synthesized from two badge snapshots on a message you authored. */
 export interface Reaction {
-  emoji?: string;
-  count?: number;
-  self?: boolean;
-  [key: string]: unknown;
+  key: string;
+  emoji: string;
+  change: 'added' | 'removed';
+  count: number;
+  actorKnown: false;
+  originalMessageId: string;
+  originalAuthor: string;
+  originalTime: string | null;
+  originalText: string;
+  observedAt: string;
+  timing: 'Observed between polls; actual reaction time is unavailable';
 }
 
+export interface TeamsMessage {
+  /** Teams DOM ID; distinct from ctx.messageId, TM's recorded-message ID. */
+  id?: string | null;
+  author: string;
+  text: string;
+  time: string | null;
+  mentions: string[];
+  /** Omitted from automatic context for other authors; explicitly readable with readReactions. */
+  reactions?: ReactionBadge[];
+  reaction?: Reaction;
+}
+
+/** Omitted fields inherit this invocation's chat, author, text and time. */
 export interface AlertPayload {
   chat?: string;
   author?: string;
   text?: string;
-  time?: string;
-  [key: string]: unknown;
+  time?: string | null;
 }
 
-export interface ActionResult {
-  ok: boolean;
-  id?: string;
-  state?: string;
-  error?: { code: string; message: string };
-  [key: string]: unknown;
+export interface PolicyError {
+  code: string;
+  message: string;
 }
-
-export interface ActionHandle extends ActionResult {
+export interface Failure {
+  ok: false;
+  error: PolicyError;
+  runId?: string;
+}
+export interface ActionHandle {
   ok: true;
   id: string;
+  state: 'pending' | 'cancelled';
+  dueAt?: string;
 }
-
+export type ActionResult = ActionHandle | Failure;
 export type DelayTime = string | number | { afterMs: number };
+export type Presence = 'available' | 'busy' | 'dnd' | 'brb' | 'away' | 'offline';
+export type ActionKind = 'message' | 'alert' | 'status' | 'wake';
+export type ToolName = 'list_conversations' | 'read_conversation' | 'read_reactions' | 'search_conversations'
+  | 'send_message' | 'alert' | 'set_status' | 'schedule' | 'cancel_action' | 'modify_action'
+  | 'list_notes' | 'read_note' | 'search_notes' | 'write_note';
 
+export interface SandboxLimits {
+  timeoutMs?: number;
+  memoryMb?: number;
+  cpuPercent?: number;
+  maxProcesses?: number;
+  outputBytes?: number;
+}
 export interface AgentPermissions {
-  tools?: string[];
+  tools?: ToolName[];
   readChats?: string[];
   writeChats?: string[];
-  initiateActions?: string[];
+  initiateActions?: ActionKind[];
   cancelIds?: string[];
-  modifyIds?: Record<string, string[]>;
+  modifyIds?: Record<string, ('text')[]>;
+  sandbox?: SandboxLimits;
+}
+export interface AgentOptions extends AgentPermissions {
   conversationId?: string;
   timeoutMs?: number;
+  maxTurns?: number;
+  maxMessages?: number;
 }
 
-export interface AgentResult extends ActionResult {
-  output?: unknown;
+export interface PlannedActionBase {
+  id: string;
+  due: number;
+  origin: 'policy' | 'agent' | 'user';
+  authority?: AgentPermissions;
+  cancelled?: boolean;
 }
+export interface MessageAction extends PlannedActionBase {
+  kind: 'message';
+  chat: string;
+  text: string;
+}
+export interface AlertAction extends PlannedActionBase {
+  kind: 'alert';
+  chat: string;
+  text: string;
+  author?: string;
+  time?: string | null;
+}
+export interface StatusAction extends PlannedActionBase {
+  kind: 'status';
+  presence: Presence;
+}
+export interface WakeAction extends PlannedActionBase {
+  kind: 'wake';
+  prompt: string;
+  ceiling: AgentPermissions;
+  conversationId?: string | null;
+  conversationEpoch?: number;
+}
+export type PlannedAction = MessageAction | AlertAction | StatusAction | WakeAction;
+export type AgentResult = Failure | {
+  ok: true;
+  runId: string;
+  conversationId: string | null;
+  output: string;
+  actions: PlannedAction[];
+  replay: boolean;
+};
 
-export interface PolicyContext {
-  message?: TeamsMessage;
-  latest?: TeamsMessage;
+export type PolicyTrigger = 'message' | 'wake' | 'intervention' | 'action_result';
+export interface BasePolicyContext {
+  trigger: PolicyTrigger;
+  /** ISO time when this context was assembled. */
+  now: string;
+  userProfile: string;
+  contextId?: string;
+}
+/** Context for handle(). */
+export interface PolicyContext extends BasePolicyContext {
+  trigger: 'message';
+  messageId: string;
+  message: TeamsMessage;
   history: TeamsMessage[];
-  chat?: string;
   chatName: string;
   authorName: string;
   isDM: boolean;
   mentionsMe: boolean;
   reaction: Reaction | null;
   mentionNames: string[];
-  ignoreAuthors: string[];
-  now: string;
-  trigger: string;
-  contextId?: string;
-  messageId?: string;
-  userProfile?: string;
-  brief?: string;
-  coverage?: string;
-  notifyAll?: boolean;
-  conversationId?: string;
-  prompt?: string;
-  ceiling?: AgentPermissions;
-  outcome?: unknown;
+  brief: string;
+  /** Fixed scope description supplied by intake; not a computed completeness score. */
+  coverage: string;
 }
+/** Context for onWake(). */
+export interface WakeContext extends BasePolicyContext {
+  trigger: 'wake';
+  prompt: string;
+  ceiling: AgentPermissions;
+  conversationId?: string | null;
+  conversationEpoch?: number;
+  due: number;
+  latenessMs: number;
+  actionId: string;
+}
+/** Context for onIntervention(). */
+export interface InterventionContext extends BasePolicyContext {
+  trigger: 'intervention';
+  prompt: string;
+  ceiling: AgentPermissions;
+  conversationId: string;
+  conversationEpoch: number;
+  chatName?: string;
+}
+export interface ActionOutcome {
+  id: string;
+  action: MessageAction | AlertAction | StatusAction;
+  state: 'completed' | 'failed' | 'blocked' | 'missed' | 'uncertain' | 'superseded';
+  /** Transport/Teams-specific evidence. Narrow/check it before accessing fields. */
+  result: unknown;
+}
+/** Context for onActionResult(); incoming-message fields are absent. */
+export interface ActionResultContext extends BasePolicyContext {
+  trigger: 'action_result';
+  contextId: string;
+  outcome: ActionOutcome;
+}
+export type AnyPolicyContext = PolicyContext | WakeContext | InterventionContext | ActionResultContext;
 
+export type ReactionsResult = Failure | {
+  ok: true;
+  messageId: string;
+  chat: string;
+  reactions: ReactionBadge[];
+  observedAt: string;
+  coverage: string;
+};
 export interface PolicyActions {
-  alert(value: string | AlertPayload): Promise<ActionResult>;
+  /** Reads the last observed snapshot; messageId is ctx.messageId / a conversation tool's row ID. */
+  readReactions(chat: string, messageId: string): Promise<ReactionsResult>;
+  alert(value?: string | AlertPayload): Promise<ActionResult>;
   sendMessage(chat: string, text: string): Promise<ActionResult>;
-  setStatus(presence: string): Promise<ActionResult>;
+  setStatus(presence: Presence): Promise<ActionResult>;
   delay(action: ActionHandle | string, when: DelayTime): Promise<ActionResult>;
   cancel(action: ActionHandle | string): Promise<ActionResult>;
-  modify(action: ActionHandle | string, changes: { text?: string }): Promise<ActionResult>;
-  llm(prompt: string, permissions?: AgentPermissions): Promise<AgentResult>;
-  wake(prompt: string, options?: { conversationId?: string; dueAt?: string; permissions?: AgentPermissions }): Promise<ActionResult>;
+  modify(action: ActionHandle | string, changes: { text: string }): Promise<ActionResult>;
+  llm(prompt: string, permissions?: AgentOptions): Promise<AgentResult>;
+  wake(prompt: string, options: { conversationId?: string; dueAt: string; permissions: AgentPermissions }): Promise<ActionResult>;
 }

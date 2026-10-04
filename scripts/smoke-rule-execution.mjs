@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Usage } from '@openai/agents';
 import { loadConfig, saveConfig } from '../src/context.mjs';
 import { agentStore } from '../src/agent/store.mjs';
-import { convertAutomationToPolicy } from '../src/agent/convert-policy.mjs';
+import { convertAutomationToPolicy } from './lib/convert-policy.mjs';
 import { evaluatePolicy, savePolicy, POLICY_FILE } from '../src/agent/policy.mjs';
 import { executeAction } from '../src/agent/executor.mjs';
 import { AgentRuntimeError } from '../src/agent/errors.mjs';
@@ -32,10 +32,9 @@ function outputFor(request, id) {
   const value = item.output?.type === 'text' ? item.output.text : item.output;
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
-const event = { trigger: 'message', contextId: 'chat:alex', chat: 'Alex', chatName: 'Alex', authorName: 'Alex',
+const event = { trigger: 'message', contextId: 'chat:alex', chatName: 'Alex', authorName: 'Alex',
   message: { id: 'rule-message', author: 'Alex', text: '@Guy please review 1234', mentions: ['Guy'], time: new Date().toISOString() },
-  latest: { author: 'Alex', text: '@Guy please review 1234', mentions: ['Guy'], time: new Date().toISOString() },
-  isDM: true, mentionsMe: true, history: [], mentionNames: ['Guy'], ignoreAuthors: [], now: new Date().toISOString() };
+  isDM: true, mentionsMe: true, history: [], mentionNames: ['Guy'], now: new Date().toISOString() };
 const automation = { rules: [
   { id: 'mention-phone', when: { type: 'mention' }, action: { type: 'alert_phone' } },
   { id: 'direct-phone', when: { type: 'direct_message' }, action: { type: 'alert_phone' } },

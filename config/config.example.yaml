@@ -19,7 +19,6 @@ gui:
   host: 127.0.0.1
   authTokenEnv: GUI_TOKEN
 alerts: 
-  notifyAll: false
   transport: websocket
   websocketUrl: ""
   failover: 
@@ -32,8 +31,6 @@ alerts:
       failureLimit: 3
   fcm: 
     serviceAccountFile: config/fcm-service-account.json
-  ignoreAuthors: 
-    []
   mentionNames: 
     []
   fallbackTransport: fcm

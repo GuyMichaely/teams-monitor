@@ -19,7 +19,11 @@ assert.equal(intake({ store, chat: 'Alice', messages, config, activatedAt, react
 assert.equal(store.history('Alice').length, 5);
 for (const expected of ['a', 'b', 'c']) {
   const row = store.claimMessage(); assert.equal(row.value.id, expected);
-  assert.equal(messageContext(row, store, config, '').isDM, true);
+  const ctx = messageContext(row, store, config, '');
+  assert.equal(ctx.isDM, true);
+  assert.equal(ctx.trigger, 'message');
+  for (const legacy of ['latest', 'chat', 'ignoreAuthors', 'notifyAll', 'outcome']) assert.equal(Object.hasOwn(ctx, legacy), false);
+  assert.equal(Object.hasOwn(ctx.message, 'reactions'), false, 'other authors\' badges are not automatically exposed');
   store.completeMessage(row.id, row.id, [{ id: expected, kind: 'message', chat: 'Alice', text: expected }], {});
 }
 assert.equal(store.claimMessage(), null);
@@ -33,6 +37,8 @@ io.client.send = async () => { throw Error('unconfirmed effect'); };
 assert.equal((await executeAction(io)).state, 'uncertain');
 assert.equal(await executeAction(io), null); assert.equal(sent.length, 1);
 messages[1].reactions = [{ key: 'thumb', emoji: '👍', count: 1, self: false }];
+assert.equal(intake({ store, chat: 'Alice', messages, config, activatedAt, reactions }).length, 0, 'reactions on someone else\'s message never queue automatic work');
+messages[3].reactions = [{ key: 'thumb', emoji: '👍', count: 1, self: false }];
 assert.equal(intake({ store, chat: 'Alice', messages, config, activatedAt, reactions }).length, 1);
 assert.equal(store.claimMessage().value.author, 'Unknown reactor');
 const lease = await executorLease(0);

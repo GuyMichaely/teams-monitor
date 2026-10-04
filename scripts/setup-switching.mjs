@@ -51,6 +51,8 @@ if (import.meta.main) {
   if (execFileSync('git', ['branch', '--show-current'], { cwd: agentic, encoding: 'utf8' }).trim() !== 'agentic') throw Error('Run this setup from agentic, not production.');
   const result = await initializeLiveTrial(production, agentic);
   // Conversion and validation occur only against the trial copy; no model/effects run.
+  const { migrateAgentPolicy } = await import('./migrate-agent-policy.mjs');
+  await migrateAgentPolicy();
   const { ensurePolicy } = await import('../src/agent/policy.mjs');
   await ensurePolicy();
   execFileSync('powershell.exe', ['-NoProfile', '-File', join(agentic, 'scripts', 'install-desktop.ps1'), '-BuildOnly'], { cwd: agentic, windowsHide: true, stdio: 'inherit' });

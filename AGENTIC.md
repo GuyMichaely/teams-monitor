@@ -75,8 +75,16 @@ Exports:
 
 `ctx` includes `message`, `history`, `chatName`, `authorName`, `isDM`, `mentionsMe`,
 `reaction`, `now`, `trigger`, `contextId`, the user introduction, and the chat brief.
+See POLICY-API.md and automation/policy-api.d.ts for precise fields and typed hooks.
+Message trigger is a literal; wakes, interventions and action results have separate
+context interfaces. No message `type`, arbitrary property signatures or legacy
+`latest`/`chat`/`ignoreAuthors`/`notifyAll` context aliases are supplied.
 History contains observed visible tails, not a complete Teams archive. Reactions
 are synthetic messages with an unknown reactor, never inferred actor identities.
+Only reactions to the user's own messages automatically trigger policy. Other
+authors' badge snapshots are omitted from automatic context/history. Use
+`actions.readReactions(chat, recordedMessageId)` or scoped `read_reactions` to
+explicitly inspect the last observed badges and observation time on any message.
 Messages predating activation and outgoing messages outside self-chat/echo testing
 are archived but not handled.
 
@@ -110,9 +118,11 @@ Functions: `sendMessage(chat,text)`, `alert(textOrPayload)`, `setStatus(presence
 closure or timer. Cancel/modify can target pending stored actions as well as this
 handler's proposals; an execution race rejects the whole commit.
 
-Existing YAML automation is converted once into standalone JavaScript when first
-needed. The old config is retained in ignored `config.yaml.automation.bak`; the
-automation mapping is removed from active YAML. There is no old rules runtime/API.
+Existing YAML automation is converted by the explicit one-time
+`bun --no-env-file scripts/migrate-agent-policy.mjs` command (also run by trial
+setup), not by the runtime. It keeps ignored `config.yaml.automation.bak`, removes
+old automation/notifyAll/ignoreAuthors settings, and backfills stored badge
+snapshots. There is no old rules runtime/API or `.mjs` policy loading path.
 
 ## Agent permissions and continuity
 
@@ -132,7 +142,7 @@ Every call intersects `agent.ceiling` in YAML and any saved wake ceiling. Reply
 policy is an additional ceiling, checked again after navigation: an empty whitelist
 still permits **zero** Teams replies. Tools cannot change authoritative configuration.
 
-Available tools: list/read/search conversations; send message, alert, set status;
+Available tools: list/read/search conversations, read reaction snapshots; send message, alert, set status;
 schedule/cancel/modify actions; and list/read/search/write notes. Reads happen during
 the SDK run. Effects and note edits are staged; a provider error, timeout, invalid
 output or policy fault cannot commit its incomplete plan. Final model text is never

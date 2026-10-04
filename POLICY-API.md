@@ -1,11 +1,13 @@
-# JavaScript policy API
+# TypeScript policy API
 
 This document describes the trusted local JavaScript policy configured in
-`automation/policy.mjs`. The policy runs once for each eligible incoming message
+`automation/policy.ts`. The policy runs once for each eligible incoming message
 and must export:
 
-```js
-export async function handle(ctx, actions) {
+```ts
+import type { PolicyContext, PolicyActions } from './policy-api.d.ts';
+
+export async function handle(ctx: PolicyContext, actions: PolicyActions) {
   // decide what to do
 }
 ```
@@ -17,11 +19,20 @@ sandbox used by `execute_bun`.
 ## `ctx`
 
 The runtime supplies a plain context object. Values are snapshots for this
-invocation; changing them does not change Teams or configuration.
+invocation; changing them does not change Teams or configuration. The complete
+editor declarations are in [automation/policy-api.d.ts](automation/policy-api.d.ts).
+Bun transpiles TypeScript; runtime policy-save validation checks syntax and
+exports, while VS Code provides type checking and definition lookup.
+
+`PolicyContext` describes the message `handle` hook. `WakeContext`,
+`InterventionContext`, and `ActionResultContext` describe the other hooks and
+extend `BasePolicyContext`. `AnyPolicyContext` is their discriminated union;
+`PolicyTrigger` is `'message' | 'wake' | 'intervention' | 'action_result'`.
 
 | Field | Meaning |
 | --- | --- |
-| `message` | The incoming message object. Common fields include `id`, `text`, `author`, `time`, `chat`, `mentions`, and `type`. |
+| `message` | The incoming message object; complete fields described below. |
+| `messageId` | TM's recorded message ID, used for replay and `readReactions`. Distinct from `message.id`, the Teams DOM ID. |
 | `history` | Bounded observed message history available for this invocation. It is not a complete Teams archive. |
 | `chatName` | Display name of the chat or direct-message conversation. |
 | `authorName` | Display name of the message author. |
@@ -29,11 +40,69 @@ invocation; changing them does not change Teams or configuration.
 | `mentionsMe` | `true` when Teams mention data or configured explicit `@name` text matches the configured user names. |
 | `reaction` | Reaction details for a synthetic reaction message, or `null`. |
 | `now` | ISO timestamp for the invocation. |
-| `trigger` | Why the policy ran, such as an incoming message, wake, or intervention. |
+| `trigger` | Always `'message'` in `PolicyContext`. Other hooks have their own literal trigger. |
 | `contextId` | Trigger metadata identifying the source context. It is not automatically used as model history. |
 | `userProfile` | The configured user introduction/context. |
 | `brief` | Optional saved brief for this chat/person. |
-| `ceiling` | The permissions available to this invocation. It is an upper bound, not an authorization to bypass the reply policy. |
+| `mentionNames` | Configured names used to recognize the user and mentions. |
+| `coverage` | Fixed description supplied by intake: `Observed visible tails only; not a complete Teams archive.` Describes collection scope, not a measured completeness score. |
+
+`latest`, the duplicate `chat` field, `ignoreAuthors` and `notifyAll` are no
+longer supplied. Conditions such as author exclusions belong in your policy.
+`outcome` belongs only to `ActionResultContext`. `ceiling`, `prompt` and
+`conversationId` are supplied for wakes/interventions, not incoming messages.
+
+## `ctx.message`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | optional `string \| null` | Teams DOM message ID. Synthetic reaction messages omit it. |
+| `author` | `string` | Author display name; synthetic reactions use `Unknown reactor`. |
+| `text` | `string` | Extracted body text, with reaction badge labels removed. Synthetic reactions contain generated descriptive text. |
+| `time` | `string \| null` | Original message timestamp from Teams, or observation time for a synthetic reaction. Ordinary invalid/pre-activation timestamps are excluded from handling outside explicit echo tests. |
+| `mentions` | `string[]` | Mention display names found in Teams mention nodes, with leading `@` removed. Synthetic reactions use an empty list. |
+| `reactions` | optional `ReactionBadge[]` | Visible badge snapshot. Other authors' snapshots are omitted from automatic message/history context; explicitly inspect them with `readReactions`. |
+| `reaction` | optional `Reaction` | A synthetic reaction change, described below. |
+
+There is no message `type`, `chat`, or arbitrary extra-property index signature.
+Use `ctx.chatName` for the chat and `message.reaction` to distinguish reactions.
+
+### `ReactionBadge` and `Reaction`
+
+`ReactionBadge` describes one badge on an original message:
+
+```ts
+{ key: 'like', emoji: '👍', count: 2, self: false }
+```
+
+- `key`: Teams reaction identifier, used to compare badges across polls.
+- `emoji`: displayed emoji/name obtained from Teams.
+- `count`: visible total count, including your reaction when `self` is true.
+- `self`: whether your account contributes to that badge.
+
+`Reaction` describes a change between snapshots. Automatic handling only
+creates these for messages authored by you (recognized using `mentionNames`
+or Teams' `You` label). Other people's reactions to your messages remain
+eligible even when the original message predates activation.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `key`, `emoji` | `string` | Reaction identifier and display text. |
+| `change` | `'added' \| 'removed'` | Direction of the badge count change. |
+| `count` | `number` | Absolute net change after excluding your own badge contribution. |
+| `actorKnown` | `false` | Badge scraping cannot identify the reactor. |
+| `originalMessageId` | `string` | Teams ID, or timestamp/author key if Teams omitted an ID. |
+| `originalAuthor` | `string` | Author of the original message. |
+| `originalTime` | `string \| null` | Original message timestamp. |
+| `originalText` | `string` | Original message body. |
+| `observedAt` | `string` | ISO time when the badge change was observed. |
+| `timing` | fixed `string` | `Observed between polls; actual reaction time is unavailable`. |
+
+For example, the app creates a message saying `Someone added 👍 to Guy's
+message: "hello"`. This text is a synthesized description, not a real Teams
+chat message or a claim that the reactor is known. First observation/restarts
+establish baselines. Only visible tails and net changes are observed. Both
+`ctx.isDM` and `ctx.mentionsMe` are false for synthetic reactions.
 
 For ordinary incoming messages, the useful minimal pattern is:
 
@@ -64,6 +133,35 @@ example:
 await actions.alert('You were mentioned');
 await actions.alert({ chat: ctx.chatName, text: ctx.message.text });
 ```
+
+`AlertPayload` accepts exactly `chat?: string`, `author?: string`,
+`text?: string`, and `time?: string | null`. Omitted fields inherit the chat,
+author, message text (or `Attention requested`) and invocation time.
+An empty resulting text/chat is rejected. Additional fields are rejected;
+transport IDs and action metadata are owned by the runtime.
+
+### `actions.readReactions(chat, messageId)`
+
+Explicitly inspect any recorded message's last observed badges, including
+other people's messages. Use `ctx.messageId` or the row `id` returned by
+`read_conversation`/`search_conversations`, not `message.id` (the Teams ID).
+
+```ts
+const result = await actions.readReactions(ctx.chatName, ctx.messageId);
+if (result.ok) console.log(result.reactions, result.observedAt);
+```
+
+Success returns `{ ok: true, chat, messageId, reactions: ReactionBadge[],
+observedAt, coverage }`. Every poll refreshes the saved snapshot, including
+duplicate messages. An empty array means the last snapshot had no badges.
+A missing/unobserved snapshot or wrong-chat ID returns `NOT_FOUND`; corrupt
+snapshot data returns `INVALID_DATA`. This reads saved observations, with
+their timestamp, rather than navigating Teams for a live refresh.
+
+The model tool is `read_reactions({chat, messageId})`; grant `read_reactions`
+and the relevant `readChats` scope in `llm` options. Saved wake permissions
+also govern deterministic `readReactions` calls. The tool is available through
+the sandbox's permitted `tools` bridge under the same permissions.
 
 ### `actions.sendMessage(chat, text)`
 
@@ -144,28 +242,46 @@ Policies can inspect these results and choose another action. Common error codes
 include `DENIED`, `INVALID_TOOL_CALL`, `NOT_FOUND`, `NOT_PENDING`, timeout and
 provider failure codes.
 
-An uncaught policy exception, timeout, invalid model output, or permission
-change discards that handler's incomplete staged plan. Earlier committed work
-is not undone. External actions that were already executed remain executed.
+An uncaught policy exception or policy timeout discards that handler's incomplete
+plan. A recoverable model error/timeout discards that model call's changes and
+returns an error, allowing the policy to retain its deterministic proposals.
+Previously committed/executed work is unchanged.
 
 ## Optional policy exports
 
-```js
-export async function onWake(ctx, actions) {
-  return actions.llm(ctx.prompt, ctx.ceiling);
+```ts
+import type {
+  WakeContext, InterventionContext, ActionResultContext, PolicyActions,
+} from './policy-api.d.ts';
+
+export async function onWake(ctx: WakeContext, actions: PolicyActions) {
+  return actions.llm(ctx.prompt, { ...ctx.ceiling, conversationId: ctx.conversationId ?? undefined });
 }
 
-export async function onIntervention(ctx, actions) {
+export async function onIntervention(ctx: InterventionContext, actions: PolicyActions) {
   return actions.llm(ctx.prompt, {
     ...ctx.ceiling,
     conversationId: ctx.conversationId,
   });
 }
 
-export async function onActionResult(ctx, actions) {
+export async function onActionResult(ctx: ActionResultContext, actions: PolicyActions) {
   // Inspect ctx.outcome after an effect and optionally respond.
 }
 ```
+
+All hook contexts have `now`, `userProfile`, `trigger` and optional `contextId`.
+Wake context adds `prompt`, `ceiling`, optional conversation ID/generation,
+`due` (epoch milliseconds), `latenessMs` and `actionId`. Intervention context
+adds `prompt`, `ceiling`, conversation ID/generation and optional `chatName`.
+
+Action-result context adds only `outcome`: `{ id, action, state, result }`.
+`action` is a typed message/alert/status union; `state` is one of `completed`,
+`failed`, `blocked`, `missed`, `uncertain`, or `superseded`. Wake enqueueing does
+not invoke this hook. `result` intentionally remains `unknown` because Teams
+and phone transports produce different execution evidence; inspect/narrow it
+before accessing fields. This is a specific opaque value, not permission to
+add arbitrary properties to the surrounding interface.
 
 These hooks are optional. There is no special takeover primitive; ordinary
 alerts, notes, reduced permissions, and later decisions are the available

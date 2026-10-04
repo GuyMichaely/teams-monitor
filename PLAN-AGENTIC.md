@@ -228,6 +228,9 @@ Always-present model compute tool, permission-checked host bridge, nested atomic
 staging, per-call/global/saved resource ceilings, dashboard settings and real native
 boundary tests. See AGENTIC.md. Linux/macOS and standalone scheduled code remain
 future increments; the trusted policy editor is not sandboxed.
+October 3 policy API cleanup: precise hook-specific TypeScript interfaces, no legacy
+context aliases, own-message reaction triggers, scoped explicit reaction reads, and
+an explicit migration command rather than runtime YAML conversion.
 
 - [x] Preserve stable main and create isolated agentic worktree.
 - [x] Save approved plan with the user's corrections before compaction.

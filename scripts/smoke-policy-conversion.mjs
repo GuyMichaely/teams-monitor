@@ -1,6 +1,6 @@
 import './smoke-env.mjs';
 import assert from 'node:assert/strict';
-import { convertAutomationToPolicy } from '../src/agent/convert-policy.mjs';
+import { convertAutomationToPolicy } from './lib/convert-policy.mjs';
 import { evaluateRules } from '../src/deterministic-rules.mjs';
 
 async function loadPolicy(automation, options) {
@@ -126,3 +126,42 @@ await compareRuleMatches({ rules: [
 }, ['old name'], []);
 
 console.log('Policy conversion smoke passed: existing-rule fidelity, deduplication, denied reply, custom alerts, and bounded agent authority.');
+
+// Conversion is explicit and idempotent; ordinary runtime bootstrap only creates the current template.
+{
+  const { loadConfig, saveConfig } = await import('../src/context.mjs');
+  const { ensurePolicy, POLICY_FILE } = await import('../src/agent/policy.mjs');
+  const { migrateAgentPolicy } = await import('./migrate-agent-policy.mjs');
+  const { readFile, unlink } = await import('node:fs/promises');
+  const { agentStore } = await import('../src/agent/store.mjs');
+  const { DATA_DIR } = await import('../src/local-paths.mjs');
+  const { Database } = await import('bun:sqlite');
+  const { join } = await import('node:path');
+  const config = await loadConfig();
+  config.automation = { rules: [dmRule] };
+  config.alerts = { ...config.alerts, ignoreAuthors: ['Blocked Person'], notifyAll: true };
+  await saveConfig(config);
+  await ensurePolicy();
+  assert((await loadConfig()).automation, 'bootstrap does not load or migrate old YAML rules');
+  await unlink(POLICY_FILE);
+  const store = agentStore();
+  const original = { id: 'legacy-badge', text: 'hello', author: 'Alice', time: new Date().toISOString(), mentions: [], reactions: [{ key: 'like', emoji: '👍', count: 1, self: false }] };
+  store.observe('Alice', original);
+  const recordedId = store.history('Alice')[0].id;
+  store.close();
+  const db = new Database(join(DATA_DIR, 'agent', 'store.sqlite'));
+  db.exec('DROP TABLE reaction_snapshots'); db.close();
+  assert.deepEqual(await migrateAgentPolicy(), { migrated: true, snapshots: 1 });
+  const source = await readFile(POLICY_FILE, 'utf8');
+  assert(source.includes('if (true) return actions.alert'), 'notifyAll is preserved in migrated code, not a runtime alias');
+  assert(source.includes('Blocked Person'));
+  const cleaned = await loadConfig();
+  assert.equal(Object.hasOwn(cleaned, 'automation'), false);
+  assert.equal(Object.hasOwn(cleaned.alerts, 'notifyAll'), false);
+  assert.equal(Object.hasOwn(cleaned.alerts, 'ignoreAuthors'), false);
+  const migrated = agentStore();
+  try { assert.equal(migrated.reactions('Alice', recordedId).reactions[0].count, 1); } finally { migrated.close(); }
+  assert.deepEqual(await migrateAgentPolicy(), { migrated: false, snapshots: 0 });
+  assert.equal(await readFile(POLICY_FILE, 'utf8'), source);
+  console.log('PASS explicit migration, runtime template only, config cleanup and stored reaction snapshot backfill.');
+}

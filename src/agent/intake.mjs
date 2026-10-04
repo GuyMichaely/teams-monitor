@@ -3,6 +3,14 @@ import { isMentioned } from '../deterministic-rules.mjs';
 import { normalize } from './store.mjs';
 
 export const selfAuthored = (author, names = []) => normalize(author) === 'you' || names.some(name => normalize(name) === normalize(author));
+export const HISTORY_COVERAGE = 'Observed visible tails only; not a complete Teams archive.';
+
+// Other people's badges are available by explicit read, not pushed into policy/model context.
+const contextMessage = (message, names) => {
+  if (selfAuthored(message.author, names)) return message;
+  const { reactions, ...body } = message;
+  return body;
+};
 
 export function intake({ store, chat, messages, config, activatedAt, reactions, now = new Date().toISOString() }) {
   const names = config.alerts?.mentionNames || [];
@@ -17,7 +25,8 @@ export function intake({ store, chat, messages, config, activatedAt, reactions, 
     const id = store.observe(chat, message, eligible(message));
     if (id) ids.push(id);
   }
-  for (const message of reactionMessages(ordered, reactions, activatedAt, now)) {
+  const ownMessages = ordered.filter(message => selfAuthored(message.author, names));
+  for (const message of reactionMessages(ownMessages, reactions, activatedAt, now)) {
     const id = store.observe(chat, message, true);
     if (id) ids.push(id);
   }
@@ -25,13 +34,13 @@ export function intake({ store, chat, messages, config, activatedAt, reactions, 
 }
 
 export function messageContext(row, store, config, userProfile) {
-  const message = row.value;
+  const names = config.alerts?.mentionNames || [];
+  const message = contextMessage(row.value, names);
   return { trigger: 'message', contextId: `chat:${normalize(row.chat)}`, messageId: row.id,
-    chat: row.chat, chatName: row.chat, authorName: message.author, message, latest: message,
+    chatName: row.chat, authorName: message.author, message,
     isDM: !message.reaction && normalize(row.chat) === normalize(message.author),
     mentionsMe: isMentioned(message, config.alerts?.mentionNames), reaction: message.reaction || null,
-    history: store.history(row.chat).map(r => r.value).filter(Boolean), userProfile,
-    mentionNames: config.alerts?.mentionNames || [], ignoreAuthors: config.alerts?.ignoreAuthors || [],
-    notifyAll: config.alerts?.notifyAll === true,
-    now: new Date().toISOString(), coverage: 'Observed visible tails only; not a complete Teams archive.' };
+    history: store.history(row.chat).map(r => r.value).filter(m => m && (!m.reaction || selfAuthored(m.reaction.originalAuthor, names))).map(m => contextMessage(m, names)), userProfile,
+    mentionNames: names,
+    now: new Date().toISOString(), coverage: HISTORY_COVERAGE };
 }

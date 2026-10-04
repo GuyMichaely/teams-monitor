@@ -9,6 +9,13 @@ import { conversationId } from './conversations.mjs';
 export const blankPlan = () => ({ actions: [], cancellations: [], modifications: {}, notes: {}, sessions: {} });
 const idOf = handle => typeof handle === 'string' ? handle : handle?.id;
 const bad = message => { throw new AgentRuntimeError('INVALID_ACTION', message); };
+const alertPayload = payload => {
+  if (typeof payload === 'string') return { text: payload };
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).some(key => !['chat', 'author', 'text', 'time'].includes(key)) ||
+      ['chat', 'author', 'text'].some(key => payload[key] !== undefined && typeof payload[key] !== 'string') ||
+      (payload.time !== undefined && payload.time !== null && typeof payload.time !== 'string')) bad('Alert payload accepts only chat, author, text and time.');
+  return payload;
+};
 
 export function actionAPI({ plan, context, configLoader, store, llm, origin = 'policy', authority, bounded, maxMessages = Infinity }) {
   let messages = 0;
@@ -30,11 +37,11 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
     try {
       if (bounded && method !== 'llm') {
         const p = permissions(bounded, permissionCeiling(await configLoader()));
-        const capability = { sendMessage: 'send_message', alert: 'alert', setStatus: 'set_status', delay: 'schedule', wake: 'schedule', cancel: 'cancel_action', modify: 'modify_action' }[method];
+        const capability = { readReactions: 'read_reactions', sendMessage: 'send_message', alert: 'alert', setStatus: 'set_status', delay: 'schedule', wake: 'schedule', cancel: 'cancel_action', modify: 'modify_action' }[method];
         const own = plan.actions.some(action => action.id === idOf(args[0]));
         if (own && ['cancel', 'modify'].includes(method)) {
           if (!p.tools.includes(capability)) throw new AgentRuntimeError('DENIED', 'Saved wake permissions block this action.');
-        } else assertPermission(p, capability, method === 'sendMessage' ? args[0] : null, idOf(args[0]), method === 'modify' ? 'text' : undefined);
+        } else assertPermission(p, capability, ['sendMessage', 'readReactions'].includes(method) ? args[0] : null, idOf(args[0]), method === 'modify' ? 'text' : undefined);
         const kind = { sendMessage: 'message', alert: 'alert', setStatus: 'status', wake: 'wake' }[method];
         if (kind && !p.initiateActions.includes(kind)) throw new AgentRuntimeError('DENIED', 'Saved wake permissions block this action.');
       }
@@ -42,8 +49,9 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
     } catch (error) { return failure(error); }
   };
   const api = {
+    readReactions: expected((chat, messageId) => store.reactions(chat, messageId), 'readReactions'),
     sendMessage: expected((chat, text) => add({ kind: 'message', chat, text }), 'sendMessage'),
-    alert: expected((payload = {}) => add({ kind: 'alert', chat: context.chatName || 'TM', author: context.authorName || 'TM', text: context.message?.text || 'Attention requested', time: context.now, ...(typeof payload === 'string' ? { text: payload } : payload) }), 'alert'),
+    alert: expected((payload = {}) => add({ kind: 'alert', chat: context.chatName || 'TM', author: context.authorName || 'TM', text: context.message?.text || 'Attention requested', time: context.now, ...alertPayload(payload) }), 'alert'),
     setStatus: expected(presence => add({ kind: 'status', presence: normalizeStatus(presence) }), 'setStatus'),
     delay: expected((handle, time) => {
       const action = plan.actions.find(a => a.id === idOf(handle));

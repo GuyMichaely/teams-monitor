@@ -4,7 +4,7 @@ import { reactionMessages } from '../src/reaction-messages.mjs';
 import { agentStore } from '../src/agent/store.mjs';
 import { intake, messageContext } from '../src/agent/intake.mjs';
 import { scan } from '../src/agent/engine.mjs';
-import { convertAutomationToPolicy } from '../src/agent/convert-policy.mjs';
+import { convertAutomationToPolicy } from './lib/convert-policy.mjs';
 import { evaluatePolicy, savePolicy, POLICY_FILE } from '../src/agent/policy.mjs';
 
 const activation = '2026-09-30T12:00:00.000Z';
@@ -33,7 +33,7 @@ assert.deepEqual(reactionMessages([{ ...oldMessage, reactions: [like] }], baseli
 
 const store = agentStore(':memory:');
 try {
-  const config = { alerts: { mentionNames: ['TM'], ignoreAuthors: [] }, automation: { rules: [
+  const config = { alerts: { mentionNames: ['TM', 'Alex'], ignoreAuthors: [] }, automation: { rules: [
     { id: 'direct', when: { type: 'direct_message' }, action: { type: 'alert_phone' } },
     { id: 'mention', when: { type: 'mention' }, action: { type: 'alert_phone' } },
     { id: 'reaction-observation', when: { type: 'reaction' }, action: { type: 'ignore' } },
@@ -43,10 +43,10 @@ try {
   assert.equal(entry.reactionSnapshot.activationId, activation);
 
   let readCount = 0;
-  const state = { chats: { Alex: entry } };
+  const state = { chats: { Project: entry } };
   await scan({ store, state, config, activatedAt: activation, client: {
     async unread() { return []; },
-    async read(chat) { assert.equal(chat, 'Alex'); readCount++; return { messages: [{ ...oldMessage, reactions: [{ ...like, count: 2 }] }] }; },
+    async read(chat) { assert.equal(chat, 'Project'); readCount++; return { messages: [{ ...oldMessage, reactions: [{ ...like, count: 2 }] }] }; },
   }, audit: async () => {} });
   assert.equal(readCount, 1, 'scan revisits a previously observed chat with a reaction snapshot even if it is no longer unread');
   const row = store.claimMessage();

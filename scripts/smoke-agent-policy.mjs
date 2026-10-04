@@ -35,6 +35,41 @@ for (const invalid of ['export async function handle( {', 'export const handle =
   assert.equal(await readFile(POLICY_FILE, 'utf8'), storedSource, 'invalid syntax/exports retain the active source');
 }
 
+// Explicit reaction reads work through policy RPC and obey model tool/chat scopes.
+{
+  const store = freshStore();
+  try {
+    const badge = { key: 'like', emoji: '👍', count: 1, self: false };
+    const observed = { ...context.message, reactions: [badge] };
+    const id = store.observe('Alice', observed);
+    // observe() returns IDs only for eligible work, so use the recorded row for explicit reads.
+    const messageId = store.history('Alice')[0].id;
+    store.observe('Alice', { ...observed, reactions: [{ ...badge, count: 2 }] });
+    await savePolicy(policy(`return actions.readReactions('Alice', ${JSON.stringify(messageId)});`));
+    const read = await evaluate(store);
+    assert.equal(read.ok, true);
+    assert.equal(read.value.reactions[0].count, 2, 'latest duplicate poll refreshes the separate badge snapshot');
+    assert.deepEqual(read.actions, [], 'explicit read creates no action');
+    assert.equal(id, null);
+    await savePolicy(policy(`return actions.readReactions('Bob', ${JSON.stringify(messageId)});`));
+    assert.equal((await evaluate(store)).value.error.code, 'NOT_FOUND', 'wrong-chat message ID cannot cross the chat boundary');
+    await savePolicy(policy(`return actions.llm('Read badges', { tools: ['read_reactions'], readChats: ['Alice'] });`));
+    let calls = 0;
+    const model = { async getResponse(request) {
+      if (++calls === 1) return response([call('read_reactions', { chat: 'Alice', messageId }, 'r-good'), call('read_reactions', { chat: 'Bob', messageId }, 'r-bad')]);
+      assert.equal(toolResult(request, 'r-good').reactions[0].count, 2);
+      assert.equal(toolResult(request, 'r-bad').error.code, 'DENIED');
+      return response([message('Observed two likes.')]);
+    } };
+    assert.equal((await evaluate(store, { model })).value.ok, true);
+    await savePolicy(policy("return actions.alert({kind:'message', chat:'Alice',text:'payload must not change action kind'});"));
+    const invalid = await evaluate(store);
+    assert.equal(invalid.value.error.code, 'INVALID_ACTION');
+    assert.deepEqual(invalid.actions, []);
+  } finally { store.close(); }
+  await savePolicy(saved.source);
+}
+
 // A successful policy run creates a proposal plan; only the explicit store commit persists it.
 {
   const store = freshStore();

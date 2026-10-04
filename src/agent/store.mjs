@@ -24,6 +24,7 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,body TEXT,summary TEXT);
     CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY,kind TEXT,body TEXT,created INTEGER,state TEXT);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
+    CREATE TABLE IF NOT EXISTS reaction_snapshots(id TEXT PRIMARY KEY,body TEXT,observed INTEGER);
     CREATE INDEX IF NOT EXISTS action_due ON actions(state,due);
     CREATE INDEX IF NOT EXISTS message_chat ON messages(chat,time);`);
   const store = {
@@ -166,7 +167,19 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     observe(chat, message, eligible = false) {
       const id = messageKey(chat, message), now = Date.now();
       const changed = db.query('INSERT OR IGNORE INTO messages(id,chat,body,time,observed,state) VALUES(?,?,?,?,?,?)').run(id, chat, JSON.stringify(message), Date.parse(message.time) || now, now, eligible ? 'pending' : 'observed').changes;
+      if (Array.isArray(message.reactions)) db.query('INSERT OR REPLACE INTO reaction_snapshots(id,body,observed) VALUES(?,?,?)').run(id, JSON.stringify(message.reactions), now);
       return changed && eligible ? id : null;
+    },
+    reactions(chat, id) {
+      const message = store.message(id);
+      if (!message?.value || normalize(message.chat) !== normalize(chat)) throw new AgentRuntimeError('NOT_FOUND', 'Recorded message not found in this chat.');
+      const snapshot = db.query('SELECT body,observed FROM reaction_snapshots WHERE id=?').get(id);
+      if (!snapshot) throw new AgentRuntimeError('NOT_FOUND', 'No reaction snapshot has been observed for this message yet.');
+      let reactions;
+      try { reactions = JSON.parse(snapshot.body); } catch { throw new AgentRuntimeError('INVALID_DATA', 'Invalid reaction snapshot.'); }
+      if (!Array.isArray(reactions) || reactions.some(r => !r || typeof r.key !== 'string' || typeof r.emoji !== 'string' || !Number.isInteger(r.count) || r.count < 1 || typeof r.self !== 'boolean'))
+        throw new AgentRuntimeError('INVALID_DATA', 'Invalid reaction snapshot.');
+      return { ok: true, messageId: id, chat: message.chat, reactions, observedAt: new Date(snapshot.observed).toISOString(), coverage: 'Last observed badge snapshot; no live refresh or reactor identities.' };
     },
     claimMessage() {
       return db.transaction(() => {

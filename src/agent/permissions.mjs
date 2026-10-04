@@ -2,7 +2,7 @@ import { normalize } from './store.mjs';
 import { AgentRuntimeError } from './errors.mjs';
 import { sandboxLimits } from './sandbox-limits.mjs';
 
-export const TOOL_NAMES = ['list_conversations', 'read_conversation', 'search_conversations', 'send_message', 'alert', 'set_status', 'schedule', 'cancel_action', 'modify_action', 'list_notes', 'read_note', 'search_notes', 'write_note'];
+export const TOOL_NAMES = ['list_conversations', 'read_conversation', 'read_reactions', 'search_conversations', 'send_message', 'alert', 'set_status', 'schedule', 'cancel_action', 'modify_action', 'list_notes', 'read_note', 'search_notes', 'write_note'];
 const actions = ['message', 'alert', 'status', 'wake'];
 const denied = () => { throw new AgentRuntimeError('DENIED', 'This capability is not permitted.'); };
 export const chatAllowed = (scope, chat) => scope.includes('*') || scope.some(name => normalize(name) === normalize(chat));
@@ -41,7 +41,7 @@ export function permissions(options = {}, global, saved) {
 
 export function assertPermission(p, capability, chat, id, field) {
   if (!p.tools.includes(capability)) denied();
-  if (chat && !chatAllowed(capability === 'read_conversation' || capability === 'search_conversations' ? p.readChats : p.writeChats, chat)) denied();
+  if (chat && !chatAllowed(['read_conversation', 'search_conversations', 'read_reactions'].includes(capability) ? p.readChats : p.writeChats, chat)) denied();
   if (capability === 'cancel_action' && !p.cancelIds.includes('*') && !p.cancelIds.includes(id)) denied();
   if (capability === 'modify_action' && !(p.modifyIds[id] || p.modifyIds['*'] || []).includes(field)) denied();
 }

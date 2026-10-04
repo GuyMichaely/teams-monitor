@@ -63,6 +63,14 @@ before effects; uncertain attempts are never retried. Trusted JS policy runs in
 a bounded Bun child (not an OS security sandbox), with atomic validated saves.
 `automation/policy.ts` replaces YAML automation through one-time conversion;
 the old rules execution/API is removed, not a permanent compatibility layer.
+October 3 API cleanup: precise declarations distinguish ReactionBadge/Reaction and
+message/wake/intervention/action-result contexts, with literal triggers. No legacy
+latest/chat/ignoreAuthors/notifyAll context aliases or message type/index signature.
+Only reactions on self-authored messages queue automatic handling. Other authors'
+badges are omitted from automatic context; readReactions/read_reactions explicitly
+read the latest stored per-message snapshot, enforcing readChats for model/wakes.
+Converter lives under scripts/lib and runs only through migrate-agent-policy.mjs
+or trial setup. No runtime YAML conversion. POLICY-API.md is the detailed reference.
 SDK tools enforce per-call/global/wake ceilings and stage effects/notes until
 successful policy commit. Originals, notes and sessions stay local in SQLite;
 SDK tracing/export is disabled. Other YAML settings and Android delivery remain.

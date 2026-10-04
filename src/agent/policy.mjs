@@ -1,14 +1,13 @@
-import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, unlink, copyFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { LOCAL_HOME, ROOT, CONFIG_FILE } from '../local-paths.mjs';
-import { loadConfig, saveConfig } from '../context.mjs';
+import { LOCAL_HOME, ROOT } from '../local-paths.mjs';
+import { loadConfig } from '../context.mjs';
 import { operationQueue } from '../teams-queue.mjs';
 import { blankPlan, actionAPI } from './plan.mjs';
 import { agentReview } from './tools.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
-import { convertAutomationToPolicy } from './convert-policy.mjs';
 
 export const POLICY_FILE = join(LOCAL_HOME, 'automation', 'policy.ts');
 const worker = join(ROOT, 'src', 'agent', 'policy-worker.mjs');
@@ -56,7 +55,7 @@ export async function policySubprocess({ path, context, handler = 'handle', vali
 
 export async function savePolicy(source, path = POLICY_FILE) {
   return queue.run(async () => {
-    if (typeof source !== 'string' || !source.trim() || source.length > 100000) throw new AgentRuntimeError('INVALID_POLICY', 'Policy must be JavaScript source up to 100000 characters.');
+    if (typeof source !== 'string' || !source.trim() || source.length > 100000) throw new AgentRuntimeError('INVALID_POLICY', 'Policy must be TypeScript source up to 100000 characters.');
     await mkdir(dirname(path), { recursive: true });
     const temp = path + '.' + randomUUID() + '.ts';
     try {
@@ -70,16 +69,13 @@ export async function savePolicy(source, path = POLICY_FILE) {
 }
 
 export async function ensurePolicy() {
+  if (LOCAL_HOME !== ROOT) {
+    await mkdir(dirname(POLICY_FILE), { recursive: true });
+    await copyFile(join(ROOT, 'automation', 'policy-api.d.ts'), join(dirname(POLICY_FILE), 'policy-api.d.ts'));
+  }
   if (!existsSync(POLICY_FILE)) {
-    const config = await loadConfig();
-    const source = config.automation ? convertAutomationToPolicy(config.automation, config.alerts) : await readFile(join(ROOT, 'automation', 'policy.example.ts'), 'utf8');
+    const source = await readFile(join(ROOT, 'automation', 'policy.example.ts'), 'utf8');
     await savePolicy(source);
-    // One-time conversion leaves YAML settings but removes its obsolete runtime rules.
-    if (config.automation) {
-      const backup = CONFIG_FILE + '.automation.bak';
-      if (!existsSync(backup)) await writeFile(backup, await readFile(CONFIG_FILE, 'utf8'), { flag: 'wx' });
-      delete config.automation; await saveConfig(config);
-    }
   }
   const source = await readFile(POLICY_FILE, 'utf8');
   return { source, version: versionOf(source) };

@@ -1,4 +1,4 @@
-import { validateAutomation } from '../deterministic-rules.mjs';
+import { validateAutomation } from '../../src/deterministic-rules.mjs';
 
 const READ_TOOLS = [
   'list_conversations', 'read_conversation', 'search_conversations',
@@ -10,7 +10,7 @@ function js(value) {
 }
 
 /** Convert a validated automation mapping into standalone policy module source once. */
-export function convertAutomationToPolicy(rawAutomation = {}, { mentionNames = [], ignoreAuthors = [] } = {}) {
+export function convertAutomationToPolicy(rawAutomation = {}, { mentionNames = [], ignoreAuthors = [], notifyAll = false } = {}) {
   const automation = validateAutomation(rawAutomation);
   const names = Array.isArray(mentionNames) ? mentionNames.filter(x => typeof x === 'string' && x.trim()) : [];
   const ignored = Array.isArray(ignoreAuthors) ? ignoreAuthors.filter(x => typeof x === 'string' && x.trim()) : [];
@@ -25,7 +25,7 @@ const norm = value => String(value ?? '').trim().toLowerCase().replace(/\\s+/g, 
 const esc = value => value.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
 const isReaction = message => Boolean(message?.reaction);
 const configuredMentions = ctx => Array.isArray(ctx.mentionNames) ? ctx.mentionNames : MENTION_NAMES;
-const configuredIgnored = ctx => Array.isArray(ctx.ignoreAuthors) ? ctx.ignoreAuthors : IGNORED_AUTHORS;
+const configuredIgnored = () => IGNORED_AUTHORS;
 function mentionMatch(message, ctx) {
   if (isReaction(message)) return false;
   const targets = configuredMentions(ctx).map(norm).filter(Boolean).map(value => value.replace(/^@\\s*/, ''));
@@ -41,7 +41,7 @@ function eligible(message, ctx) {
   return !self && !configuredIgnored(ctx).map(norm).includes(author);
 }
 function evaluate(condition, ctx) {
-  const message = ctx.message ?? ctx.latest ?? {};
+  const message = ctx.message ?? {};
   if (condition.all || condition.any) {
     const key = condition.all ? 'all' : 'any';
     const children = condition[key].map(child => evaluate(child, ctx));
@@ -49,7 +49,7 @@ function evaluate(condition, ctx) {
     return { type: key, matched, conditions: children };
   }
   if (condition.type === 'direct_message') {
-    const chat = ctx.chatName ?? ctx.chat ?? '';
+    const chat = ctx.chatName ?? '';
     const author = message?.author ?? '';
     const identityMatch = Boolean(norm(chat) && norm(author) && norm(chat) === norm(author));
     const matched = eligible(message, ctx) && !isReaction(message) && identityMatch;
@@ -60,7 +60,7 @@ function evaluate(condition, ctx) {
     return { type: 'mention', matched, input: { author: message?.author ?? '', text: message?.text ?? '', mentions: message?.mentions ?? [], mentionNames: configuredMentions(ctx) } };
   }
   if (condition.type === 'reaction') return { type: 'reaction', matched: isReaction(message) && !configuredIgnored(ctx).map(norm).includes(norm(message?.author)), input: message?.reaction ?? null };
-  const actualValue = condition.field === 'chat' ? (ctx.chatName ?? ctx.chat ?? '') : (message?.[condition.field] ?? '');
+  const actualValue = condition.field === 'chat' ? (ctx.chatName ?? '') : (message?.[condition.field] ?? '');
   const actual = String(actualValue), expected = norm(condition.value), normalized = norm(actual);
   let matched;
   if (condition.match === 'exact') matched = normalized === expected;
@@ -76,10 +76,10 @@ const failure = error => ({ ok: false, error: { code: 'ACTION_FAILED', message: 
 async function callAction(fn, ...args) { try { return await fn(...args); } catch (error) { return failure(error); } }
 
 export async function handle(ctx = {}, actions = {}) {
-  const message = ctx.message ?? ctx.latest ?? {};
-  const chat = ctx.chatName ?? ctx.chat ?? '';
+  const message = ctx.message ?? {};
+  const chat = ctx.chatName ?? '';
   const author = ctx.authorName ?? message.author ?? '';
-  if (ctx.notifyAll) return actions.alert({ chat, author, text: message.text || '', time: message.time });
+  if (${js(notifyAll === true)}) return actions.alert({ chat, author, text: message.text || '', time: message.time });
   const evaluations = RULES.filter(rule => rule.enabled).map(rule => {
     const evidence = evaluate(rule.when, ctx);
     return { ruleId: rule.id, matched: evidence.matched, action: rule.action, permissions: rule.agent, evidence };
