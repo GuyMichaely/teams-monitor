@@ -33,7 +33,7 @@ extend `BasePolicyContext`. `AnyPolicyContext` is their discriminated union;
 | --- | --- |
 | `message` | The incoming message object; complete fields described below. |
 | `messageId` | TM's recorded message ID, used for replay and `readReactions`. Distinct from `message.id`, the Teams DOM ID. |
-| `history` | Bounded observed message history available for this invocation. It is not a complete Teams archive. |
+| `history` | Bounded observed message history available for this invocation. |
 | `chatName` | Display name of the chat or direct-message conversation. |
 | `authorName` | Display name of the message author. |
 | `isDM` | `true` when the normalized chat name and author name match. |
@@ -45,7 +45,6 @@ extend `BasePolicyContext`. `AnyPolicyContext` is their discriminated union;
 | `userProfile` | The configured user introduction/context. |
 | `brief` | Optional saved brief for this chat/person. |
 | `mentionNames` | Configured names used to recognize the user and mentions. |
-| `coverage` | Fixed description supplied by intake: `Observed visible tails only; not a complete Teams archive.` Describes collection scope, not a measured completeness score. |
 
 `latest`, the duplicate `chat` field, `ignoreAuthors` and `notifyAll` are no
 longer supplied. Conditions such as author exclusions belong in your policy.
@@ -72,10 +71,9 @@ Use `ctx.chatName` for the chat and `message.reaction` to distinguish reactions.
 `ReactionBadge` describes one badge on an original message:
 
 ```ts
-{ key: 'like', emoji: '👍', count: 2, self: false }
+{ emoji: '👍', count: 2, self: false }
 ```
 
-- `key`: Teams reaction identifier, used to compare badges across polls.
 - `emoji`: displayed emoji/name obtained from Teams.
 - `count`: visible total count, including your reaction when `self` is true.
 - `self`: whether your account contributes to that badge.
@@ -152,7 +150,7 @@ if (result.ok) console.log(result.reactions, result.observedAt);
 ```
 
 Success returns `{ ok: true, chat, messageId, reactions: ReactionBadge[],
-observedAt, coverage }`. Every poll refreshes the saved snapshot, including
+observedAt }`. Every poll refreshes the saved snapshot, including
 duplicate messages. An empty array means the last snapshot had no badges.
 A missing/unobserved snapshot or wrong-chat ID returns `NOT_FOUND`; corrupt
 snapshot data returns `INVALID_DATA`. This reads saved observations, with

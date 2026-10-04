@@ -10,7 +10,7 @@ export async function handle(ctx: PolicyContext, actions: PolicyActions) {
     await actions.delay(result, { afterMs: 1000 });
   }
   const badges = await actions.readReactions(ctx.chatName, ctx.messageId);
-  if (badges.ok) badges.reactions.forEach((badge: ReactionBadge) => badge.self && badge.key);
+  if (badges.ok) badges.reactions.forEach((badge: ReactionBadge) => badge.self && badge.emoji);
   const reaction: Reaction | null = ctx.reaction;
   if (reaction) reaction.change satisfies 'added' | 'removed';
   // @ts-expect-error No unused message type field.

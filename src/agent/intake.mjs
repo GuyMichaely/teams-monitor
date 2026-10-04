@@ -1,13 +1,13 @@
 import { reactionMessages } from '../reaction-messages.mjs';
 import { isMentioned } from '../deterministic-rules.mjs';
 import { normalize } from './store.mjs';
+import { publicMessage } from './message-view.mjs';
 
 export const selfAuthored = (author, names = []) => normalize(author) === 'you' || names.some(name => normalize(name) === normalize(author));
-export const HISTORY_COVERAGE = 'Observed visible tails only; not a complete Teams archive.';
 
 // Other people's badges are available by explicit read, not pushed into policy/model context.
 const contextMessage = (message, names) => {
-  if (selfAuthored(message.author, names)) return message;
+  if (selfAuthored(message.author, names)) return publicMessage(message);
   const { reactions, ...body } = message;
   return body;
 };
@@ -42,5 +42,5 @@ export function messageContext(row, store, config, userProfile) {
     mentionsMe: isMentioned(message, config.alerts?.mentionNames), reaction: message.reaction || null,
     history: store.history(row.chat).map(r => r.value).filter(m => m && (!m.reaction || selfAuthored(m.reaction.originalAuthor, names))).map(m => contextMessage(m, names)), userProfile,
     mentionNames: names,
-    now: new Date().toISOString(), coverage: HISTORY_COVERAGE };
+    now: new Date().toISOString() };
 }

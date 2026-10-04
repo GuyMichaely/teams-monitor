@@ -5,6 +5,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { DATA_DIR } from '../local-paths.mjs';
 import { conversationId } from './conversations.mjs';
 import { AgentRuntimeError } from './errors.mjs';
+import { publicBadges } from './message-view.mjs';
 
 export const normalize = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 export const messageKey = (chat, message) => createHash('sha256').update(JSON.stringify([normalize(chat), message.reaction ? message : message.id || [message.time, message.author, message.text]])).digest('hex');
@@ -179,7 +180,7 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
       try { reactions = JSON.parse(snapshot.body); } catch { throw new AgentRuntimeError('INVALID_DATA', 'Invalid reaction snapshot.'); }
       if (!Array.isArray(reactions) || reactions.some(r => !r || typeof r.key !== 'string' || typeof r.emoji !== 'string' || !Number.isInteger(r.count) || r.count < 1 || typeof r.self !== 'boolean'))
         throw new AgentRuntimeError('INVALID_DATA', 'Invalid reaction snapshot.');
-      return { ok: true, messageId: id, chat: message.chat, reactions, observedAt: new Date(snapshot.observed).toISOString(), coverage: 'Last observed badge snapshot; no live refresh or reactor identities.' };
+      return { ok: true, messageId: id, chat: message.chat, reactions: publicBadges(reactions), observedAt: new Date(snapshot.observed).toISOString() };
     },
     claimMessage() {
       return db.transaction(() => {
@@ -192,7 +193,7 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     finishMessage(id, state = 'handled') { db.query('UPDATE messages SET state=? WHERE id=?').run(state, id); },
     message(id) { return decode(db.query('SELECT * FROM messages WHERE id=?').get(id)); },
     conversations() {
-      return db.query('SELECT chat,COUNT(*) count,MIN(time) first,MAX(time) last FROM messages GROUP BY chat ORDER BY last DESC').all().map(row => ({ ...row, coverage: 'Observed visible tails only; not a complete Teams archive.' }));
+      return db.query('SELECT chat,COUNT(*) count,MIN(time) first,MAX(time) last FROM messages GROUP BY chat ORDER BY last DESC').all();
     },
     history(chat, limit = 50) { return db.query('SELECT * FROM messages WHERE lower(chat)=lower(?) ORDER BY time DESC,seq DESC LIMIT ?').all(chat, Math.max(1, Math.min(200, limit))).reverse().map(decode); },
     search(query, chat = null) { return db.query('SELECT * FROM messages WHERE (? IS NULL OR chat=?) AND instr(lower(body),lower(?))>0 ORDER BY time DESC LIMIT 100').all(chat, chat, query).map(decode); },

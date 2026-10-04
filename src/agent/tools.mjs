@@ -6,7 +6,7 @@ import { AgentRuntimeError, failure } from './errors.mjs';
 import { conversationId, sameReadScope } from './conversations.mjs';
 import { executeSandbox } from './sandbox.mjs';
 import { validateAction } from './executor.mjs';
-import { HISTORY_COVERAGE } from './intake.mjs';
+import { publicMessage } from './message-view.mjs';
 
 const string = z.string().min(1).max(8000);
 const chat = z.string().min(1).max(300);
@@ -53,9 +53,9 @@ async function review({ prompt, options = {}, context, source, version, plan, st
     };
     const definitions = {
       list_conversations: { parameters: z.object({}), execute: () => ({ ok: true, conversations: store.conversations().filter(c => chatAllowed(livePermissions.readChats, c.chat)) }) },
-      read_conversation: { parameters: z.object({ chat, limit: z.number().int().min(1).max(200) }), execute: args => { assertPermission(p, 'read_conversation', args.chat); return { ok: true, messages: store.history(args.chat, args.limit).map(r => ({ id: r.id, message: r.value })), coverage: HISTORY_COVERAGE }; } },
+      read_conversation: { parameters: z.object({ chat, limit: z.number().int().min(1).max(200) }), execute: args => { assertPermission(p, 'read_conversation', args.chat); return { ok: true, messages: store.history(args.chat, args.limit).map(r => ({ id: r.id, message: publicMessage(r.value) })) }; } },
       read_reactions: { parameters: z.object({ chat, messageId: chat }), execute: args => store.reactions(args.chat, args.messageId) },
-      search_conversations: { parameters: z.object({ query: string, chat: chat.nullable() }), execute: args => { if (args.chat) assertPermission(livePermissions, 'search_conversations', args.chat); return { ok: true, messages: store.search(args.query, args.chat).filter(r => chatAllowed(livePermissions.readChats, r.chat)).map(r => ({ id: r.id, chat: r.chat, message: r.value })) }; } },
+      search_conversations: { parameters: z.object({ query: string, chat: chat.nullable() }), execute: args => { if (args.chat) assertPermission(livePermissions, 'search_conversations', args.chat); return { ok: true, messages: store.search(args.query, args.chat).filter(r => chatAllowed(livePermissions.readChats, r.chat)).map(r => ({ id: r.id, chat: r.chat, message: publicMessage(r.value) })) }; } },
       send_message: { parameters: z.object({ chat, text: string }), execute: args => { assertPermission(p, 'send_message', args.chat); if (!p.initiateActions.includes('message')) denied(); return ownProposal(() => api.sendMessage(args.chat, args.text)); } },
       alert: { parameters: z.object({ text: string }), execute: args => { if (!p.initiateActions.includes('alert')) denied(); return ownProposal(() => api.alert(args.text)); } },
       set_status: { parameters: z.object({ presence: z.enum(['available', 'busy', 'dnd', 'brb', 'away', 'offline']) }), execute: args => { if (!p.initiateActions.includes('status')) denied(); return ownProposal(() => api.setStatus(args.presence)); } },

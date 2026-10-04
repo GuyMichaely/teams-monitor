@@ -49,6 +49,8 @@ for (const invalid of ['export async function handle( {', 'export const handle =
     const read = await evaluate(store);
     assert.equal(read.ok, true);
     assert.equal(read.value.reactions[0].count, 2, 'latest duplicate poll refreshes the separate badge snapshot');
+    assert.deepEqual(read.value.reactions, [{ emoji: badge.emoji, count: 2, self: badge.self }]);
+    assert.equal(Object.hasOwn(read.value, 'coverage'), false);
     assert.deepEqual(read.actions, [], 'explicit read creates no action');
     assert.equal(id, null);
     await savePolicy(policy(`return actions.readReactions('Bob', ${JSON.stringify(messageId)});`));

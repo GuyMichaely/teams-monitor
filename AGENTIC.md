@@ -37,6 +37,25 @@ leaving the app available to start again. **Quit TM** in the window or tray menu
 cancels startup if necessary, stops the owned stack and exits the native app.
 Closing the window with X still hides it without stopping the system.
 
+To control this installed stack without clicking the window, run from this checkout:
+
+```powershell
+bun run system:start
+bun run system:status
+bun run system:stop
+bun run system:restart
+bun run system:quit
+```
+
+Start launches the tray through the existing Explorer desktop if absent, or resumes
+its system if already present. Stop leaves the tray available. Restart stops and
+starts the full owned stack. Commands wait for completion and return JSON status;
+Quit stops the stack and exits the tray, allowing it to be rebuilt. Errors exit
+nonzero. Local IPC is scoped to this checkout, Windows session and
+user; it is never exposed through the dashboard/tunnel. No UI automation or PID
+adoption is involved. An older installed tray must be quit and rebuilt once with
+`powershell.exe -NoProfile -File scripts/install-desktop.ps1 -BuildOnly`.
+
 This runs real Teams, the configured model and real phone delivery. Reply policy
 still gates outgoing Teams messages. Agent Read only/Paused do not disable
 deterministic actions. No fake-data preview or simulated application mode exists;
@@ -79,8 +98,7 @@ See POLICY-API.md and automation/policy-api.d.ts for precise fields and typed ho
 Message trigger is a literal; wakes, interventions and action results have separate
 context interfaces. No message `type`, arbitrary property signatures or legacy
 `latest`/`chat`/`ignoreAuthors`/`notifyAll` context aliases are supplied.
-History contains observed visible tails, not a complete Teams archive. Reactions
-are synthetic messages with an unknown reactor, never inferred actor identities.
+Reactions are synthetic messages with an unknown reactor, never inferred actor identities.
 Only reactions to the user's own messages automatically trigger policy. Other
 authors' badge snapshots are omitted from automatic context/history. Use
 `actions.readReactions(chat, recordedMessageId)` or scoped `read_reactions` to

@@ -1,6 +1,5 @@
 /** A visible Teams badge snapshot. Counts include your own reaction, if self is true. */
 export interface ReactionBadge {
-  key: string;
   emoji: string;
   count: number;
   self: boolean;
@@ -148,8 +147,6 @@ export interface PolicyContext extends BasePolicyContext {
   reaction: Reaction | null;
   mentionNames: string[];
   brief: string;
-  /** Fixed scope description supplied by intake; not a computed completeness score. */
-  coverage: string;
 }
 /** Context for onWake(). */
 export interface WakeContext extends BasePolicyContext {
@@ -192,7 +189,6 @@ export type ReactionsResult = Failure | {
   chat: string;
   reactions: ReactionBadge[];
   observedAt: string;
-  coverage: string;
 };
 export interface PolicyActions {
   /** Reads the last observed snapshot; messageId is ctx.messageId / a conversation tool's row ID. */

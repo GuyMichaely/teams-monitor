@@ -4,8 +4,11 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -157,6 +160,63 @@ namespace TeamsMonitorDesktop {
         public void Dispose() { registration.Unregister(null); changed.Dispose(); }
     }
 
+    // Checkout/session-scoped IPC. Only the current Windows user can connect;
+    // network logons are denied. No TCP listener or arbitrary command execution.
+    sealed class TrayCommands : IDisposable {
+        readonly object sync = new object();
+        readonly HashSet<NamedPipeServerStream> pipes = new HashSet<NamedPipeServerStream>();
+        readonly Func<string, Task<string>> dispatch;
+        readonly Action<string> completed;
+        readonly string name;
+        bool disposed;
+        public static string Name(string root) {
+            return Program.InstanceName(root).Substring(6) + "_" + Process.GetCurrentProcess().SessionId + "_control";
+        }
+        public TrayCommands(string root, Func<string, Task<string>> handler, Action<string> afterResponse) {
+            name = Name(root); dispatch = handler; completed = afterResponse;
+            for (int i = 0; i < 4; i++) Listen();
+        }
+        async void Listen() {
+            while (true) {
+                NamedPipeServerStream pipe;
+                string completedAction = null;
+                lock (sync) {
+                    if (disposed) return;
+                    var security = new PipeSecurity(); security.SetAccessRuleProtection(true, false);
+                    security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
+                    security.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User, PipeAccessRights.FullControl, AccessControlType.Allow));
+                    pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 4, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 256, 4096, security);
+                    pipes.Add(pipe);
+                }
+                try {
+                    await Task.Factory.FromAsync(pipe.BeginWaitForConnection, pipe.EndWaitForConnection, null).ConfigureAwait(false);
+                    // Commands are small ASCII lines; reject oversized/idle clients.
+                    var input = new StringBuilder(); var one = new byte[1];
+                    var deadline = Task.Delay(5000);
+                    while (input.Length <= 16) {
+                        var read = pipe.ReadAsync(one, 0, 1);
+                        if (await Task.WhenAny(read, deadline).ConfigureAwait(false) != read) throw new TimeoutException();
+                        if (await read.ConfigureAwait(false) == 0) throw new IOException();
+                        if (one[0] == 10) break;
+                        input.Append((char)one[0]);
+                    }
+                    if (input.Length > 16) throw new IOException();
+                    string response = await dispatch(input.ToString()).ConfigureAwait(false);
+                    completedAction = input.ToString();
+                    byte[] output = Encoding.UTF8.GetBytes(response + "\n");
+                    var writing = pipe.WriteAsync(output, 0, output.Length);
+                    if (await Task.WhenAny(writing, Task.Delay(5000)).ConfigureAwait(false) != writing) throw new TimeoutException();
+                    await writing.ConfigureAwait(false);
+                } catch (IOException) { } catch (ObjectDisposedException) { } catch (TimeoutException) { }
+                finally { lock (sync) { pipes.Remove(pipe); pipe.Dispose(); } }
+                if (completedAction != null) completed(completedAction);
+            }
+        }
+        public void Dispose() {
+            lock (sync) { disposed = true; foreach (var pipe in pipes) pipe.Dispose(); pipes.Clear(); }
+        }
+    }
+
     sealed class TrayApplication : IDisposable {
         readonly string root, bun, logs, session;
         OwnedJob job = new OwnedJob();
@@ -171,8 +231,12 @@ namespace TeamsMonitorDesktop {
         readonly Button quit = new Button();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
         readonly AwakeSignal awakeSignal;
+        readonly TrayCommands commands;
+        readonly SemaphoreSlim commandGate = new SemaphoreSlim(1, 1);
+        int commandCount;
+        string startError;
         Process supervisor;
-        bool busy, quitting, disposed, systemStopped, awakePolicyPending, keepAwakeEnabled = true;
+        bool busy, quitting, quitPending, disposed, systemStopped, awakePolicyPending, stackHealthy, keepAwakeEnabled = true;
         Task awakePolicyTask;
         CancellationTokenSource startup;
         // Self-test injection only; the installed app always uses real local control/processes.
@@ -208,6 +272,11 @@ namespace TeamsMonitorDesktop {
             tray.MouseClick += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) Show(); };
             // Force the handle now so save notifications can always marshal to its UI thread.
             var windowHandle = window.Handle;
+            commands = new TrayCommands(root, DispatchCommand, delegate(string action) {
+                if (action != "quit") return;
+                try { window.BeginInvoke(new Action(async delegate { await Quit(); })); }
+                catch (InvalidOperationException) { }
+            });
             awakeSignal = new AwakeSignal(root, delegate {
                 try {
                     window.BeginInvoke(new Action(async delegate {
@@ -220,7 +289,7 @@ namespace TeamsMonitorDesktop {
             });
             timer.Interval = 5000; timer.Tick += async delegate {
                 if (show.WaitOne(0)) Show();
-                if (!busy && !quitting) await Refresh();
+                if (!busy && !quitting && !quitPending && commandCount == 0) await Refresh();
             }; timer.Start();
             window.Shown += async delegate { await Start(); };
             window.FormClosing += delegate(object sender, FormClosingEventArgs e) {
@@ -243,6 +312,54 @@ namespace TeamsMonitorDesktop {
         }
         void Open(string target) { try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); } catch { status.Text = "Could not open " + (target == dashboard ? "dashboard." : "logs."); } }
         public void Show() { window.Show(); window.WindowState = FormWindowState.Normal; window.Activate(); }
+        Task<string> DispatchCommand(string action) {
+            var result = new TaskCompletionSource<string>();
+            try {
+                window.BeginInvoke(new Action(async delegate {
+                    try { result.SetResult(await Command(action)); }
+                    catch { result.SetResult(new JavaScriptSerializer().Serialize(new { ok = false, error = "TRAY_CONTROL_FAILED" })); }
+                }));
+            } catch (InvalidOperationException) { result.SetResult("{\"ok\":false,\"error\":\"TRAY_UNAVAILABLE\"}"); }
+            return result.Task;
+        }
+        string CommandStatus(bool ok = true, string error = null) {
+            bool alive = supervisor != null && !supervisor.HasExited;
+            return new JavaScriptSerializer().Serialize(new {
+                ok = ok, error = error, trayPid = Process.GetCurrentProcess().Id,
+                state = quitting || quitPending ? "quitting" : busy ? (startup != null ? "starting" : "busy") : systemStopped ? "stopped" : alive && startError == null && stackHealthy ? "running" : "needs_attention",
+                status = status.Text, supervisorPid = alive ? (int?)supervisor.Id : null
+            });
+        }
+        async Task<string> Command(string action) {
+            if (action != "start" && action != "stop" && action != "restart" && action != "status" && action != "quit") return CommandStatus(false, "INVALID_COMMAND");
+            if (quitting || quitPending || disposed) return CommandStatus(false, "TRAY_UNAVAILABLE");
+            if (action == "status") return CommandStatus();
+            // Stop/restart can cancel startup even while another command is awaiting it.
+            if (action == "stop" || action == "restart" || action == "quit") CancelStartup();
+            commandCount++;
+            await commandGate.WaitAsync();
+            try {
+                while (busy && !quitting) await Task.Delay(50);
+                if (quitting || quitPending || disposed) return CommandStatus(false, "TRAY_UNAVAILABLE");
+                Log("local_command action=" + action);
+                if (action == "quit") quitPending = true;
+                if (action == "stop" || action == "restart" || action == "quit") await Stop();
+                if (action == "start" || action == "restart") await Start();
+                if ((action == "start" || action == "restart") && startError != null) return CommandStatus(false, startError);
+                if (!systemStopped) {
+                    // Component-start API acknowledges launch before the monitor
+                    // publishes readiness. Do not report successful startup early.
+                    var readiness = Stopwatch.StartNew();
+                    do {
+                        await Refresh();
+                        if (stackHealthy || supervisor == null || supervisor.HasExited) break;
+                        await Task.Delay(500);
+                    } while (readiness.ElapsedMilliseconds < 20000 && !quitting);
+                }
+                bool success = action == "stop" || action == "quit" ? supervisor == null : stackHealthy && supervisor != null && !supervisor.HasExited && !systemStopped;
+                return CommandStatus(success, success ? null : "STACK_NOT_READY");
+            } finally { commandGate.Release(); commandCount--; }
+        }
         void SetAwake(bool active) {
             active = active && !quitting && !disposed && !systemStopped;
             bool wasActive = keepAwake.Active, wasFailed = keepAwake.Failed;
@@ -302,7 +419,8 @@ namespace TeamsMonitorDesktop {
             });
         }
         async Task Start() {
-            if (busy || quitting) return;
+            if (busy || quitting || quitPending) return;
+            startError = null;
             startup = new CancellationTokenSource(); var cancellation = startup.Token;
             busy = true; start.Enabled = false; stop.Text = "Cancel startup"; stop.Enabled = true; systemStopped = false; status.Text = "Starting system…";
             Exception startupError = null;
@@ -345,6 +463,7 @@ namespace TeamsMonitorDesktop {
                 if (startupError != null) {
                 var error = startupError;
                 if (cancellation.IsCancellationRequested) {
+                    startError = "STARTUP_CANCELLED";
                     systemStopped = true;
                     try { await StopOwnedTree(); }
                     catch (Exception cleanupError) { Log("startup_cancel_cleanup_failed type=" + cleanupError.GetType().Name); }
@@ -354,6 +473,7 @@ namespace TeamsMonitorDesktop {
                     return;
                 }
                 string code = error is InvalidOperationException ? error.Message : error.GetType().Name;
+                startError = code;
                 Log("startup_failed code=" + code);
                 status.Text = code == "EXISTING_GUI" ? "Another TM system is running.\nQuit its tray app before starting this version." :
                     code == "EXISTING_SUPERVISOR" ? "A GUI supervisor is already running.\nStop it with bun run gui:stop, then click Start system." :
@@ -404,6 +524,7 @@ namespace TeamsMonitorDesktop {
         }
         async Task Refresh() {
             busy = true;
+            stackHealthy = false;
             try {
                 if (supervisor == null || supervisor.HasExited) {
                     SetAwake(false);
@@ -421,6 +542,7 @@ namespace TeamsMonitorDesktop {
                 var value = await Control("status");
                 status.Text = "GUI supervisor: " + value["gui"] + "\nMonitor: " + value["monitor"] + "\nTunnel: " + value["tunnel"];
                 bool healthy = Convert.ToString(value["gui"]) == "Running" && Convert.ToString(value["monitor"]) == "Running" && Convert.ToString(value["tunnel"]) == "Running";
+                stackHealthy = healthy;
                 tray.Text = window.Text + (healthy ? " — running" : " — needs attention");
             } catch { status.Text = "GUI is not responding.\nThe supervisor may be recovering it.\nOpen logs for details."; tray.Text = window.Text + " — GUI unavailable"; }
             finally { busy = false; }
@@ -436,7 +558,7 @@ namespace TeamsMonitorDesktop {
             tray.Visible = false; window.Quitting = true; window.Close(); Application.ExitThread();
         }
         public void Run() { Application.Run(window); }
-        public void Dispose() { disposed = true; awakeSignal.Dispose(); keepAwake.Dispose(); timer.Dispose(); tray.Dispose(); job.Dispose(); if (supervisor != null) supervisor.Dispose(); window.Dispose(); }
+        public void Dispose() { disposed = true; commands.Dispose(); awakeSignal.Dispose(); keepAwake.Dispose(); timer.Dispose(); tray.Dispose(); job.Dispose(); if (supervisor != null) supervisor.Dispose(); window.Dispose(); }
         internal static void TestStartupCancellation(string home) {
             string runtime = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".bun", "bin", "bun.exe");
             foreach (string phase in new[] { "prepare", "status", "start-components", "quit" }) {
@@ -481,6 +603,53 @@ namespace TeamsMonitorDesktop {
             var deadline = Stopwatch.StartNew();
             while (!condition() && deadline.ElapsedMilliseconds < 12000) { Application.DoEvents(); Thread.Sleep(5); }
             if (!condition()) throw new Exception(error);
+        }
+        static Task<Dictionary<string, object>> PipeRequest(string home, string action) {
+            return Task.Run(async delegate {
+                using (var client = new NamedPipeClientStream(".", TrayCommands.Name(home), PipeDirection.InOut, PipeOptions.Asynchronous)) {
+                    client.Connect(2000);
+                    byte[] request = Encoding.ASCII.GetBytes(action + "\n"); await client.WriteAsync(request, 0, request.Length);
+                    using (var reader = new StreamReader(client)) return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(await reader.ReadLineAsync());
+                }
+            });
+        }
+        internal static void TestCommandBridge(string home) {
+            string runtime = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".bun", "bin", "bun.exe");
+            using (var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset))
+            using (var app = new TrayApplication(home, runtime, showEvent)) {
+                app.timer.Stop(); var children = new List<Process>(); bool blockStart = false, entered = false;
+                app.testControl = async delegate(string action, int pid, CancellationToken token) {
+                    if (blockStart && action == "start-components") { entered = true; await Task.Delay(Timeout.Infinite, token); }
+                    return new Dictionary<string, object> { { "enabled", false }, { "url", "http://127.0.0.1:1" }, { "gui", "Running" }, { "monitor", "Running" }, { "tunnel", "Running" } };
+                };
+                app.testSupervisor = delegate(OwnedJob job) {
+                    var child = job.Start(runtime, "--no-env-file -e " + OwnedJob.Quote("setInterval(()=>{},1000)"), home, Path.Combine(home, "ipc.out"), Path.Combine(home, "ipc.err"));
+                    children.Add(Process.GetProcessById(child.Id)); return child;
+                };
+                foreach (string action in new[] { "start", "status", "restart", "stop", "stop", "invalid" }) {
+                    var request = PipeRequest(home, action);
+                    PumpUntil(delegate { return request.IsCompleted; }, "IPC command did not complete: " + action);
+                    var result = request.GetAwaiter().GetResult();
+                    bool valid = action != "invalid";
+                    if (Convert.ToBoolean(result["ok"]) != valid) throw new Exception("Wrong IPC result: " + action);
+                    if (valid && Convert.ToString(result["state"]) != (action == "stop" ? "stopped" : "running")) throw new Exception("Wrong IPC state: " + action);
+                    if (action == "restart" && !children[0].WaitForExit(2000)) throw new Exception("IPC restart left prior child alive.");
+                }
+                if (app.supervisor != null || app.window.IsDisposed) throw new Exception("IPC stop must retain only tray/window.");
+                blockStart = true;
+                var starting = PipeRequest(home, "start");
+                PumpUntil(delegate { return entered; }, "IPC start did not reach cancellation phase.");
+                var snapshot = PipeRequest(home, "status");
+                PumpUntil(delegate { return snapshot.IsCompleted; }, "IPC status blocked behind startup.");
+                if (Convert.ToString(snapshot.Result["state"]) != "starting") throw new Exception("IPC status did not report startup.");
+                var stopping = PipeRequest(home, "stop");
+                PumpUntil(delegate { return starting.IsCompleted && stopping.IsCompleted; }, "IPC stop did not cancel startup.");
+                if (Convert.ToBoolean(starting.Result["ok"]) || !Convert.ToBoolean(stopping.Result["ok"]) || app.supervisor != null || !app.systemStopped || app.busy) throw new Exception("IPC cancellation left active state.");
+                foreach (var child in children) { if (!child.WaitForExit(2000)) throw new Exception("IPC stop left owned child alive."); child.Dispose(); }
+                var closing = PipeRequest(home, "quit");
+                PumpUntil(delegate { return closing.IsCompleted && app.window.IsDisposed; }, "IPC quit did not close tray/window.");
+                if (!Convert.ToBoolean(closing.Result["ok"]) || app.tray.Visible) throw new Exception("IPC quit failed.");
+            }
         }
     }
 
@@ -533,6 +702,7 @@ namespace TeamsMonitorDesktop {
         static void SelfTest(string report) {
             SelfTestSaveSignal(report);
             TrayApplication.TestStartupCancellation(Path.GetDirectoryName(report));
+            TrayApplication.TestCommandBridge(Path.GetDirectoryName(report));
             var requests = new List<uint>();
             var awake = new KeepAwake(delegate(uint flags) { requests.Add(flags); return 0x80000000; });
             awake.SetActive(true); awake.SetActive(true);
@@ -589,7 +759,7 @@ namespace TeamsMonitorDesktop {
                 if (!first || second) throw new Exception("Duplicate launch lock failed.");
                 one.ReleaseMutex();
             }
-            File.WriteAllText(report, "Passed: startup cancellation before launch/during health wait/component start, restart after cancel, quit during startup; immediate save signal from helper to UI thread, on/off, absent listener; keep-awake Windows acquire/release, flags, hide retention, stop/restart, failure retries and disposal; close hides; explicit quit closes; child starts in owned job; descendants inherit; job disposal stops entire tree; duplicate launch is locked.");
+            File.WriteAllText(report, "Passed: named-pipe start/status/restart/stop/quit, invalid command rejection, status during startup and stop cancellation; startup cancellation before launch/during health wait/component start, restart after cancel, quit during startup; immediate save signal from helper to UI thread, on/off, absent listener; keep-awake Windows acquire/release, flags, hide retention, stop/restart, failure retries and disposal; close hides; explicit quit closes; child starts in owned job; descendants inherit; job disposal stops entire tree; duplicate launch is locked.");
         }
         static void SelfTestSaveSignal(string report) {
             // A copied helper derives this private home, never the actual installed tray's event.

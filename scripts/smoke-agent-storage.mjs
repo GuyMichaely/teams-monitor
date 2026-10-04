@@ -22,7 +22,7 @@ try {
   assert.equal(store.claimMessage(), null);
   assert.equal(store.history('Alex').length, 2);
   assert.equal(store.search('one', 'Alex').length, 1);
-  assert.match(store.conversations()[0].coverage, /not a complete/);
+  assert.equal(Object.hasOwn(store.conversations()[0], 'coverage'), false);
 
   store.plan('run', [{ id: 'interrupted', kind: 'message', due: now }, { id: 'future', kind: 'status', due: now + 60000 }]);
   const attempt = store.claimAction(now);
@@ -50,5 +50,5 @@ try {
   cfg.replyPolicy.entries = [];
   await assert.rejects(teamsOperation({ operation: 'send', chat: 'Alex', text: 'hello', expiresAt: now + 60000 }, io), error => error.scheduleCode === 'blocked');
   assert.equal(sends, 1);
-  console.log('Agent storage/broker groundwork passed: ordered claims, ID dedupe, archive coverage, uncertainty recovery, serialization and fresh permissions.');
+  console.log('Agent storage/broker groundwork passed: ordered claims, ID dedupe, uncertainty recovery, serialization and fresh permissions.');
 } finally { store.close(); }

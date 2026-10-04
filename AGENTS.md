@@ -71,6 +71,9 @@ badges are omitted from automatic context; readReactions/read_reactions explicit
 read the latest stored per-message snapshot, enforcing readChats for model/wakes.
 Converter lives under scripts/lib and runs only through migrate-agent-policy.mjs
 or trial setup. No runtime YAML conversion. POLICY-API.md is the detailed reference.
+Policy/tool/UI coverage fields and boilerplate removed by user request. Public
+ReactionBadge has only emoji/count/self; Teams' badge key remains internal for
+snapshot comparison. Reaction.key remains the reaction identifier on a change.
 SDK tools enforce per-call/global/wake ceilings and stage effects/notes until
 successful policy commit. Originals, notes and sessions stay local in SQLite;
 SDK tracing/export is disabled. Other YAML settings and Android delivery remain.
@@ -213,6 +216,7 @@ Health state can arrive by Worker FCM push, Worker safety poll, or (with Worker 
 - `GUI_TOKEN` is the selected GUI/WS/control auth layer; Cloudflare Access was rejected.
 - Task Scheduler/autostart was blocked/rejected. Do not add it back without a new decision.
 - After server changes, restart long-running GUI/orchestrator processes.
+- Agentic system control: `bun run system:start`, `system:stop`, `system:restart`, `system:status`, `system:quit` uses current-user-only, network-denied, checkout/session-scoped named-pipe IPC to the installed tray. New trays launch through existing Explorer using start-desktop.ps1, not through a tool-owned process. Commands wait for completion; stop/restart/quit can cancel startup; status does not mutate anything. Quit waits for tray exit for safe rebuilds. Only tray-owned trees are affected. An older installed tray must be quit/rebuilt once. Prefer these commands to Computer Use for agentic startup/restarts/rebuilds; main has not been changed.
 
 ## Hard-won gotchas
 

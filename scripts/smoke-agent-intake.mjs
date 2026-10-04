@@ -22,7 +22,7 @@ for (const expected of ['a', 'b', 'c']) {
   const ctx = messageContext(row, store, config, '');
   assert.equal(ctx.isDM, true);
   assert.equal(ctx.trigger, 'message');
-  for (const legacy of ['latest', 'chat', 'ignoreAuthors', 'notifyAll', 'outcome']) assert.equal(Object.hasOwn(ctx, legacy), false);
+  for (const legacy of ['latest', 'chat', 'ignoreAuthors', 'notifyAll', 'outcome', 'coverage']) assert.equal(Object.hasOwn(ctx, legacy), false);
   assert.equal(Object.hasOwn(ctx.message, 'reactions'), false, 'other authors\' badges are not automatically exposed');
   store.completeMessage(row.id, row.id, [{ id: expected, kind: 'message', chat: 'Alice', text: expected }], {});
 }
@@ -40,6 +40,8 @@ messages[1].reactions = [{ key: 'thumb', emoji: '👍', count: 1, self: false }]
 assert.equal(intake({ store, chat: 'Alice', messages, config, activatedAt, reactions }).length, 0, 'reactions on someone else\'s message never queue automatic work');
 messages[3].reactions = [{ key: 'thumb', emoji: '👍', count: 1, self: false }];
 assert.equal(intake({ store, chat: 'Alice', messages, config, activatedAt, reactions }).length, 1);
+assert.deepEqual(messageContext({ chat: 'Alice', value: messages[3] }, store, config, '').message.reactions,
+  [{ emoji: '👍', count: 1, self: false }], 'policy badges omit the internal comparison key');
 assert.equal(store.claimMessage().value.author, 'Unknown reactor');
 const lease = await executorLease(0);
 await lease();
