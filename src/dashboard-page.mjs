@@ -154,9 +154,10 @@ function dashboardClient() {
     status('pollBadge', stale ? 'Stale' : active ? 'Polling' : running ? 'Waiting' : 'Stopped', stale ? 'warn' : running ? 'good' : 'neutral');
     setText('pollStatus', active ? (poll.stage || 'Polling') : poll?.completedAt ? 'Last poll ' + (poll.errors ? 'finished with errors ' : 'completed ') + age(poll.completedAt) : 'No poll recorded yet');
     setText('pollDetail', active && poll.currentChat ? poll.currentChat : poll?.startedAt ? time(poll.startedAt) + (poll.durationMs != null ? ' · ' + (poll.durationMs / 1000).toFixed(1) + 's duration' : '') : 'Start the orchestrator to see live activity here.');
-    for (const [id, field] of [['pollChats', 'targets'], ['pollHandled', 'handled'], ['pollDuplicates', 'duplicates'], ['pollErrors', 'errors']]) setText(id, poll?.[field] ?? '—');
+    for (const [id, field] of [['pollChats', 'unreadChats'], ['pollHandled', 'handled'], ['pollDuplicates', 'duplicates'], ['pollErrors', 'errors']]) setText(id, poll?.[field] ?? '—');
+    $('pollChats').title = poll?.unreadCheckedAt ? 'Teams unread chats as of ' + time(poll.unreadCheckedAt) : 'Teams unread count is unavailable';
     setText('pollNext', running && poll?.nextPollAt && !active ? (Date.now() < Date.parse(poll.nextPollAt) ? 'Next poll in ' + Math.ceil((Date.parse(poll.nextPollAt) - Date.now()) / 1000) + 's' : 'Next poll due') : active ? 'Processing' : 'Monitor stopped');
-    setText('pollExtra', poll ? `${poll.examined} chats examined · ${poll.skipped} skipped${poll.error ? ' · ' + poll.error : ''}` : 'Counts will appear after the first poll.');
+    setText('pollExtra', poll ? `${poll.examined} chats examined · ${poll.reactionChecks || 0} reaction check${poll.reactionChecks === 1 ? '' : 's'}${poll.error ? ' · ' + poll.error : ''}` : 'Counts will appear after the first poll.');
   }
   function groupMessages() { groups = buildActivityGroups(filterActivityAfter(items, clearedThrough)); }
   function outcome(group) {

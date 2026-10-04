@@ -37,7 +37,7 @@ const now = Date.now();
 const auditFixture = [{ kind: "flow", flowId: "dashboard-fixture", flowStartedAt: new Date(now - 60000).toISOString(), at: new Date(now - 60000).toISOString(), stage: "message", chat: "Test chat", latest: { author: "Jordan", text: "A retained dashboard fixture." } }];
 await writeFile(join(DATA_DIR, "activity.jsonl"), auditFixture.map(row => JSON.stringify(row)).join("\n") + "\n");
 const poll = createPoll(5000);
-await poll.update({ targets: 2, examined: 2, handled: 1, status: "processing" });
+await poll.update({ targets: 2, unreadChats: 1, unreadFound: 2, reactionChecks: 1, examined: 2, handled: 1, status: "processing" });
 await poll.finish();
 
 const db = agentStore();
@@ -63,6 +63,8 @@ try {
   const pollState = await (await request("/api/poll")).json();
   assert.equal(pollState.status, "completed");
   assert.equal(pollState.handled, 1);
+  assert.equal(pollState.unreadChats, 1);
+  assert.equal(pollState.reactionChecks, 1);
   assert.equal((await request("/api/poll", "POST", {})).status, 405);
 
   const originalPolicyResponse = await request("/api/agent/policy");

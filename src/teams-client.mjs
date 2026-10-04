@@ -1,4 +1,5 @@
 import { AgentRuntimeError } from './agent/errors.mjs';
+import { readReceipt } from './teams-read-state.mjs';
 
 export function teamsClient(config, owner) {
   const base = `http://127.0.0.1:${config.gui?.port || 8090}`;
@@ -13,6 +14,7 @@ export function teamsClient(config, owner) {
   return {
     unread: signal => request('/api/teams/operation', { operation: 'unread' }, signal),
     read: (chat, signal) => request('/api/teams/operation', { operation: 'read', chat }, signal),
+    markRead: (chat, messages, signal) => request('/api/teams/operation', { operation: 'mark_read', chat, receipt: readReceipt(messages), owner }, signal),
     send: (chat, text, expiresAt, signal, action) => request('/api/teams/operation', { operation: 'send', chat, text, expiresAt, owner, action }, signal),
     async status(presence, expiresAt, signal, action) {
       const response = await fetch(base + '/api/teams/presence', { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },

@@ -29,9 +29,14 @@ export async function scan({ store, client, config, activatedAt, state, cursor =
   let failure;
   try {
     const echo = !!config.debug?.echoLoop;
-    const targets = [...new Set(echo ? replyPolicy(config).entries : await client.unread())];
+    let unreadSnapshot = [];
+    if (!echo) {
+      unreadSnapshot = [...new Set(await client.unread())];
+      await poll.update({ unreadFound: unreadSnapshot.length, unreadChats: unreadSnapshot.length, unreadCheckedAt: new Date().toISOString() });
+    }
+    const targets = [...new Set(echo ? replyPolicy(config).entries : unreadSnapshot)];
     const observed = Object.keys(state.chats || {}).filter(chat => state.chats[chat]?.reactionSnapshot?.activationId === activatedAt && !targets.includes(chat));
-    if (!echo && observed.length) targets.push(observed[cursor % observed.length]);
+    if (!echo && observed.length) { targets.push(observed[cursor % observed.length]); poll.state.reactionChecks = 1; }
     await poll.update({ targets: targets.length, status: 'processing', stage: 'Reading chats' });
     state.chats ||= {};
     for (const chat of targets) {
@@ -48,7 +53,30 @@ export async function scan({ store, client, config, activatedAt, state, cursor =
           await audit({ kind: 'flow', flowId: id, flowStartedAt: new Date(row.observed).toISOString(), pollId: poll.state.id, stage: 'message', chat, latest: row.value, historyCount: messages.length });
         }
         if (!ids.length) poll.state.duplicates++;
+        try {
+          // Intake intentionally ignores malformed DOM records. Do not clear
+          // Teams' unread marker for a tail we could not fully retain.
+          const completeCapture = messages.length > 0 && messages.every(message => message && typeof message.text === 'string' && typeof message.author === 'string');
+          const readResult = completeCapture ? await client.markRead(chat, messages)
+            : { verified: false, state: 'unconfirmed', attempted: false, reason: 'incomplete-capture' };
+          if (readResult?.attempted || !readResult?.verified) await audit({ kind: 'poll_read_state', pollId: poll.state.id, chat, readResult });
+          if (!readResult?.verified && readResult?.state !== 'changed') poll.state.errors++;
+        } catch {
+          const readResult = { verified: false, state: 'unconfirmed', attempted: null, reason: 'Read state could not be confirmed.' };
+          poll.state.errors++;
+          await audit({ kind: 'poll_read_state', pollId: poll.state.id, chat, readResult });
+        }
       } catch { poll.state.errors++; await audit({ kind: 'poll_error', chat, error: 'Chat read failed; no messages queued.' }); }
+    }
+    if (!echo) {
+      try {
+        const unreadAfter = [...new Set(await client.unread())];
+        await poll.update({ unreadChats: unreadAfter.length, unreadCheckedAt: new Date().toISOString() });
+      } catch {
+        poll.state.errors++;
+        await poll.update({ unreadChats: null, unreadCheckedAt: null });
+        await audit({ kind: 'poll_error', pollId: poll.state.id, error: 'Teams unread count could not be refreshed.' });
+      }
     }
     await saveState(state);
   } catch (error) { failure = error; throw error; }

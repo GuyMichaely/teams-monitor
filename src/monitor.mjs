@@ -6,9 +6,8 @@
 // Teams isn't used for anything else while the monitor runs, so there's no
 // restore-on-exit (and none on a crash either).
 //
-// SIDE EFFECT: opening a chat to read it marks it as read in your Teams. That is
-// inherent to the GUI-hook approach. The orchestrator is meant to triage on your
-// behalf, but be aware your own unread markers will move.
+// Opening a chat can mark it read, but is not reliable for an already-open chat.
+// The orchestrator explicitly acknowledges after durable capture.
 
 import {
   getChatSession,
@@ -18,6 +17,7 @@ import {
   readOpenChat,
   evalOnPage,
 } from "./teams.mjs";
+import { unreadChatsOnSession, markReadOnSession } from './teams-read-state.mjs';
 
 const settle = (ms = 600) => new Promise((r) => setTimeout(r, ms));
 
@@ -30,12 +30,7 @@ const settle = (ms = 600) => new Promise((r) => setTimeout(r, ms));
 export async function getUnreadChats(port) {
   const session = await getChatSession(port);
   try {
-    const res = await setUnreadFilter(session, true);
-    if (!res.ok) throw new Error(`Could not toggle Unread filter: ${res.reason}`);
-    // Only wait for a re-render when we actually flipped the filter on.
-    if (!res.wasOn) await settle();
-    const chats = await listChats(session);
-    return chats.map((c) => c.name);
+    return await unreadChatsOnSession(session);
   } finally {
     session.close();
   }
@@ -53,7 +48,7 @@ export async function getAllChats(port) {
 
 /**
  * Open `name` and read its recent messages. Returns { chat, messages }.
- * NOTE: this marks the chat as read (see file header).
+ * Opening may mark read, but does not guarantee it. markChatRead verifies it.
  */
 export async function readChat(name, limit = 20, port) {
   const session = await getChatSession(port);
@@ -84,6 +79,13 @@ export async function readChat(name, limit = 20, port) {
       await settle(300);
     }
     if (!confirmed) throw new Error('Exact chat header could not be verified');
+    // A chat can reopen at its saved scroll position, above the newest messages.
+    const moved = await evalOnPage(session, `(() => {
+      const pane = document.querySelector('[data-tid="message-pane-list-viewport"]');
+      if (pane.scrollHeight - pane.clientHeight - pane.scrollTop < 4) return false;
+      pane.scrollTop = pane.scrollHeight; return true;
+    })()`);
+    if (moved) await settle(300);
     const messages = await readOpenChat(session, limit);
     return { chat: name, messages };
   } finally {
@@ -93,4 +95,11 @@ export async function readChat(name, limit = 20, port) {
     }
     session.close();
   }
+}
+
+/** Acknowledge only the unchanged, durably captured tail of the exact open chat. */
+export async function markChatRead(name, receipt, port, guard) {
+  const session = await getChatSession(port);
+  try { return await markReadOnSession(session, name, receipt, guard); }
+  finally { session.close(); }
 }
