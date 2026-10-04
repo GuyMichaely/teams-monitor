@@ -242,6 +242,21 @@ const review = await actions.llm('Review this message.', {
 one continues that explicitly named local history; it does not create an
 OpenAI-hosted conversation.
 
+The runtime automatically supplies the exact evaluated policy source/version,
+context values and current proposals in every `llm` request. No file-reading tool
+or manual source copy is needed. `timeoutMs` bounds this model call (also capped
+by `agent.timeoutMs`); keep the enclosing `agent.policyTimeoutMs` longer so the
+policy can handle a timeout and finish its fallback.
+
+[automation/policy.alert-review.ts](automation/policy.alert-review.ts) is a
+ready-to-use alert decision policy. It computes `isDM || mentionsMe`, then asks
+the model to return exactly `ALERT` or `NO_ALERT` within five seconds. A valid
+decision can override the heuristic either way; timeout, provider failure or
+invalid output uses the heuristic. Each call starts fresh. All read/action
+permissions are empty; the model's existing isolated computation tool cannot
+call host tools. Only the policy creates the chosen current-message alert.
+`scripts/smoke-alert-review-policy.mjs` validates it without sending notifications.
+
 ### `actions.wake(prompt, options)`
 
 Schedules a future agent invocation. A wake can include `conversationId`,
