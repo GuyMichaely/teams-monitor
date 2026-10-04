@@ -149,7 +149,7 @@ export async function runEngine({ handle, onWake, onActionResult, signal, client
     await executeAction({ store, client, loadConfig: configLoader, stopped,
       wake: async action => ({ ok: true, ...store.enqueue('wake', action) }),
       onResult: async (outcome, job) => {
-        const row = store.message(job.runId);
+        const row = store.message(job.messageId || job.runId);
         if (row) await flow(row, 'effect', { effect: { message: 'teams_reply', alert: 'phone_alert', status: 'teams_status' }[outcome.action?.kind] || 'agent_wake', status: outcome.state === 'completed' ? 'ok' : 'error', result: outcome.result });
         if (outcome.action?.kind !== 'wake') store.enqueue('action_result', { contextId: `action:${outcome.id}`, outcome });
       } });

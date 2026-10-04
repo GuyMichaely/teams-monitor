@@ -8,12 +8,13 @@
 // Intentionally does NOT suppress re-processing — the orchestrator is allowed to
 // loop (see README / echoLoop).
 
-import { readFile, writeFile, mkdir, appendFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./local-paths.mjs";
+import { appendYamlLog } from './yaml-log.mjs';
 const STATE_FILE = join(DATA_DIR, "state.json");
-const ACTIVITY_LOG = join(DATA_DIR, "activity.jsonl");
+const ACTIVITY_LOG = join(DATA_DIR, "activity.yaml");
 
 async function ensureDir() {
   if (!existsSync(DATA_DIR)) await mkdir(DATA_DIR, { recursive: true });
@@ -57,10 +58,10 @@ export async function markFirstRead(state, chatName, message) {
   return state;
 }
 
-/** Append one line to the activity log (JSONL). */
+/** Append one YAML document to the activity audit log. */
 export async function logActivity(record) {
   await ensureDir();
-  await appendFile(ACTIVITY_LOG, JSON.stringify({ at: new Date().toISOString(), ...record }) + "\n");
+  appendYamlLog(ACTIVITY_LOG, { at: new Date().toISOString(), ...record });
 }
 
 export { DATA_DIR, STATE_FILE, ACTIVITY_LOG };

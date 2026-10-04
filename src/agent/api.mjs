@@ -25,6 +25,12 @@ const presentRecord = row => {
   if (JSON.stringify(value).length > 16000) value = { excerpt: JSON.stringify(value).slice(0, 16000), truncated: true, recordId: row.seq };
   return { seq: row.seq, at: row.at, kind: row.kind, value };
 };
+export const presentAction = row => {
+  let result = null;
+  if (row.result != null) { try { result = JSON.parse(row.result); } catch { result = { error: 'Invalid log format' }; } }
+  const { body, ...fields } = row;
+  return { ...fields, result };
+};
 
 export async function agentAPI({ url, method, body, store, running = false }) {
   const path = url.pathname;
@@ -73,17 +79,19 @@ export async function agentAPI({ url, method, body, store, running = false }) {
     if (active?.conversationId && !modelConversations.some(s => s.id === active.conversationId))
       modelConversations.unshift({ id: active.conversationId, turns: 0, canIntervene: true, active: true });
     return { mode: store.mode(), current: active ? { runId: active.runId, trigger: active.trigger, conversationId: active.conversationId, startedAt: active.startedAt } : null,
-      records: store.records(50).map(presentRecord), actions: store.actions(), conversations: store.conversations(), modelConversations };
+      records: store.records(50).map(presentRecord), actions: store.actions().map(presentAction), conversations: store.conversations(), modelConversations };
   }
   if (path === '/api/agent/mode' && method === 'PUT') return { mode: store.mode(body.mode) };
-  if (path === '/api/agent/invocations' && method === 'GET')
-    return messageInvocations(store, input(url.searchParams.get('messageId'), 128), running ? store.current() : null);
+  if (path === '/api/agent/invocations' && method === 'GET') {
+    const id = input(url.searchParams.get('messageId'), 128);
+    return { ...messageInvocations(store, id, running ? store.current() : null), actions: store.messageActions(id).map(presentAction) };
+  }
   if (path === '/api/agent/conversation' && method === 'GET') {
     const id = conversationId(input(url.searchParams.get('id'), 300)), s = store.session(id);
     if (!s.exists) throw new AgentRuntimeError('NOT_FOUND', 'Conversation has no committed history yet.');
     const bound = value => !value || typeof value !== 'object' ? { error: 'Invalid log format' } :
       JSON.stringify(value).length > 100000 ? { excerpt: JSON.stringify(value).slice(0, 100000), truncated: true } : value;
-    return { id, ...bound(s), archives: store.sessionArchives(id).map(row => ({ recordId: row.seq, at: row.at, ...bound(row.value.previous) })) };
+    return { id, ...bound(s), archives: store.sessionArchives(id).map(row => ({ recordId: row.seq, at: row.at, ...bound(row.value?.previous) })) };
   }
   if (path === '/api/agent/conversation/reset' && method === 'POST') {
     const id = conversationId(input(body.conversationId, 300));

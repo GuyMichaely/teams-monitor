@@ -1,6 +1,8 @@
+import { logYaml } from './dashboard-yaml.mjs';
+
 export function invocationViewHTML(data) {
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const pretty = value => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const pretty = logYaml;
   const time = at => at ? new Date(at).toLocaleString() : '—';
   const detail = (key, label, value) => value == null ? '' : `<details data-invocation-key="${escape(key)}"><summary>${escape(label)}${value?.truncated ? ' · truncated' : ''}</summary><pre>${escape(pretty(value))}</pre></details>`;
   const text = value => typeof value === 'string' ? value : Array.isArray(value) ? value.map(part => part?.text || '').filter(Boolean).join('\n') : '';

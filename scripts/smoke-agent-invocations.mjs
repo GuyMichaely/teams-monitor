@@ -131,6 +131,21 @@ try {
     if (!server.listening) await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
     const response = await fetch(`http://127.0.0.1:${port}/api/agent/invocations?messageId=${encodeURIComponent(msgA)}`);
     assert.equal(response.status, 401);
+    const request = (path, method = 'GET', body) => fetch(`http://127.0.0.1:${port}${path}`, {
+      method, headers: { Authorization: 'Bearer invocation-smoke-token', 'Content-Type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const created = await request('/api/schedules', 'POST', { kind: 'status', presence: 'away', dueAt: new Date(Date.now() + 60000).toISOString() });
+    assert.equal(created.status, 201);
+    const schedule = await created.json();
+    const status = await (await request('/api/agent/status')).json();
+    const action = status.actions.find(row => row.id === 'schedule:' + schedule.id);
+    assert.equal(action.state, 'pending'); assert.equal(action.value.presence, 'away');
+    assert.equal(action.source, 'schedule'); assert(Number.isFinite(action.due));
+    assert(!action.messageId, 'manual schedule has no invented originating message');
+    assert.equal((await request('/api/schedules/' + schedule.id + '/cancel', 'POST')).status, 200);
+    const afterCancel = await (await request('/api/agent/status')).json();
+    assert.equal(afterCancel.actions.find(row => row.id === action.id).state, 'cancelled');
   } finally {
     await close();
   }

@@ -8,6 +8,7 @@ import { startSupervisor } from '../src/gui-supervisor.mjs';
 import { boundedWriter, retainNewest } from '../src/process-diagnostics.mjs';
 import { DATA_DIR, ROOT } from '../src/local-paths.mjs';
 import { loadConfig, saveConfig } from '../src/context.mjs';
+import { parseYamlLogText } from '../src/yaml-log.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label) {
@@ -33,7 +34,7 @@ async function launch(mode, extra = {}) {
     ...extra,
   });
   active.push(supervisor);
-  return { supervisor, directory, events: () => readFileSync(join(supervisor.status().sessionDir, 'supervisor.jsonl'), 'utf8').trim().split('\n').map(JSON.parse) };
+  return { supervisor, directory, events: () => parseYamlLogText(readFileSync(join(supervisor.status().sessionDir, 'supervisor.yaml'), 'utf8')) };
 }
 async function stop(supervisor) { supervisor.stop('test'); await supervisor.done; }
 
@@ -53,7 +54,7 @@ try {
     assert(events.some(e => e.kind === 'child_exited' && e.lastHealthyAt && (e.windowsCodeHex || e.signal)), JSON.stringify(events));
     if (kind) {
       const runDir = test.supervisor.status().runDir;
-      const file = readdirSync(runDir).find(name => name.endsWith('.jsonl'));
+      const file = readdirSync(runDir).find(name => name.endsWith('.yaml'));
       const log = readFileSync(join(runDir, file), 'utf8');
       assert(log.includes(kind));
       assert(!log.includes('private'));

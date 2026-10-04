@@ -10,6 +10,7 @@ import { createPoll, readPoll } from "../src/poll-status.mjs";
 import { startGui } from "../src/gui-server.mjs";
 import { agentStore, messageKey } from "../src/agent/store.mjs";
 import { POLICY_FILE } from "../src/agent/policy.mjs";
+import { yamlLogDocument } from '../src/yaml-log.mjs';
 
 assert(LOCAL_HOME.includes("teams-monitor-smoke-"));
 assert.deepEqual(replyPolicy({}), { mode: "whitelist", entries: [] });
@@ -35,7 +36,7 @@ const request = (path, method = "GET", body, auth = true) => fetch(`http://127.0
 
 const now = Date.now();
 const auditFixture = [{ kind: "flow", flowId: "dashboard-fixture", flowStartedAt: new Date(now - 60000).toISOString(), at: new Date(now - 60000).toISOString(), stage: "message", chat: "Test chat", latest: { author: "Jordan", text: "A retained dashboard fixture." } }];
-await writeFile(join(DATA_DIR, "activity.jsonl"), auditFixture.map(row => JSON.stringify(row)).join("\n") + "\n");
+await writeFile(join(DATA_DIR, "activity.yaml"), auditFixture.map(yamlLogDocument).join(""));
 const poll = createPoll(5000);
 await poll.update({ targets: 2, unreadChats: 1, unreadFound: 2, reactionChecks: 1, examined: 2, handled: 1, status: "processing" });
 await poll.finish();
@@ -183,7 +184,7 @@ try {
   assert.equal((await request("/api/agent/replay", "POST", { messageId: "not-found" })).status, 400);
 
   const activityBefore = await (await request("/api/activity?limit=500")).json();
-  const auditBefore = await readFile(join(DATA_DIR, "activity.jsonl"), "utf8");
+  const auditBefore = await readFile(join(DATA_DIR, "activity.yaml"), "utf8");
   assert.equal(activityBefore.length, 1);
   const through = new Date().toISOString();
   assert.equal((await request("/api/activity/view", "PUT", { through: "bad" })).status, 400);
@@ -193,7 +194,7 @@ try {
   assert.deepEqual(await (await request("/api/activity?limit=500&unfiltered=1")).json(), activityBefore, 'dashboard can cache retained history for immediate date filtering');
   assert.equal((await request('/api/activity/view', 'PUT', { through: '2026-02-30T00:00:00.000Z' })).status, 400);
   assert.equal((await (await request('/api/activity/view')).json()).clearedThrough, through, 'invalid input preserves the saved cutoff');
-  assert.equal(await readFile(join(DATA_DIR, "activity.jsonl"), "utf8"), auditBefore, "activity filter leaves the audit log intact");
+  assert.equal(await readFile(join(DATA_DIR, "activity.yaml"), "utf8"), auditBefore, "activity filter leaves the audit log intact");
   assert.equal((await request("/api/activity/view", "PUT", { through: null })).status, 200);
   assert.deepEqual(await (await request("/api/activity?limit=500")).json(), activityBefore);
 
@@ -223,7 +224,7 @@ try {
 
   console.log("Dashboard auth, poll/reply policy, atomic JS policy, replay, agent controls, notes/briefs/wakes, activity filtering, and embedded script: passed.");
   if (serve) {
-    await writeFile(join(DATA_DIR, "activity.jsonl"), auditFixture.map(row => JSON.stringify(row)).join("\n") + "\n");
+    await writeFile(join(DATA_DIR, "activity.yaml"), auditFixture.map(yamlLogDocument).join(""));
     await request("/api/reply-policy", "PUT", { mode: "whitelist", entries: [] });
     console.log("Isolated browser preview: http://127.0.0.1:18091");
     await new Promise(() => {});

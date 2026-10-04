@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { requestCurrentFcmRegistration } from '../src/alerts.mjs';
 import { saveFcmRegistration } from '../src/alert-runtime.mjs';
 import { DIAGNOSTICS_LOG } from '../src/gui-diagnostics.mjs';
+import { parseYamlLogText } from '../src/yaml-log.mjs';
 
 await saveFcmRegistration({ fid: 'test-registration-secret' });
 const originalFetch = globalThis.fetch;
@@ -33,7 +34,7 @@ try {
   assert.equal(payloads.at(-1).message.fid, 'replacement-registration-secret');
   const raw = await readFile(DIAGNOSTICS_LOG, 'utf8');
   for (const secret of ['test-registration-secret', 'replacement-registration-secret', 'secret-access-token', 'private content']) assert(!raw.includes(secret));
-  const logs = raw.trim().split('\n').map(JSON.parse);
+  const logs = parseYamlLogText(raw);
   assert.equal(logs.filter(l => l.kind === 'fcm_send_started').length, 3);
   assert.equal(logs.filter(l => l.kind === 'fcm_send_accepted').length, 2);
   assert.equal(logs.filter(l => l.kind === 'fcm_send_failed').length, 1);

@@ -1,9 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
+import { appendYamlLog, readYamlLogTail } from './yaml-log.mjs';
 
-export const DIAGNOSTICS_LOG = join(DATA_DIR, "gui-diagnostics.jsonl");
+export const DIAGNOSTICS_LOG = join(DATA_DIR, "gui-diagnostics.yaml");
 
 export function tokenMatches(given, token) {
   if (!token) return true;
@@ -41,22 +42,30 @@ export function redactSecrets(text) {
 
 export function logDiagnostic(kind, data = {}) {
   try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    appendFileSync(
-      DIAGNOSTICS_LOG,
-      JSON.stringify({ at: new Date().toISOString(), kind, ...data }) + "\n",
-      "utf8"
-    );
+    appendYamlLog(DIAGNOSTICS_LOG, { at: new Date().toISOString(), kind, ...data });
   } catch { /* diagnostics must never break the server */ }
 }
 
 export function tailLines(path, limit = 120, maxBytes = 262_144) {
   if (!existsSync(path)) return [];
+  let fd;
   try {
-    let text = readFileSync(path, "utf8");
-    if (text.length > maxBytes) text = text.slice(-maxBytes);
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    let text = buffer.toString('utf8');
+    if (size > length) {
+      const newline = text.indexOf('\n');
+      if (newline < 0) return [];
+      text = text.slice(newline + 1);
+    }
     return text.split(/\r?\n/).filter(Boolean).slice(-limit);
-  } catch {
-    return [];
-  }
+  } catch { return []; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+
+export function tailYamlRecords(path, limit = 120, maxBytes = 262_144) {
+  return readYamlLogTail(path, limit, maxBytes);
 }

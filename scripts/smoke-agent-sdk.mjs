@@ -7,6 +7,7 @@ import { runAgent, agentTool } from '../src/agent/runtime.mjs';
 import { GeminiModel, geminiRequest, geminiResponse, geminiContents } from '../src/agent/gemini-model.mjs';
 import { AgentRuntimeError } from '../src/agent/errors.mjs';
 import { AGENT_ACTIVITY_FILE } from '../src/agent/activity.mjs';
+import { parseYamlLogText } from '../src/yaml-log.mjs';
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const message = text => ({ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text }] });
@@ -138,7 +139,7 @@ try {
   assert.equal(diagnosticFailure.ok, true);
   const logs = readFileSync(AGENT_ACTIVITY_FILE, 'utf8');
   for (const privateValue of ['private-key', 'private-prompt', 'private-input', 'private-thought', 'signature-on-tool']) assert(!logs.includes(privateValue));
-  for (const line of logs.trim().split('\n')) assert.doesNotThrow(() => JSON.parse(line));
+  assert(parseYamlLogText(logs).length > 0);
   assert.equal(unexpectedNetwork, 0, 'SDK tracing/export must not make network requests');
   console.log('Agent SDK smoke passed: Bun tool loop, Gemini conversion/signatures, errors, deadlines, limits and local-only diagnostics.');
 } finally { globalThis.fetch = globalFetch; }

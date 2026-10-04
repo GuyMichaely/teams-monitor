@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { DATA_DIR, ROOT } from './local-paths.mjs';
+import { boundedYamlWriter } from './yaml-log.mjs';
+
+export { boundedYamlWriter } from './yaml-log.mjs';
 
 export const processRunId = process.env.TEAMS_MONITOR_RUN_ID || randomUUID();
 
@@ -49,12 +52,12 @@ export function errorEvidence(error) {
 
 export function installLifecycle(role, { signals = false } = {}) {
   const directory = process.env.TEAMS_MONITOR_RUN_DIR || join(DATA_DIR, 'lifecycle');
-  if (!process.env.TEAMS_MONITOR_RUN_DIR) retainNewest(directory, /^run-[\w-]+\.jsonl(?:\.[12])?$/, 27);
-  const write = boundedWriter(join(directory, `run-${processRunId}.jsonl`));
+  if (!process.env.TEAMS_MONITOR_RUN_DIR) retainNewest(directory, /^run-[\w-]+\.yaml(?:\.[12])?$/, 27);
+  const write = boundedYamlWriter(join(directory, `run-${processRunId}.yaml`));
   const started = Date.now();
   let fatal = false;
   const record = (kind, details = {}, durable = false) => {
-    try { write(JSON.stringify({ at: new Date().toISOString(), kind, role, runId: processRunId, pid: process.pid, ...details }) + '\n', durable); }
+    try { write({ at: new Date().toISOString(), kind, role, runId: processRunId, pid: process.pid, ...details }, durable); }
     catch { try { process.stderr.write('Lifecycle diagnostics could not be persisted.\n'); } catch {} }
   };
   const fail = (error, origin = 'fatal') => {

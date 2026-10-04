@@ -27,6 +27,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DATA_DIR, STATE_FILE, ACTIVITY_LOG } from "./state.mjs";
+import { readYamlLogTail } from './yaml-log.mjs';
 import { visibleActivity } from "./activity-view.mjs";
 import { hardStop } from "./orchestrator.mjs";
 import { DASHBOARD_PAGE } from "./dashboard-page.mjs";
@@ -130,11 +131,10 @@ async function apiOverview(config) {
   const orchestrator = await orchestratorStatus(cfg.pollIntervalMs);
   // Rough 24h counters from the activity tail.
   const cutoff = Date.now() - 24 * 3600 * 1000;
-  const lines = await tailLines(ACTIVITY_LOG);
+  const records = readYamlLogTail(ACTIVITY_LOG, Infinity);
   let escalations = 0, sends = 0, decisions = 0;
-  for (const line of lines) {
+  for (const r of records) {
     try {
-      const r = JSON.parse(line);
       if (Date.parse(r.at) < cutoff) continue;
       if (r.kind === "escalation") escalations++;
       else if (r.kind === "send") sends++;
@@ -162,11 +162,7 @@ async function apiOverview(config) {
 async function apiActivity(limit, unfiltered = false) {
   // Brain prompts/raw output make flow records substantially larger than the old
   // activity entries. Keep enough tail bytes for dozens of complete flows.
-  const lines = await tailLines(ACTIVITY_LOG, 2_097_152);
-  const parsed = [];
-  for (const line of lines) {
-    try { parsed.push(JSON.parse(line)); } catch { parsed.push({ kind: "invalid_log", error: "Invalid log format" }); }
-  }
+  const parsed = readYamlLogTail(ACTIVITY_LOG, Infinity, 2_097_152);
   return (unfiltered ? parsed : visibleActivity(parsed)).slice(-limit).reverse();
 }
 

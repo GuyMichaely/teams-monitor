@@ -6,6 +6,7 @@ import { DATA_DIR } from '../local-paths.mjs';
 import { conversationId } from './conversations.mjs';
 import { AgentRuntimeError } from './errors.mjs';
 import { publicBadges } from './message-view.mjs';
+import { yamlLogValue } from '../yaml-log.mjs';
 
 export const normalize = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 export const messageKey = (chat, message) => createHash('sha256').update(JSON.stringify([normalize(chat), message.reaction ? message : message.id || [message.time, message.author, message.text]])).digest('hex');
@@ -13,14 +14,28 @@ const decode = row => {
   if (!row) return null;
   try { return { ...row, value: JSON.parse(row.body) }; } catch { return { ...row, state: 'invalid', value: null }; }
 };
+const decodeRecord = row => {
+  try {
+    const value = Bun.YAML.parse(row.body);
+    if (value?.invalidLog === true) throw Error();
+    return { ...row, value };
+  } catch { return { ...row, state: 'invalid', value: null }; }
+};
 
 export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new Database(file, { create: true, strict: true });
+  const oldRecords = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='records'").get();
+  if (oldRecords) {
+    let format;
+    try { format = db.query("SELECT value FROM settings WHERE key='recordFormat'").get()?.value; } catch {}
+    if (format !== 'yaml-v1') { db.close(); throw Error('Run bun scripts/migrate-logs-yaml.mjs with the system stopped before opening existing agent logs.'); }
+  }
   db.exec(`PRAGMA busy_timeout=2000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
     CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE,chat TEXT,body TEXT,time INTEGER,observed INTEGER,state TEXT);
     CREATE TABLE IF NOT EXISTS actions(id TEXT PRIMARY KEY,body TEXT,runId TEXT,due INTEGER,created INTEGER,state TEXT,attempt TEXT,result TEXT);
-    CREATE TABLE IF NOT EXISTS records(seq INTEGER PRIMARY KEY AUTOINCREMENT,runId TEXT,kind TEXT,body TEXT,at INTEGER);
+    CREATE TABLE IF NOT EXISTS records(seq INTEGER PRIMARY KEY AUTOINCREMENT,runId TEXT,kind TEXT,body TEXT,at INTEGER,messageId TEXT,policyRunId TEXT,conversationId TEXT);
+    CREATE TABLE IF NOT EXISTS action_sources(actionId TEXT PRIMARY KEY,messageId TEXT);
     CREATE TABLE IF NOT EXISTS documents(kind TEXT,path TEXT,text TEXT,PRIMARY KEY(kind,path));
     CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,body TEXT,summary TEXT);
     CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY,kind TEXT,body TEXT,created INTEGER,state TEXT);
@@ -29,9 +44,12 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     CREATE INDEX IF NOT EXISTS action_due ON actions(state,due);
     CREATE INDEX IF NOT EXISTS record_run ON records(runId,seq);
     CREATE INDEX IF NOT EXISTS record_kind ON records(kind,seq);
-    CREATE INDEX IF NOT EXISTS record_message ON records(json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.context.messageId')) WHERE kind='policy_input';
-    CREATE INDEX IF NOT EXISTS record_policy_model ON records(json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.policyRunId')) WHERE kind IN ('agent_input','agent_result');
+    CREATE INDEX IF NOT EXISTS record_message ON records(messageId,seq) WHERE kind='policy_input';
+    CREATE INDEX IF NOT EXISTS record_policy_model ON records(policyRunId,runId) WHERE kind IN ('agent_input','agent_result');
+    CREATE INDEX IF NOT EXISTS record_conversation ON records(conversationId,seq) WHERE kind='conversation_reset';
+    CREATE INDEX IF NOT EXISTS action_source_message ON action_sources(messageId);
     CREATE INDEX IF NOT EXISTS message_chat ON messages(chat,time);`);
+  if (!oldRecords) db.query('INSERT INTO settings(key,value) VALUES(?,?)').run('recordFormat', 'yaml-v1');
   const store = {
     mode(value) {
       if (value !== undefined) {
@@ -127,7 +145,7 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
       }).immediate();
     },
     sessionArchives(id) {
-      return db.query("SELECT seq,at,body FROM records WHERE kind='conversation_reset' AND json_valid(body) AND json_extract(body,'$.conversationId')=? ORDER BY seq DESC LIMIT 10").all(id).map(decode);
+      return db.query("SELECT seq,at,body FROM records WHERE kind='conversation_reset' AND conversationId=? ORDER BY seq DESC LIMIT 10").all(id).map(decodeRecord);
     },
     commit(runId, plan, messageId, workId) {
       db.transaction(() => {
@@ -136,7 +154,10 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
         for (const [id, session] of Object.entries(plan.sessions || {})) {
           if (store.session(id).revision !== session.expectedRevision) throw new AgentRuntimeError('CONVERSATION_CONFLICT', 'Conversation changed before commit; no effects committed');
         }
-        store.plan(messageId || runId, plan.actions || []);
+        const work = workId ? decode(db.query('SELECT * FROM work WHERE id=?').get(workId))?.value : null;
+        const parentId = work?.actionId || work?.outcome?.id;
+        const source = messageId || (parentId ? store.action(parentId)?.messageId : null);
+        store.plan(messageId || runId, plan.actions || [], source);
         for (const id of plan.cancellations || []) if (!store.cancel(id)) throw Error('Action is no longer pending; no plan committed');
         for (const [id, edit] of Object.entries(plan.modifications || {})) {
           const changed = db.query("UPDATE actions SET body=? WHERE id=? AND state='pending' AND body=?").run(JSON.stringify(edit.action), id, edit.expectedBody).changes;
@@ -201,30 +222,39 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     },
     history(chat, limit = 50) { return db.query('SELECT * FROM messages WHERE lower(chat)=lower(?) ORDER BY time DESC,seq DESC LIMIT ?').all(chat, Math.max(1, Math.min(200, limit))).reverse().map(decode); },
     search(query, chat = null) { return db.query('SELECT * FROM messages WHERE (? IS NULL OR chat=?) AND instr(lower(body),lower(?))>0 ORDER BY time DESC LIMIT 100').all(chat, chat, query).map(decode); },
-    record(runId, kind, value) { db.query('INSERT INTO records(runId,kind,body,at) VALUES(?,?,?,?)').run(runId, kind, JSON.stringify(value), Date.now()); },
-    records(limit = 100) { return db.query('SELECT * FROM records ORDER BY seq DESC LIMIT ?').all(Math.min(limit, 500)).map(decode); },
+    record(runId, kind, value) {
+      const link = item => typeof item === 'string' ? item : null;
+      db.query('INSERT INTO records(runId,kind,body,at,messageId,policyRunId,conversationId) VALUES(?,?,?,?,?,?,?)')
+        .run(runId, kind, Bun.YAML.stringify(yamlLogValue(value), null, 2), Date.now(), link(value?.context?.messageId), link(value?.policyRunId), link(value?.conversationId));
+    },
+    records(limit = 100) { return db.query('SELECT * FROM records ORDER BY seq DESC LIMIT ?').all(Math.min(limit, 500)).map(decodeRecord); },
     messageRuns(messageId) {
-      const runs = db.query("SELECT runId FROM records WHERE kind='policy_input' AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.context.messageId')=? ORDER BY seq DESC LIMIT 10").all(messageId);
+      const runs = db.query("SELECT runId FROM records WHERE kind='policy_input' AND messageId=? ORDER BY seq DESC LIMIT 10").all(messageId);
       return runs.map(({ runId }) => {
-        const policy = db.query("SELECT * FROM records WHERE runId=? AND kind IN ('policy_input','policy_result','policy_failed') ORDER BY seq").all(runId).map(decode);
-        const modelIds = db.query("SELECT DISTINCT runId FROM records WHERE kind IN ('agent_input','agent_result') AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.policyRunId')=? LIMIT 20").all(runId);
-        const models = modelIds.flatMap(({ runId }) => db.query('SELECT * FROM records WHERE runId=? ORDER BY seq DESC LIMIT 300').all(runId).reverse().map(decode));
+        const policy = db.query("SELECT * FROM records WHERE runId=? AND kind IN ('policy_input','policy_result','policy_failed') ORDER BY seq").all(runId).map(decodeRecord);
+        const modelIds = db.query("SELECT DISTINCT runId FROM records WHERE kind IN ('agent_input','agent_result') AND policyRunId=? LIMIT 20").all(runId);
+        const models = modelIds.flatMap(({ runId }) => db.query('SELECT * FROM records WHERE runId=? ORDER BY seq DESC LIMIT 300').all(runId).reverse().map(decodeRecord));
         return { policy, models };
       });
     },
-    plan(runId, actions) {
+    plan(runId, actions, messageId = store.message(runId)?.id || null) {
       db.transaction(() => {
         if (db.query("SELECT COUNT(*) n FROM actions WHERE state='pending'").get().n + actions.length > 500) throw Error('Pending action limit reached');
-        for (const action of actions) db.query('INSERT INTO actions(id,body,runId,due,created,state) VALUES(?,?,?,?,?,?)').run(action.id || randomUUID(), JSON.stringify(action), runId, action.due || Date.now(), Date.now(), action.cancelled ? 'cancelled' : 'pending');
+        for (const action of actions) {
+          const id = action.id || randomUUID();
+          db.query('INSERT INTO actions(id,body,runId,due,created,state) VALUES(?,?,?,?,?,?)').run(id, JSON.stringify(action), runId, action.due || Date.now(), Date.now(), action.cancelled ? 'cancelled' : 'pending');
+          if (messageId) db.query('INSERT INTO action_sources(actionId,messageId) VALUES(?,?)').run(id, messageId);
+        }
       }).immediate();
     },
-    actions() { return [...db.query("SELECT * FROM actions WHERE state IN ('pending','running') ORDER BY due,created").all(),
-      ...db.query("SELECT * FROM actions WHERE state NOT IN ('pending','running') ORDER BY created DESC LIMIT 100").all()].map(decode); },
+    actions() { return [...db.query("SELECT a.*,s.messageId FROM actions a LEFT JOIN action_sources s ON s.actionId=a.id WHERE state IN ('pending','running') ORDER BY due,created").all(),
+      ...db.query("SELECT a.*,s.messageId FROM actions a LEFT JOIN action_sources s ON s.actionId=a.id WHERE state NOT IN ('pending','running') ORDER BY created DESC LIMIT 100").all()].map(decode); },
+    messageActions(messageId) { return db.query('SELECT a.*,s.messageId FROM actions a JOIN action_sources s ON s.actionId=a.id WHERE s.messageId=? ORDER BY created DESC LIMIT 200').all(messageId).map(decode); },
     cancel(id) { return db.query("UPDATE actions SET state='cancelled' WHERE id=? AND state='pending'").run(id).changes === 1; },
-    action(id) { return decode(db.query('SELECT * FROM actions WHERE id=?').get(id)); },
+    action(id) { return decode(db.query('SELECT a.*,s.messageId FROM actions a LEFT JOIN action_sources s ON s.actionId=a.id WHERE a.id=?').get(id)); },
     claimAction(now = Date.now()) {
       return db.transaction(() => {
-        const row = db.query("SELECT * FROM actions WHERE state='pending' AND due<=? ORDER BY due,created LIMIT 1").get(now);
+        const row = db.query("SELECT a.*,s.messageId FROM actions a LEFT JOIN action_sources s ON s.actionId=a.id WHERE state='pending' AND due<=? ORDER BY due,created LIMIT 1").get(now);
         if (!row) return null;
         const attempt = randomUUID();
         db.query("UPDATE actions SET state='running',attempt=? WHERE id=?").run(attempt, row.id);

@@ -1,6 +1,8 @@
 import { buildActivityGroups } from "./dashboard-activity.mjs";
 import { filterActivityAfter, parseActivityDate } from './activity-filter.mjs';
 import { invocationViewHTML } from './dashboard-invocations.mjs';
+import { logYaml } from './dashboard-yaml.mjs';
+import { renderActionCards } from './dashboard-actions.mjs';
 
 export function syncAgentRecordList(panel, rows, makeRow) {
   const previous = panel._agentRecordRows || new Map(), next = new Map();
@@ -45,7 +47,7 @@ function dashboardClient() {
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const time = (at) => at ? new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
   const age = (at) => { const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 1000)); return seconds < 60 ? seconds + "s ago" : seconds < 3600 ? Math.floor(seconds / 60) + "m ago" : Math.floor(seconds / 3600) + "h ago"; };
-  const pretty = (value) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const pretty = (value) => logYaml(value);
   const badge = (text, tone = "neutral") => `<span class="badge ${tone}">${escape(text)}</span>`;
   let token = localStorage.guiToken || "";
   let overview, runtime, health, diagnostics, poll, tunnel;
@@ -62,6 +64,7 @@ function dashboardClient() {
   let sandboxDirty = false, sandboxSaving = false, sandboxRevision = 0;
   let listFingerprint = "", flowFingerprint = "";
   let invocationMessage = null, invocationLoading = null, invocationRevision = 0, invocationFingerprint = '';
+  let messageActions = [], globalActionFilter = 'all';
   const failures = new Map();
 
   async function api(path, method = "GET", body) {
@@ -163,6 +166,17 @@ function dashboardClient() {
     setText('pollNext', running && poll?.nextPollAt && !active ? (Date.now() < Date.parse(poll.nextPollAt) ? 'Next poll in ' + Math.ceil((Date.parse(poll.nextPollAt) - Date.now()) / 1000) + 's' : 'Next poll due') : active ? 'Processing' : 'Monitor stopped');
   }
   function groupMessages() { groups = buildActivityGroups(filterActivityAfter(items, clearedThrough)); }
+  function renderActionPanel(panel, records, filter = 'all') {
+    const html = renderActionCards(records, filter, Date.now());
+    if (panel._actionHTML === html) return;
+    const selection = window.getSelection();
+    if (!selection?.isCollapsed && panel.contains(selection?.anchorNode)) return;
+    const expanded = new Set([...panel.querySelectorAll('[data-action-detail]')].filter(node => node.open).map(node => node.dataset.actionDetail));
+    const scrollTop = panel.scrollTop;
+    panel.innerHTML = html; panel._actionHTML = html;
+    for (const node of panel.querySelectorAll('[data-action-detail]')) node.open = expanded.has(node.dataset.actionDetail);
+    panel.scrollTop = scrollTop;
+  }
   function outcome(group) {
     if (group.invalid) return ['Invalid log format', 'bad'];
     if (group.error) return ['Error', 'bad'];
@@ -362,8 +376,11 @@ function dashboardClient() {
   }
   async function refreshMessageInvocations(messageId) {
     const panel = $('messageInvocations');
+    const actionsPanel = $('messageActions');
     if (invocationMessage !== messageId) {
       invocationMessage = messageId; invocationRevision++; invocationLoading = null; invocationFingerprint = '';
+      messageActions = []; actionsPanel._actionHTML = '';
+      renderActionPanel(actionsPanel, [], 'all');
       panel.textContent = messageId ? 'Loading agent invocations…' : 'Select a message to inspect its agent invocations.';
     }
     if (!messageId || invocationLoading === messageId) return;
@@ -372,6 +389,8 @@ function dashboardClient() {
     try {
       const data = await api('/api/agent/invocations?messageId=' + encodeURIComponent(messageId));
       if (revision !== invocationRevision || selected !== messageId) return;
+      messageActions = data.actions || [];
+      renderActionPanel(actionsPanel, messageActions, 'all');
       const fingerprint = JSON.stringify(data), selection = window.getSelection();
       if (fingerprint === invocationFingerprint || (!selection?.isCollapsed && panel.contains(selection?.anchorNode))) return;
       const expanded = new Map([...panel.querySelectorAll('details')].map(node => [node.dataset.invocationKey, node.open]));
@@ -495,7 +514,7 @@ function dashboardClient() {
   };
 
   let agentNotes = [];
-  function showJson(id, value) { $(id).textContent = JSON.stringify(value, null, 2); }
+  function showJson(id, value) { $(id).textContent = logYaml(value); }
   function addAgentEntry(parent, title, value, meta = '') {
     const article = document.createElement('article'); article.className = 'agent-entry';
     const heading = document.createElement('div'); heading.className = 'inline-heading';
@@ -529,17 +548,7 @@ function dashboardClient() {
     status('agentModeBadge', mode.replaceAll('_', ' '), mode === 'active' ? 'good' : mode === 'paused' ? 'warn' : 'neutral');
     syncAgentRecordList($('agentRecords'), (value.records || []).slice(0, 25), record =>
       addAgentEntry(document.createDocumentFragment(), `${record.kind || 'record'} · ${time(record.at)}`, record.value));
-    const actions = $('agentActions'); actions.replaceChildren();
-    for (const action of value.actions || []) {
-      const entry = addAgentEntry(actions, `${action.id} · ${action.state || 'unknown'}`, action.value, action.due ? `Due ${time(action.due)}` : '');
-      if (action.result !== undefined && action.result !== null) {
-        const result = document.createElement('p'); result.className = 'hint'; result.textContent = 'Result: ' + pretty(action.result); entry.append(result);
-      }
-      if (action.state === 'pending') {
-        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'small danger'; cancel.textContent = 'Cancel'; cancel.dataset.agentCancel = action.id; entry.append(cancel);
-      }
-    }
-    if (!actions.childElementCount) actions.textContent = 'No pending or recent agent actions.';
+    renderActionPanel($('agentActions'), value.actions || [], globalActionFilter);
     const conversations = $('agentConversations'); conversations.replaceChildren();
     for (const conversation of value.conversations || []) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'agent-conversation';
@@ -635,9 +644,32 @@ function dashboardClient() {
   };
   $('agentWakeWhen').value = localDateTime(Date.now() + 10 * 60000).slice(0, 16);
   $('agentWakeTimezone').textContent = 'Time zone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
-  $('agentActions').onclick = e => {
-    const button = e.target.closest('[data-agent-cancel]'); if (!button) return;
-    runAgentAction(button, () => api('/api/agent/actions/' + encodeURIComponent(button.dataset.agentCancel) + '/cancel', 'POST'), 'Agent action cancelled');
+  async function handleActionClick(e) {
+    const cancel = e.target.closest('[data-action-cancel]');
+    if (cancel) {
+      const id = cancel.dataset.actionCancel;
+      runAgentAction(cancel, async () => {
+        const result = id.startsWith('schedule:')
+          ? await api('/api/schedules/' + encodeURIComponent(id.slice('schedule:'.length)) + '/cancel', 'POST')
+          : await api('/api/agent/actions/' + encodeURIComponent(id) + '/cancel', 'POST');
+        if (id.startsWith('schedule:')) await refreshSchedules();
+        if (selected) await refreshMessageInvocations(selected);
+        return result;
+      }, 'Action cancelled');
+      return;
+    }
+    const link = e.target.closest('[data-action-message]'); if (!link) return;
+    const id = link.dataset.actionMessage;
+    if (!groups.some(group => group.id === id)) { notify('The originating message is outside the retained activity view.', true); return; }
+    $('searchMessages').value = ''; $('messageFilter').value = 'all'; selected = id;
+    document.querySelector('[data-view="activity"]').click(); renderMessages(true); renderFlow(true);
+    $('messages').querySelector(`[data-flow="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
+  }
+  $('agentActions').onclick = handleActionClick;
+  $('messageActions').onclick = handleActionClick;
+  $('agentActionFilter').onchange = () => {
+    globalActionFilter = $('agentActionFilter').value; $('agentActions')._actionHTML = '';
+    renderActionPanel($('agentActions'), agentStatus?.actions || [], globalActionFilter);
   };
   $('agentConversations').onclick = e => {
     const button = e.target.closest('[data-agent-chat]'); if (!button) return;
@@ -742,7 +774,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 .settings-fields{border:0;padding:0;margin:0;min-width:0}.settings-fields .check{margin:12px 0}.settings-fields:disabled{opacity:.6}
 .schedule-layout{display:grid;grid-template-columns:minmax(220px,.85fr) minmax(280px,1.15fr);gap:24px}.schedule-job{padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:9px;background:#151e23}.schedule-job strong{font-size:12px;overflow-wrap:anywhere}.schedule-job time{font-size:12px}.scheduled-text{white-space:pre-wrap;font-size:12px;margin-top:8px}.schedule-queue{max-height:430px;overflow:auto}.schedule-layout details{margin:0}.schedule-layout summary{font-size:12px}@media(max-width:900px){.schedule-layout{grid-template-columns:1fr}}
 .agent-current{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;background:#131d21;border:1px solid var(--line);border-radius:8px;font-size:12px}.agent-current span:nth-child(2){color:#c2d0d7}.agent-controls{display:flex;align-items:center;gap:8px}.agent-controls>*{min-width:0}.agent-controls input,.agent-controls select{flex:1}.agent-mode-form{margin-top:12px}.agent-form{margin-top:13px}.agent-tools,.agent-columns,.agent-memory{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:17px;padding-top:15px;border-top:1px solid var(--line)}.agent-memory{grid-template-columns:repeat(3,minmax(0,1fr))}.agent-columns h3,.agent-memory h3{font-size:12px}.agent-list{display:grid;gap:8px;margin-top:8px;max-height:340px;overflow:auto}.agent-entry{border:1px solid var(--line);border-radius:7px;background:#141e23;padding:9px;min-width:0}.agent-entry strong{font-size:11px;overflow-wrap:anywhere}.agent-entry .inline-heading>span{font-size:10px;color:var(--muted)}.agent-entry pre,.agent-output{background:#10191d;border:1px solid #2a363c;border-radius:5px;padding:8px;margin:7px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.55 Consolas,monospace;color:#c4d2d9}.agent-entry .hint{white-space:pre-wrap}.agent-entry button{margin-top:8px}.agent-conversations{display:grid;gap:6px;max-height:300px;overflow:auto;margin-top:8px}.agent-conversation{width:100%;text-align:left;font-size:10px;padding:7px 9px;overflow-wrap:anywhere}.agent-tools form{min-width:0}.agent-memory>div{min-width:0}.agent-memory .agent-controls{align-items:stretch}.agent-memory .agent-controls button{flex:0 0 auto}.agent-memory textarea{min-height:100px}.agent-current .save-state{margin-left:auto}@media(max-width:900px){.agent-memory{grid-template-columns:1fr 1fr}}@media(max-width:600px){.agent-tools,.agent-columns,.agent-memory{grid-template-columns:1fr}.agent-controls{flex-wrap:wrap}.agent-current .save-state{margin-left:0}}
-.policy-file{color:var(--green);overflow-wrap:anywhere;text-decoration:underline}.policy-file:focus-visible{outline:3px solid #75c9a7;outline-offset:2px}
+.action-card{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#141e23}.action-card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.action-card-top strong{font-size:12px;overflow-wrap:anywhere}.action-meta{font-size:10px;color:var(--muted);margin-top:5px}.action-status,.action-preview{font-size:11px;color:#c3cdd3;white-space:pre-wrap;margin-top:6px}.action-preview{color:var(--muted)}.action-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:5px}.action-controls details{flex-basis:100%;margin-top:3px}.action-controls pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;background:#10191d;border:1px solid var(--line);padding:8px;border-radius:5px;font:10px/1.55 Consolas,monospace}.action-list{max-height:360px;overflow:auto}.agent-actions-global{margin-top:16px;padding-top:15px;border-top:1px solid var(--line)}.agent-actions-global .inline-heading{justify-content:flex-start}.agent-actions-global h3{margin-right:auto}.agent-actions-global select{width:auto;min-width:150px;padding:5px 8px;font-size:11px}.action-filter-label{margin:0;font-size:10px}.execution-log{margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}.execution-log summary{font-size:12px}.execution-log .agent-list{max-height:280px}.message-model .action-list{max-height:420px}.policy-file{color:var(--green);overflow-wrap:anywhere;text-decoration:underline}.policy-file:focus-visible{outline:3px solid #75c9a7;outline-offset:2px}
 </style></head><body>
 <header><div class="brand"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>TM <span class="workspace-label">/ LOCAL CONTROL</span></div><div class="header-right"><span id="lastRefresh" class="sync-time">Waiting for server</span><button id="pauseUpdates" class="live-toggle warn" aria-pressed="true" title="Connecting · Pause live log tailing">Pause live log tailing</button><button id="refreshButton" title="Manually sync tail" aria-label="Manually sync tail">↻</button><button id="accountButton">Access token</button></div></header>
 <main class="shell">
@@ -776,10 +808,11 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <p class="hint">Paused stops model runs; deterministic policy still runs. Read-only prevents model-originated external actions and note edits; deterministic policy still runs. Neither mode changes manual messages/status scheduling.</p>
 <div class="agent-current"><strong>Current work</strong><span id="agentCurrent">Checking…</span><span id="agentRefreshState" class="save-state"></span></div>
 <form id="agentModeForm" class="agent-controls agent-mode-form"><label for="agentMode">Autonomy mode</label><select id="agentMode"><option value="active">Active</option><option value="read_only">Read only</option><option value="paused">Paused</option></select><button id="agentModeSave" class="small">Save mode</button></form>
-<form id="agentInterveneForm" class="agent-form"><label for="agentConversationSelect">Model conversation</label><select id="agentConversationSelect"><option value="">No named conversations yet</option></select><label for="agentIntervention">Intervention</label><textarea id="agentIntervention" rows="2" placeholder="Instructions for the selected conversation’s next turn…"></textarea><div class="button-row"><button id="agentInterveneSubmit" class="primary small" disabled>Queue intervention</button><button id="agentRunCancel" class="small danger" type="button" disabled>Cancel current run</button><button id="agentConversationInspect" class="small" type="button" disabled>View history</button><button id="agentConversationReset" class="small danger" type="button" disabled>Reset history</button></div><p class="hint">Named conversations are created by explicit policy calls. Intervention continues one with its previously granted permissions, limited by the current ceiling. It queues after the current run; it does not cancel it or undo actions already executed. Responses appear in Recent tools and results.</p><details><summary>Selected conversation history</summary><pre id="agentConversationHistory" class="agent-output">Select a conversation and choose View history.</pre></details></form>
+<form id="agentInterveneForm" class="agent-form"><label for="agentConversationSelect">Model conversation</label><select id="agentConversationSelect"><option value="">No named conversations yet</option></select><label for="agentIntervention">Intervention</label><textarea id="agentIntervention" rows="2" placeholder="Instructions for the selected conversation’s next turn…"></textarea><div class="button-row"><button id="agentInterveneSubmit" class="primary small" disabled>Queue intervention</button><button id="agentRunCancel" class="small danger" type="button" disabled>Cancel current run</button><button id="agentConversationInspect" class="small" type="button" disabled>View history</button><button id="agentConversationReset" class="small danger" type="button" disabled>Reset history</button></div><p class="hint">Named conversations are created by explicit policy calls. Intervention continues one with its previously granted permissions, limited by the current ceiling. It queues after the current run; it does not cancel it or undo actions already executed. Responses appear in the Execution log.</p><details><summary>Selected conversation history</summary><pre id="agentConversationHistory" class="agent-output">Select a conversation and choose View history.</pre></details></form>
 <div class="agent-tools"><form id="agentReplayForm"><label for="agentReplayId">Replay recorded message ID</label><div class="agent-controls"><input id="agentReplayId" placeholder="Recorded message ID"><button id="agentReplaySubmit" class="small">Replay safely</button></div><p class="hint">Replay disables model calls and external actions.</p><pre id="agentReplayResult" class="agent-output">No replay yet.</pre></form>
 <form id="agentWakeForm"><label for="agentWakePrompt">Schedule an agent wake</label><textarea id="agentWakePrompt" rows="2" placeholder="What should the agent check at that time?"></textarea><label for="agentWakeConversation">Conversation ID · optional</label><input id="agentWakeConversation" placeholder="Blank starts with fresh history"><label for="agentWakeWhen">Run at</label><input id="agentWakeWhen" type="datetime-local"><p id="agentWakeTimezone" class="hint"></p><button id="agentWakeSubmit" class="small">Schedule wake</button><p class="hint">A named wake continues that history. Existing conversations retain their prior permission limits; fresh wakes use the current ceiling. All limits are rechecked at execution. Wakeups appear with other agent actions.</p></form></div>
-<div class="agent-columns"><div><div class="inline-heading"><h3>Recent tools and results</h3><span class="hint">Newest first</span></div><div id="agentRecords" class="agent-list">Loading…</div></div><div><div class="inline-heading"><h3>Actions</h3><span class="hint">Pending and completed</span></div><div id="agentActions" class="agent-list">Loading…</div></div></div>
+<div class="agent-actions-global"><div class="inline-heading"><h3>Actions</h3><label class="action-filter-label" for="agentActionFilter">Show</label><select id="agentActionFilter" aria-label="Filter actions"><option value="all">All</option><option value="pending">Pending / queued</option><option value="running">Running</option><option value="finished">Finished</option></select></div><div id="agentActions" class="agent-list action-list">Loading…</div></div>
+<details class="execution-log"><summary>Execution log · recent tools and results</summary><div id="agentRecords" class="agent-list">Loading…</div></details>
 <div class="agent-memory"><div><div class="inline-heading"><h3>Observed Teams chats</h3></div><div id="agentConversations" class="agent-conversations">Loading…</div></div>
 <div><div class="inline-heading"><h3>Freeform notes</h3><button id="agentNotesRefresh" type="button" class="small">Refresh list</button></div><div class="agent-controls"><select id="agentNoteSelect" aria-label="Choose a note"><option value="">No notes loaded</option></select><button id="agentNoteNew" type="button" class="small">New note</button></div><label for="agentNotePath">Note path</label><input id="agentNotePath" placeholder="people/alex.md"><label for="agentNoteText">Note text</label><textarea id="agentNoteText" rows="7" placeholder="Private notes for continuity…"></textarea><div class="form-footer"><span id="agentNoteState" class="save-state"></span><button id="agentNoteSave" type="button" class="small">Save note</button></div></div>
 <div><h3>Chat brief</h3><label for="agentBriefChat">Exact chat name</label><div class="agent-controls"><input id="agentBriefChat" placeholder="Select from conversation history or type exact name"><button id="agentBriefLoad" type="button" class="small">Load</button></div><label for="agentBriefText">Brief</label><textarea id="agentBriefText" rows="5" placeholder="Optional context for this person or chat…"></textarea><div class="form-footer"><span id="agentBriefState" class="save-state"></span><button id="agentBriefSave" type="button" class="small">Save brief</button></div></div></div>
@@ -787,6 +820,6 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <section class="card" aria-labelledby="scheduleHeading"><div class="card-body"><div class="section-title"><h2 id="scheduleHeading">Scheduled Teams actions</h2><button id="refreshSchedules" class="small" type="button">Refresh schedules</button></div><p id="schedulerState" class="hint">Checking orchestrator…</p><div class="schedule-layout"><form id="scheduleForm"><fieldset id="scheduleFields" class="settings-fields"><label for="scheduleKind">Action</label><select id="scheduleKind"><option value="message">Send a message</option><option value="status">Change availability</option></select><div id="scheduleMessageFields"><label for="scheduleChat">Exact Teams chat name</label><input id="scheduleChat" maxlength="300" placeholder="Person or group chat name"><label for="scheduleText">Message</label><textarea id="scheduleText" maxlength="8000" rows="3"></textarea><p class="hint">Uses Teams reply permissions at send time. An empty whitelist blocks all sends. Duplicate chat names or existing drafts are not sent.</p></div><div id="scheduleStatusField" hidden><label for="schedulePresence">Availability</label><select id="schedulePresence"><option value="available">Available</option><option value="away">Appear away</option><option value="offline">Appear offline</option><option value="busy">Busy</option><option value="dnd">Do not disturb</option><option value="brb">Be right back</option></select></div><label for="scheduleWhen">Date and time</label><input id="scheduleWhen" type="datetime-local" required><p id="scheduleTimezone" class="hint"></p><button id="scheduleSubmit" type="submit" class="primary small" disabled>Schedule action</button></fieldset></form><div><div id="schedulePending" class="schedule-queue">Loading schedules…</div><details><summary>Recent results (latest 100)</summary><div id="scheduleHistory" class="schedule-queue"></div></details><p id="scheduleLoadState" class="error-text" role="status"></p></div></div><p class="hint">One-time schedules, saved locally. The orchestrator must be running; actions wait for current handling to finish. Due while stopped or more than five minutes late: missed, not replayed. Interrupted sends: outcome unconfirmed, never automatically retried. Schedule checks continue while live log tailing is paused.</p></div></section>
 <section class="card" aria-label="Message activity and system logs">
 <div class="activity-poll" aria-label="Latest orchestrator poll"><span id="pollBadge" class="badge neutral">Checking</span><span id="pollStatus">No poll recorded yet</span><span id="pollDetail" hidden></span><span id="pollChats" title="Teams unread count is unavailable">Unread unavailable</span><span id="pollNext">Monitor stopped</span></div>
-<div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="activity-summary"><span>In this view</span><span id="messagesHandled" title="Messages with a completed handling trace and no recorded errors in the filtered list">0 handled</span><span id="messageErrors" title="Messages with handling errors or invalid logs in the filtered list; each message is counted once">0 errors</span></div><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div class="activity-clear"><div class="date-filter"><label for="activitySince">After</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Show messages after date and time" aria-describedby="activityClearState"><button id="clearActivity" class="small" title="Use the highlighted message’s date and hide it and earlier messages" disabled>Use selected message</button><button id="showAllActivity" class="small" disabled>Show all</button></div><p id="activityClearState" class="hint" role="status"></p></div><div id="messages" class="message-list"></div></div><div class="trace-column"><section class="message-model" aria-labelledby="messageInvocationsHeading"><h3 id="messageInvocationsHeading">Agent invocations</h3><div id="messageInvocations">Select a message to inspect its agent invocations.</div></section><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div></div><p class="log-note">Recent retained activity, newest first. Counts follow the date, search, and outcome filters.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>
+<div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="activity-summary"><span>In this view</span><span id="messagesHandled" title="Messages with a completed handling trace and no recorded errors in the filtered list">0 handled</span><span id="messageErrors" title="Messages with handling errors or invalid logs in the filtered list; each message is counted once">0 errors</span></div><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div class="activity-clear"><div class="date-filter"><label for="activitySince">After</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Show messages after date and time" aria-describedby="activityClearState"><button id="clearActivity" class="small" title="Use the highlighted message’s date and hide it and earlier messages" disabled>Use selected message</button><button id="showAllActivity" class="small" disabled>Show all</button></div><p id="activityClearState" class="hint" role="status"></p></div><div id="messages" class="message-list"></div></div><div class="trace-column"><section class="message-model" aria-labelledby="messageActionsHeading"><h3 id="messageActionsHeading">Actions for this message</h3><div id="messageActions" class="action-list">Select a message to see its actions.</div></section><section class="message-model" aria-labelledby="messageInvocationsHeading"><h3 id="messageInvocationsHeading">Agent invocations</h3><div id="messageInvocations">Select a message to inspect its agent invocations.</div></section><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div></div><p class="log-note">Recent retained activity, newest first. Counts follow the date, search, and outcome filters.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>
 </section></div></main><div id="toast" class="toast hidden" role="status"></div><dialog id="login"><form id="loginForm"><div class="eyebrow">TM</div><h2>Dashboard access</h2><p>Enter the access token from your local configuration. It is saved in this browser.</p><label for="tokenInput">Access token</label><input id="tokenInput" type="password" autocomplete="current-password" required><button class="primary">Connect</button></form></dialog>
-<script>${filterActivityAfter.toString()}; ${parseActivityDate.toString()}; ${buildActivityGroups.toString()}; ${syncAgentRecordList.toString()}; ${invocationViewHTML.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;
+<script>${filterActivityAfter.toString()}; ${parseActivityDate.toString()}; ${buildActivityGroups.toString()}; ${syncAgentRecordList.toString()}; ${logYaml.toString()}; ${renderActionCards.toString()}; ${invocationViewHTML.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;

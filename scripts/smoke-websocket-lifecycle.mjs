@@ -6,6 +6,7 @@ import { startGui, alertClientCount, applyAlertDeliveryPolicy } from '../src/gui
 import { loadConfig, saveConfig } from '../src/context.mjs';
 import { controlState } from '../src/alert-runtime.mjs';
 import { DIAGNOSTICS_LOG } from '../src/gui-diagnostics.mjs';
+import { parseYamlLogText } from '../src/yaml-log.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, description) {
@@ -107,7 +108,7 @@ try {
   assert.equal(alertClientCount(), 1, 'newer WebSocket policy cancels pending shutdown');
   await server.close();
   assert.equal(alertClientCount(), 0, 'server shutdown clears sockets and timers');
-  const logs = (await readFile(DIAGNOSTICS_LOG, 'utf8')).trim().split('\n').map(JSON.parse);
+  const logs = parseYamlLogText(await readFile(DIAGNOSTICS_LOG, 'utf8'));
   const reasons = logs.filter(l => l.kind === 'ws_connection_removed').map(l => l.reason);
   assert(reasons.includes('peer_end'));
   assert.equal(reasons.filter(r => r === 'pong_timeout').length, 2);

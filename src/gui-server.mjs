@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import { DATA_DIR } from "./state.mjs";
 import { startGui as startRuntimeGui } from "./gui-server-runtime.mjs";
-import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tokenMatches } from "./gui-diagnostics.mjs";
+import { authOk, logDiagnostic, redactSecrets, requestMeta, tailLines, tailYamlRecords, tokenMatches } from "./gui-diagnostics.mjs";
 import { DASHBOARD_PAGE } from "./dashboard-page.mjs";
 import { readPoll } from "./poll-status.mjs";
 import { replyPolicy, validateReplyPolicy } from "./reply-policy.mjs";
@@ -43,9 +43,7 @@ async function readJsonBody(req, cap = 16_384) {
 }
 
 async function diagnostics(limit) {
-  const events = tailLines(join(DATA_DIR, "gui-diagnostics.jsonl"), limit).map((line) => {
-    try { return JSON.parse(line); } catch { return { raw: redactSecrets(line) }; }
-  });
+  const events = tailYamlRecords(join(DATA_DIR, "gui-diagnostics.yaml"), limit);
   let alertDelivery = null;
   try {
     alertDelivery = await controlState(await loadConfig());
@@ -124,7 +122,18 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
         res.setHeader('Cache-Control', 'no-store');
         const body = ['POST', 'PUT'].includes(req.method) ? await readJsonBody(req, 262144) : {};
         const health = ['/api/agent/status', '/api/agent/invocations'].includes(url.pathname) ? await orchestratorStatus((await loadConfig()).pollIntervalMs) : null;
-        return sendJson(res, 200, await agentAPI({ url, method: req.method, body, store: agent, running: !!health?.running }));
+        const response = await agentAPI({ url, method: req.method, body, store: agent, running: !!health?.running });
+        if (url.pathname === '/api/agent/status' && req.method === 'GET') {
+          schedules ||= createScheduleStore();
+          const manual = schedules.list().map(job => ({ id: 'schedule:' + job.id, source: 'schedule', state: job.state,
+            due: Date.parse(job.dueAt), created: Date.parse(job.createdAt),
+            value: { kind: job.kind, chat: job.chat, text: job.text, presence: job.presence }, result: job.detail ? { detail: job.detail } : null }));
+          response.actions = [...response.actions, ...manual].sort((a, b) => {
+            const pending = row => ['pending', 'running'].includes(row.state);
+            return Number(pending(b)) - Number(pending(a)) || (pending(a) ? a.due - b.due : b.created - a.created);
+          });
+        }
+        return sendJson(res, 200, response);
       } catch (error) { return sendJson(res, 400, { ok: false, error: error.code ? error.message : 'Invalid agent request.', code: error.code, locations: error.details?.locations }); }
     }
 

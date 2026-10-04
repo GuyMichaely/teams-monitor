@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { boundedWriter, errorEvidence, retainNewest } from './process-diagnostics.mjs';
+import { boundedWriter, boundedYamlWriter, errorEvidence, retainNewest } from './process-diagnostics.mjs';
 
 async function exitedWithin(promise, ms) {
   let timer;
@@ -34,7 +34,7 @@ export async function startSupervisor({
   let status = { sessionId, supervisorPid: process.pid, state: 'starting', childPid: null };
   let writeLog;
   const record = (kind, fields = {}) => {
-    try { writeLog?.(JSON.stringify({ at: new Date().toISOString(), kind, sessionId, ...fields }) + '\n', true); }
+    try { writeLog?.({ at: new Date().toISOString(), kind, sessionId, ...fields }, true); }
     catch { process.stderr.write('Supervisor diagnostics write failed.\n'); }
   };
   const saveStatus = fields => {
@@ -80,7 +80,7 @@ export async function startSupervisor({
     retainNewest(directory, /^session-[0-9a-f-]+$/, 4);
     const sessionDir = join(directory, `session-${sessionId}`);
     mkdirSync(sessionDir);
-    writeLog = boundedWriter(join(sessionDir, 'supervisor.jsonl'));
+    writeLog = boundedYamlWriter(join(sessionDir, 'supervisor.yaml'));
     writeFileSync(join(directory, 'control.json'), JSON.stringify({ port: control.address().port, token: secret }), { mode: 0o600 });
     record('supervisor_started', { pid: process.pid, parentPid: process.ppid });
     saveStatus({ sessionDir });
