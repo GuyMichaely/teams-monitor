@@ -158,7 +158,7 @@ async function apiOverview(config) {
   };
 }
 
-async function apiActivity(limit) {
+async function apiActivity(limit, unfiltered = false) {
   // Brain prompts/raw output make flow records substantially larger than the old
   // activity entries. Keep enough tail bytes for dozens of complete flows.
   const lines = await tailLines(ACTIVITY_LOG, 2_097_152);
@@ -166,7 +166,7 @@ async function apiActivity(limit) {
   for (const line of lines) {
     try { parsed.push(JSON.parse(line)); } catch { parsed.push({ kind: "invalid_log", error: "Invalid log format" }); }
   }
-  return visibleActivity(parsed).slice(-limit).reverse();
+  return (unfiltered ? parsed : visibleActivity(parsed)).slice(-limit).reverse();
 }
 
 async function apiWhitelistPut(body) {
@@ -429,7 +429,7 @@ export function startGui(config, websocketOptions) {
       }
       if (req.method === "GET" && url.pathname === "/api/activity") {
         const limit = Math.min(Number(url.searchParams.get("limit")) || 100, 500);
-        return sendJson(res, 200, await apiActivity(limit));
+        return sendJson(res, 200, await apiActivity(limit, url.searchParams.get('unfiltered') === '1'));
       }
       if (req.method === "GET" && url.pathname === "/api/state") {
         if (!existsSync(STATE_FILE)) return sendJson(res, 200, { chats: {} });

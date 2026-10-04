@@ -1,4 +1,5 @@
 import { buildActivityGroups } from "./dashboard-activity.mjs";
+import { filterActivityAfter, parseActivityDate } from './activity-filter.mjs';
 
 export function syncAgentRecordList(panel, rows, makeRow) {
   const previous = panel._agentRecordRows || new Map(), next = new Map();
@@ -50,7 +51,7 @@ function dashboardClient() {
   let presenceChanging = false, presenceRevision = 0;
   let keepAwakeSaving = false;
   let scheduleBusy = false, schedulesRefreshing = false, schedulesFingerprint = '', scheduleRequestId = null;
-  let activityClearing = false, clearedThrough = null, activityGeneration = 0;
+  let activitySaving = false, activityDirty = false, activityDateInvalid = false, activitySaveError = '', clearedThrough = null, activityGeneration = 0;
   let items = [], groups = [], selected = null, lastSuccess = null, paused = false, refreshing = false, slowAt = 0;
   let deliveryReady = false, policyReady = false, profileReady = false, agentPolicyReady = false;
   let deliveryDirty = false, policyDirty = false, profileDirty = false, pollDirty = false, rulesDirty = false;
@@ -157,7 +158,7 @@ function dashboardClient() {
     setText('pollNext', running && poll?.nextPollAt && !active ? (Date.now() < Date.parse(poll.nextPollAt) ? 'Next poll in ' + Math.ceil((Date.parse(poll.nextPollAt) - Date.now()) / 1000) + 's' : 'Next poll due') : active ? 'Processing' : 'Monitor stopped');
     setText('pollExtra', poll ? `${poll.examined} chats examined · ${poll.skipped} skipped${poll.error ? ' · ' + poll.error : ''}` : 'Counts will appear after the first poll.');
   }
-  function groupMessages() { groups = buildActivityGroups(items); }
+  function groupMessages() { groups = buildActivityGroups(filterActivityAfter(items, clearedThrough)); }
   function outcome(group) {
     if (group.invalid) return ['Invalid log format', 'bad'];
     if (group.error) return ['Error', 'bad'];
@@ -172,13 +173,11 @@ function dashboardClient() {
     const filter = $('messageFilter').value;
     const filtered = groups.filter((g) => (!query || [g.chat, g.latest?.author, g.latest?.text].join(' ').toLowerCase().includes(query)) && (filter === 'all' || (filter === 'error' ? g.error : g.outcomes?.includes(filter))));
     if (!filtered.some(g => g.id === selected)) selected = filtered[0]?.id || null;
-    $('clearActivity').disabled = activityClearing || !groups.find(g => g.id === selected)?.at;
-    if (!activityClearing && document.activeElement !== $('activitySince')) syncDateFilter();
-    setText('activityClearState', clearedThrough ? 'Showing messages after ' + time(clearedThrough) + '. Logs are not deleted.' : 'Showing all retained messages. Logs are not deleted.');
+    renderDateFilter();
     setText('messageCount', filtered.length + (filtered.length === 1 ? ' message' : ' messages'));
     const fingerprint = JSON.stringify([filtered, selected]);
     const selection = window.getSelection();
-    if (!selection?.isCollapsed && $('messages').contains(selection?.anchorNode)) return;
+    if (!force && !selection?.isCollapsed && $('messages').contains(selection?.anchorNode)) return;
     if (!force && fingerprint === listFingerprint) return;
     listFingerprint = fingerprint;
     $('messages').innerHTML = filtered.length ? filtered.map((g) => {
@@ -225,9 +224,10 @@ function dashboardClient() {
       await Promise.all([
         readPart('Monitor', '/api/overview', (v) => overview = v),
         readPart('Poll', '/api/poll', (v) => poll = v),
-        readPart('Messages', '/api/activity?limit=500', (v) => { if (generation === activityGeneration) { items = v; groupMessages(); } }),
-        readPart('Activity view', '/api/activity/view', (v) => { if (generation === activityGeneration) clearedThrough = v.clearedThrough; }),
+        readPart('Messages', '/api/activity?limit=500&unfiltered=1', (v) => { items = v; }),
+        readPart('Activity view', '/api/activity/view', (v) => { if (generation === activityGeneration && !activityDirty && !activitySaving) clearedThrough = v.clearedThrough; }),
       ]);
+      groupMessages();
       if (force || Date.now() - slowAt > 10000) {
         slowAt = Date.now();
         await Promise.all([
@@ -342,30 +342,55 @@ function dashboardClient() {
     finally { scheduleBusy = false; button.disabled = false; await refreshSchedules(); }
   };
   $('refreshSchedules').onclick = refreshSchedules;
-  function syncDateFilter() { $('hideOlder').checked = !!clearedThrough; if (clearedThrough) $('activitySince').value = localDateTime(clearedThrough); }
-  async function changeActivityView(through) {
-    if (activityClearing) return;
-    activityClearing = true; activityGeneration++;
-    $('clearActivity').disabled = true; $('hideOlder').disabled = true; $('activitySince').disabled = true;
+  function syncDateFilter() { $('activitySince').value = clearedThrough ? localDateTime(clearedThrough) : ''; }
+  function renderDateFilter() {
+    const at = groups.find(g => g.id === selected)?.at;
+    $('clearActivity').disabled = !at || !Number.isFinite(Date.parse(at));
+    $('showAllActivity').disabled = !clearedThrough && !activityDateInvalid && !activitySaveError;
+    if (!activityDateInvalid && document.activeElement !== $('activitySince')) syncDateFilter();
+    $('activitySince').setAttribute('aria-invalid', String(activityDateInvalid));
+    setText('activityClearState', activityDateInvalid ? 'Invalid date — keeping the last valid filter.' : activitySaveError ? 'Filter not saved — edit the date to retry.' : activitySaving ? 'Saving…' : '');
+  }
+  async function saveActivityView() {
+    if (activitySaving) return;
+    activitySaving = true; renderDateFilter();
     try {
-      const view = await api('/api/activity/view', 'PUT', { through });
-      // Invalidate any refresh that started while the request was pending too.
-      activityGeneration++; clearedThrough = view.clearedThrough;
-      items = await api('/api/activity?limit=500'); selected = null;
-      groupMessages(); renderMessages(true); renderFlow(true); renderLogs(logData);
-      notify(through ? 'Message date filter updated' : 'Showing all retained messages');
-    } catch (e) { notify(e.message, true); }
-    finally { activityClearing = false; $('hideOlder').disabled = false; $('activitySince').disabled = false; syncDateFilter(); renderMessages(true); }
+      while (activityDirty) {
+        const generation = activityGeneration, through = clearedThrough;
+        try {
+          await api('/api/activity/view', 'PUT', { through });
+          if (generation === activityGeneration) {
+            activityDirty = false; activityGeneration++; activitySaveError = '';
+          }
+        } catch (e) {
+          if (generation !== activityGeneration) continue;
+          activitySaveError = e.message; notify(e.message, true); break;
+        }
+      }
+    } finally { activitySaving = false; renderDateFilter(); }
   }
-  $('clearActivity').onclick = () => { const at = groups.find(g => g.id === selected)?.at; if (at) { $('activitySince').value = localDateTime(at); changeActivityView(at); } };
+  function changeActivityView(through) {
+    activityDateInvalid = false; activitySaveError = '';
+    if (through === clearedThrough && !activityDirty) { renderDateFilter(); return; }
+    clearedThrough = through; activityDirty = true; activityGeneration++;
+    groupMessages(); renderMessages(true); renderFlow(true);
+    saveActivityView();
+  }
+  $('clearActivity').onclick = () => {
+    const at = groups.find(g => g.id === selected)?.at;
+    if (at && Number.isFinite(Date.parse(at))) {
+      $('activitySince').value = localDateTime(at); changeActivityView(new Date(at).toISOString());
+    }
+  };
+  $('showAllActivity').onclick = () => { $('activitySince').value = ''; changeActivityView(null); };
   function applyDateFilter() {
-    if (!$('hideOlder').checked) return changeActivityView(null);
-    const value = $('activitySince').value;
-    if (!value || !Number.isFinite(new Date(value).getTime()) || !$('activitySince').checkValidity()) { notify('Choose a valid date and time', true); return; }
-    changeActivityView(new Date(value).toISOString());
+    const through = parseActivityDate($('activitySince').value, $('activitySince').validity.valid);
+    if (!through) { activityDateInvalid = true; renderDateFilter(); return; }
+    changeActivityView(through);
   }
-  $('hideOlder').onchange = applyDateFilter;
-  $('activitySince').onchange = () => { $('hideOlder').checked = !!$('activitySince').value; applyDateFilter(); };
+  $('activitySince').oninput = applyDateFilter;
+  $('activitySince').onchange = applyDateFilter;
+  $('activitySince').onblur = () => { activityDateInvalid = false; syncDateFilter(); renderDateFilter(); };
   for (const [id, path, text] of [['startOrch', '/api/start', 'Orchestrator starting'], ['stopOrch', '/api/stop', 'Orchestrator stop requested'], ['startTunnel', '/api/tunnel/start', 'Tunnel starting'], ['stopTunnel', '/api/tunnel/stop', 'Tunnel stopped']]) {
     $(id).onclick = () => {
       if (id === 'stopTunnel' && !confirm('Stop the public tunnel? Remote dashboard access and phone WebSocket delivery will disconnect.')) return;
@@ -653,7 +678,7 @@ function dashboardClient() {
   };
   $('logSource').onchange = () => { for (const node of document.querySelectorAll('.log-output')) node.hidden = node.id !== $('logSource').value; };
   $('copyLog').onclick = async () => { try { await navigator.clipboard.writeText($($('logSource').value).textContent); notify('Log copied'); } catch { notify('Could not copy. Select the log text to copy it manually.', true); } };
-  window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty || agentModeDirty || agentNoteDirty || agentBriefDirty || agentPermissionsDirty || agentPermissionsSaving) { e.preventDefault(); e.returnValue = ''; } });
+    window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty || agentModeDirty || agentNoteDirty || agentBriefDirty || agentPermissionsDirty || agentPermissionsSaving || activityDirty || activitySaving) { e.preventDefault(); e.returnValue = ''; } });
   policySummary(); refresh(true);
   refreshSupervisor();
   // Supervisor safety status stays live even while message/log tailing is paused.
@@ -727,6 +752,6 @@ export const DASHBOARD_PAGE = `<!doctype html>
 </div></section>
 <section class="card" aria-labelledby="scheduleHeading"><div class="card-body"><div class="section-title"><h2 id="scheduleHeading">Scheduled Teams actions</h2><button id="refreshSchedules" class="small" type="button">Refresh schedules</button></div><p id="schedulerState" class="hint">Checking orchestrator…</p><div class="schedule-layout"><form id="scheduleForm"><fieldset id="scheduleFields" class="settings-fields"><label for="scheduleKind">Action</label><select id="scheduleKind"><option value="message">Send a message</option><option value="status">Change availability</option></select><div id="scheduleMessageFields"><label for="scheduleChat">Exact Teams chat name</label><input id="scheduleChat" maxlength="300" placeholder="Person or group chat name"><label for="scheduleText">Message</label><textarea id="scheduleText" maxlength="8000" rows="3"></textarea><p class="hint">Uses Teams reply permissions at send time. An empty whitelist blocks all sends. Duplicate chat names or existing drafts are not sent.</p></div><div id="scheduleStatusField" hidden><label for="schedulePresence">Availability</label><select id="schedulePresence"><option value="available">Available</option><option value="away">Appear away</option><option value="offline">Appear offline</option><option value="busy">Busy</option><option value="dnd">Do not disturb</option><option value="brb">Be right back</option></select></div><label for="scheduleWhen">Date and time</label><input id="scheduleWhen" type="datetime-local" required><p id="scheduleTimezone" class="hint"></p><button id="scheduleSubmit" type="submit" class="primary small" disabled>Schedule action</button></fieldset></form><div><div id="schedulePending" class="schedule-queue">Loading schedules…</div><details><summary>Recent results (latest 100)</summary><div id="scheduleHistory" class="schedule-queue"></div></details><p id="scheduleLoadState" class="error-text" role="status"></p></div></div><p class="hint">One-time schedules, saved locally. The orchestrator must be running; actions wait for current handling to finish. Due while stopped or more than five minutes late: missed, not replayed. Interrupted sends: outcome unconfirmed, never automatically retried. Schedule checks continue while live log tailing is paused.</p></div></section>
 <section class="card poll-card" aria-label="Latest orchestrator poll"><div class="poll-heading"><div><div class="poll-title"><h2 id="pollStatus">No poll recorded yet</h2></div><p id="pollDetail" class="poll-meta">Waiting for the orchestrator…</p></div><span id="pollBadge" class="badge neutral">Checking</span></div><div class="poll-stats"><div class="stat"><b id="pollChats">—</b><span>Unread chats</span></div><div class="stat"><b id="pollHandled">—</b><span>Messages handled</span></div><div class="stat"><b id="pollDuplicates">—</b><span>Duplicates skipped</span></div><div class="stat"><b id="pollErrors">—</b><span>Errors</span></div></div><div class="poll-foot"><span id="pollExtra">Counts will appear after the first poll.</span><span id="pollNext">Monitor stopped</span></div></section>
-<section class="card"><div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="activity-clear"><div class="date-filter"><label class="check"><input id="hideOlder" type="checkbox">Hide messages at or before</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Hide messages at or before date and time"><button id="clearActivity" class="small" disabled>Hide through selected message</button></div><p id="activityClearState" class="hint"></p></div><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div id="messages" class="message-list"></div></div><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div><p class="log-note">Recent retained activity, newest first. Duplicate reads are counted in the poll above.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>
+<section class="card"><div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div class="activity-clear"><div class="date-filter"><label for="activitySince">After</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Show messages after date and time" aria-describedby="activityClearState"><button id="clearActivity" class="small" title="Use the highlighted message’s date and hide it and earlier messages" disabled>Use selected message</button><button id="showAllActivity" class="small" disabled>Show all</button></div><p id="activityClearState" class="hint" role="status"></p></div><div id="messages" class="message-list"></div></div><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div><p class="log-note">Recent retained activity, newest first. Duplicate reads are counted in the poll above.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>
 </section></div></main><div id="toast" class="toast hidden" role="status"></div><dialog id="login"><form id="loginForm"><div class="eyebrow">TM</div><h2>Dashboard access</h2><p>Enter the access token from your local configuration. It is saved in this browser.</p><label for="tokenInput">Access token</label><input id="tokenInput" type="password" autocomplete="current-password" required><button class="primary">Connect</button></form></dialog>
-<script>${buildActivityGroups.toString()}; ${syncAgentRecordList.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;
+<script>${filterActivityAfter.toString()}; ${parseActivityDate.toString()}; ${buildActivityGroups.toString()}; ${syncAgentRecordList.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;

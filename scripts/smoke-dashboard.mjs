@@ -188,6 +188,9 @@ try {
   assert.equal((await request("/api/activity/view", "PUT", { through })).status, 200);
   assert.equal((await (await request("/api/activity/view")).json()).clearedThrough, through);
   assert.deepEqual(await (await request("/api/activity?limit=500")).json(), []);
+  assert.deepEqual(await (await request("/api/activity?limit=500&unfiltered=1")).json(), activityBefore, 'dashboard can cache retained history for immediate date filtering');
+  assert.equal((await request('/api/activity/view', 'PUT', { through: '2026-02-30T00:00:00.000Z' })).status, 400);
+  assert.equal((await (await request('/api/activity/view')).json()).clearedThrough, through, 'invalid input preserves the saved cutoff');
   assert.equal(await readFile(join(DATA_DIR, "activity.jsonl"), "utf8"), auditBefore, "activity filter leaves the audit log intact");
   assert.equal((await request("/api/activity/view", "PUT", { through: null })).status, 200);
   assert.deepEqual(await (await request("/api/activity?limit=500")).json(), activityBefore);
@@ -196,6 +199,8 @@ try {
   assert(!page.includes("Monitor dashboard"));
   assert(page.includes('id="pauseUpdates"') && page.includes('id="clearActivity"'));
   assert(page.includes('id="activitySince"'));
+  assert(page.includes('id="showAllActivity"') && page.includes('Use selected message'));
+  assert(!page.includes('id="hideOlder"'));
   assert(page.includes('id="rulesForm"') && page.includes('id="alertRules"'));
   assert(page.includes('<a id="policyFile" class="policy-file">policy.ts</a>'));
   assert(page.includes('link.textContent = policy.path') && page.includes('link.href = policy.editorUrl'));

@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./local-paths.mjs";
+import { filterActivityAfter } from './activity-filter.mjs';
 
 const FILE = join(DATA_DIR, "activity-view.json");
 export function activityView() {
@@ -30,21 +31,5 @@ function save(view) {
 }
 
 export function visibleActivity(records, { clearedThrough } = activityView()) {
-  if (!clearedThrough) return records;
-  const cutoff = Date.parse(clearedThrough);
-  const starts = new Map();
-  for (const r of records) {
-    if (!r || typeof r !== "object" || !r.flowId) continue;
-    const start = Date.parse(r.flowStartedAt || r.at);
-    starts.set(r.flowId, Math.min(starts.get(r.flowId) ?? Infinity, start));
-  }
-  // With a truncated tail, a flow without its opening message is incomplete;
-  // don't resurrect its late stages after the user cleared it.
-  const known = new Set(records.filter(r => r && (r.flowStartedAt || r.stage === "message")).map(r => r.flowId));
-  return records.filter(r => {
-    if (!r || typeof r !== "object") return true; // Let the UI identify malformed records.
-    if (r.kind === "invalid_log" || !Number.isFinite(Date.parse(r.at))) return true;
-    if (!r.flowId) return Date.parse(r.at) > cutoff;
-    return known.has(r.flowId) && starts.get(r.flowId) > cutoff;
-  });
+  return filterActivityAfter(records, clearedThrough);
 }
