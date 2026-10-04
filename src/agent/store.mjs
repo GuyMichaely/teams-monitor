@@ -27,6 +27,10 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
     CREATE TABLE IF NOT EXISTS reaction_snapshots(id TEXT PRIMARY KEY,body TEXT,observed INTEGER);
     CREATE INDEX IF NOT EXISTS action_due ON actions(state,due);
+    CREATE INDEX IF NOT EXISTS record_run ON records(runId,seq);
+    CREATE INDEX IF NOT EXISTS record_kind ON records(kind,seq);
+    CREATE INDEX IF NOT EXISTS record_message ON records(json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.context.messageId')) WHERE kind='policy_input';
+    CREATE INDEX IF NOT EXISTS record_policy_model ON records(json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.policyRunId')) WHERE kind IN ('agent_input','agent_result');
     CREATE INDEX IF NOT EXISTS message_chat ON messages(chat,time);`);
   const store = {
     mode(value) {
@@ -199,6 +203,15 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     search(query, chat = null) { return db.query('SELECT * FROM messages WHERE (? IS NULL OR chat=?) AND instr(lower(body),lower(?))>0 ORDER BY time DESC LIMIT 100').all(chat, chat, query).map(decode); },
     record(runId, kind, value) { db.query('INSERT INTO records(runId,kind,body,at) VALUES(?,?,?,?)').run(runId, kind, JSON.stringify(value), Date.now()); },
     records(limit = 100) { return db.query('SELECT * FROM records ORDER BY seq DESC LIMIT ?').all(Math.min(limit, 500)).map(decode); },
+    messageRuns(messageId) {
+      const runs = db.query("SELECT runId FROM records WHERE kind='policy_input' AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.context.messageId')=? ORDER BY seq DESC LIMIT 10").all(messageId);
+      return runs.map(({ runId }) => {
+        const policy = db.query("SELECT * FROM records WHERE runId=? AND kind IN ('policy_input','policy_result','policy_failed') ORDER BY seq").all(runId).map(decode);
+        const modelIds = db.query("SELECT DISTINCT runId FROM records WHERE kind IN ('agent_input','agent_result') AND json_extract(CASE WHEN json_valid(body) THEN body ELSE '{}' END,'$.policyRunId')=? LIMIT 20").all(runId);
+        const models = modelIds.flatMap(({ runId }) => db.query('SELECT * FROM records WHERE runId=? ORDER BY seq DESC LIMIT 300').all(runId).reverse().map(decode));
+        return { policy, models };
+      });
+    },
     plan(runId, actions) {
       db.transaction(() => {
         if (db.query("SELECT COUNT(*) n FROM actions WHERE state='pending'").get().n + actions.length > 500) throw Error('Pending action limit reached');

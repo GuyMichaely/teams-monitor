@@ -11,6 +11,7 @@ import { AgentRuntimeError } from './errors.mjs';
 import { conversationId } from './conversations.mjs';
 import { sandboxStatus } from './sandbox.mjs';
 import { sandboxLimits } from './sandbox-limits.mjs';
+import { messageInvocations } from './invocations.mjs';
 
 const input = (value, max = 16000) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new AgentRuntimeError('INVALID_INPUT', 'Invalid or oversized input.');
@@ -75,6 +76,8 @@ export async function agentAPI({ url, method, body, store, running = false }) {
       records: store.records(50).map(presentRecord), actions: store.actions(), conversations: store.conversations(), modelConversations };
   }
   if (path === '/api/agent/mode' && method === 'PUT') return { mode: store.mode(body.mode) };
+  if (path === '/api/agent/invocations' && method === 'GET')
+    return messageInvocations(store, input(url.searchParams.get('messageId'), 128), running ? store.current() : null);
   if (path === '/api/agent/conversation' && method === 'GET') {
     const id = conversationId(input(url.searchParams.get('id'), 300)), s = store.session(id);
     if (!s.exists) throw new AgentRuntimeError('NOT_FOUND', 'Conversation has no committed history yet.');

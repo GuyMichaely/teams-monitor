@@ -144,6 +144,15 @@ snapshots. There is no old rules runtime/API or `.mjs` policy loading path.
 
 ## Agent permissions and continuity
 
+To inspect a message's model calls, select it in **Message activity → Seen by
+the orchestrator**. **Agent invocations** above its handling trace shows the
+policy decision, requests, responses, tools, timing/errors, permissions, input
+context and evaluated code. Fresh calls are inspectable here without creating
+named history. Requests are recorded before model execution, including runs that
+fail or time out. This viewer is read-only and preserves expanded details and
+scroll position during live refresh. Oversized records have explicit truncation.
+The authenticated endpoint is `GET /api/agent/invocations?messageId=...`.
+
 The dashboard's **Agent permissions** YAML editor edits the complete `agent.ceiling`
 mapping (not the whole config). It displays effective defaults, preserves unsaved
 edits, validates before atomic save and retains unrelated settings. Keep all six

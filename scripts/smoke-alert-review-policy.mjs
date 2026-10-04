@@ -37,6 +37,10 @@ const check = async (context, model, expected, settings = config) => {
     assert.equal(result.ok, true, JSON.stringify(result.error));
     assert.equal(result.actions.filter(action => !action.cancelled).length, Number(expected), JSON.stringify(result.value));
     assert.equal(result.value.alert, expected);
+    const request = store.records(100).find(record => record.kind === 'agent_input');
+    assert.equal(request?.value.policyRunId, result.runId, 'request is linked to the policy invocation before model completion');
+    assert.equal(JSON.parse(request.value.input.at(-1).content).context.messageId, context.messageId);
+    assert.equal(typeof request.value.instructions, 'string', 'actual system instructions are retained even on timeout');
     assert.equal(store.actions().length, 0, 'tests stage effects only; nothing is sent');
     return result;
   } finally { store.close(); }

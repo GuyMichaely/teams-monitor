@@ -123,7 +123,7 @@ export function startGui(config, presence = { get: getTeamsPresence, set: setTea
         agent ||= agentStore();
         res.setHeader('Cache-Control', 'no-store');
         const body = ['POST', 'PUT'].includes(req.method) ? await readJsonBody(req, 262144) : {};
-        const health = url.pathname === '/api/agent/status' ? await orchestratorStatus((await loadConfig()).pollIntervalMs) : null;
+        const health = ['/api/agent/status', '/api/agent/invocations'].includes(url.pathname) ? await orchestratorStatus((await loadConfig()).pollIntervalMs) : null;
         return sendJson(res, 200, await agentAPI({ url, method: req.method, body, store: agent, running: !!health?.running }));
       } catch (error) { return sendJson(res, 400, { ok: false, error: error.code ? error.message : 'Invalid agent request.', code: error.code, locations: error.details?.locations }); }
     }
