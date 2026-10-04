@@ -201,6 +201,8 @@ try {
   assert(page.includes('id="activitySince"'));
   assert(page.includes('id="showAllActivity"') && page.includes('Use selected message'));
   assert(!page.includes('id="hideOlder"'));
+  assert(!page.includes('Native helper ready'));
+  assert.match(page, /\$\(['"]sandboxStatus['"]\)\.hidden = sandbox.available/, 'only unavailable sandbox status should be shown');
   assert(page.includes('id="rulesForm"') && page.includes('id="alertRules"'));
   assert(page.includes('<a id="policyFile" class="policy-file">policy.ts</a>'));
   assert(page.includes('link.textContent = policy.path') && page.includes('link.href = policy.editorUrl'));

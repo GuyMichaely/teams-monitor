@@ -529,7 +529,8 @@ function dashboardClient() {
       setText('agentRefreshState', 'Updated ' + time(new Date().toISOString()));
       const sandboxVersion = sandboxRevision;
       const sandbox = await api('/api/agent/sandbox');
-      status('sandboxStatus', sandbox.available ? 'Native helper ready' : 'Unavailable', sandbox.available ? 'good' : 'warn');
+      status('sandboxStatus', 'Unavailable', 'warn');
+      $('sandboxStatus').hidden = sandbox.available;
       setText('sandboxInfo', sandbox.reason);
       if (!sandboxDirty && !sandboxSaving && sandboxVersion === sandboxRevision) {
         if ($('sandboxLimits').value !== sandbox.source) $('sandboxLimits').value = sandbox.source;
@@ -731,7 +732,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <form id="agentPermissionsForm"><fieldset id="agentPermissionsFields" class="settings-fields" disabled><label for="agentPermissions">agent.ceiling · YAML</label><textarea id="agentPermissions" class="code-input" rows="18" spellcheck="false" aria-describedby="agentPermissionsHelp"></textarea><p id="agentPermissionsHelp" class="hint"><code>tools</code>: permitted tool names. <code>readChats</code>/<code>writeChats</code>: exact chat names or <code>'*'</code> for all. <code>initiateActions</code>: message, alert, status, wake. <code>cancelIds</code>: pending action IDs or <code>'*'</code>. <code>modifyIds</code>: IDs mapped to <code>[text]</code>, or <code>{}</code> for none. Empty lists permit none. Keep all six fields.</p><p class="hint">Tools: list_conversations, read_conversation, read_reactions, search_conversations, send_message, alert, set_status, schedule, cancel_action, modify_action, list_notes, read_note, search_notes, write_note.</p><div class="form-footer"><span id="agentPermissionsState" class="save-state" aria-live="polite"></span><button class="small">Save agent permissions</button></div></fieldset></form>
 <p class="hint">Sandboxed <code>execute_bun</code> is always available for computation. Host tool access still requires the permissions above.</p>
 <p class="hint">Restrictions are rechecked on tool calls and execution. Existing tasks cannot gain permission beyond their saved limits. Invalid saves leave the configuration unchanged.</p></div></section>
-<section class="card"><div class="card-body"><div class="section-title"><h2>Bun sandbox</h2><span id="sandboxStatus" class="badge neutral">Checking…</span></div>
+<section class="card"><div class="card-body"><div class="section-title"><h2>Bun sandbox</h2><span id="sandboxStatus" class="badge warn" hidden>Unavailable</span></div>
 <p id="sandboxInfo" class="hint"></p><p class="hint">Native Windows isolation; no VM or WSL. Direct network access and filesystem writes are blocked. Host tools retain permission checks. Code faults and limit failures discard that execution’s changes.</p>
 <form id="sandboxForm"><fieldset id="sandboxFields" class="settings-fields" disabled><label for="sandboxLimits">agent.sandbox · YAML</label><textarea id="sandboxLimits" class="code-input" rows="6" spellcheck="false"></textarea><p class="hint">Maximum per execution: timeoutMs (100–30000), memoryMb (256–2048), cpuPercent (1–25, total CPU capacity), maxProcesses (1–8), outputBytes (4096–262144). Policy calls and saved continuations can only lower these limits.</p><div class="form-footer"><span id="sandboxSaveState" class="save-state" aria-live="polite"></span><button class="small">Save sandbox limits</button></div></fieldset></form></div></section>
 <section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2><span id="policyVersion" class="badge neutral">Version —</span></div>
