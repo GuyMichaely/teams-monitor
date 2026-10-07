@@ -27,6 +27,11 @@ function normalizeCondition(raw, where, depth, budget) {
   budget.count += 1;
   if (budget.count > MAX_CONDITIONS_PER_RULE) throw new Error(`${where} exceeds maximum condition count ${MAX_CONDITIONS_PER_RULE}`);
 
+  if (Object.hasOwn(raw, "not")) {
+    onlyKeys(raw, new Set(["not"]), where);
+    return { not: normalizeCondition(raw.not, `${where}.not`, depth + 1, budget) };
+  }
+
   if (Object.hasOwn(raw, "all") || Object.hasOwn(raw, "any")) {
     const key = Object.hasOwn(raw, "all") ? "all" : "any";
     onlyKeys(raw, new Set([key]), where);
@@ -114,6 +119,10 @@ export function isMentioned(latest, names = []) {
 
 function evaluateCondition(condition, context) {
   const { chat, latest, config } = context;
+  if (Object.hasOwn(condition, "not")) {
+    const child = evaluateCondition(condition.not, context);
+    return { type: 'not', matched: !child.matched, conditions: [child] };
+  }
   if (Object.hasOwn(condition, "all") || Object.hasOwn(condition, "any")) {
     const key = Object.hasOwn(condition, "all") ? "all" : "any";
     const children = condition[key].map(child => evaluateCondition(child, context));

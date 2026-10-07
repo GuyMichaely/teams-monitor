@@ -22,6 +22,7 @@ for (const invalid of [
   [rule('x', { type: 'mention' }, { type: 'ignore' }, { extra: true })],
   [rule('x', { type: 'mention' }, { type: 'ignore' }, { agent: { cancel: 'yes' } })],
   [rule('x', { all: [] })], [rule('x', { any: Array(21).fill({ type: 'mention' }) })],
+  [rule('x', { not: null })], [rule('x', { not: { type: 'mention' }, all: [{ type: 'mention' }] })],
 ]) assert.throws(() => validateDeterministicRules(invalid));
 for (const automation of [
   { unknown: true }, { agent: { initiate: { when: 'sometimes', actions: [] } } },

@@ -6,6 +6,36 @@ const rule = (id, type = 'alert_phone', agent = {}) => ({ id, when: { field: 'te
 const input = (automationRules, extra = {}) => ({ chat: 'Alex', latest: { author: 'Alex', text: 'urgent, please' }, config: { automation: { rules: automationRules } }, whitelisted: false, ...extra });
 const emptyPlan = { changes: [], additions: [], reason: 'keep configured plan' };
 
+// A muted DM must also block unmatched-model initiation, while mentions and
+// messages in group chats retain their existing behavior.
+const mutedAuthor = { field: 'author', match: 'exact', value: 'Muted Contact' };
+const exceptionConfig = {
+  alerts: { mentionNames: ['Guy'] },
+  automation: {
+    rules: [
+      { id: 'dm', when: { all: [{ type: 'direct_message' }, { not: mutedAuthor }] }, action: { type: 'alert_phone' } },
+      { id: 'mention', when: { type: 'mention' }, action: { type: 'alert_phone' } },
+      { id: 'muted-dm', when: { all: [{ type: 'direct_message' }, mutedAuthor, { not: { type: 'mention' } }] }, action: { type: 'ignore' } },
+    ],
+    agent: { initiate: { when: 'unmatched', actions: ['alert_phone', 'reply'] } },
+  },
+};
+for (const [chat, author, text, mentions, expected, calls] of [
+  ['Muted Contact', ' muted  CONTACT ', 'hello', [], ['ignore'], 0],
+  ['Muted Contact', 'Muted Contact', 'hello', ['Guy'], ['alert_phone'], 0],
+  ['Muted Contact', 'Muted Contact', '@Guy hello', [], ['alert_phone'], 0],
+  ['Other Contact', 'Other Contact', 'hello', [], ['alert_phone'], 0],
+  ['Group', 'Muted Contact', 'hello', [], [], 1],
+  ['Group', 'Muted Contact', 'hello', ['Guy'], ['alert_phone'], 0],
+]) {
+  let reviews = 0;
+  const result = await decideWithRules({ chat, latest: { author, text, mentions }, config: exceptionConfig, whitelisted: true }, {
+    async reviewPlan() { reviews++; return emptyPlan; },
+  });
+  assert.deepEqual(result.ruleActions.map(p => p.action.type), expected);
+  assert.equal(reviews, calls);
+}
+
 // All matching actions survive; initiation policy can add only explicitly permitted types.
 let received;
 const multi = await decideWithRules(input([rule('one'), rule('two', 'ignore')], { config: { automation: { rules: [rule('one'), rule('two', 'ignore')], agent: { initiate: { when: 'always', actions: ['alert_phone', 'reply'] } } } } }), {
