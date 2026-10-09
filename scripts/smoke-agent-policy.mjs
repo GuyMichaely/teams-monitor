@@ -5,7 +5,9 @@ import { Usage } from '@openai/agents';
 import { loadConfig, saveConfig } from '../src/context.mjs';
 import { agentStore } from '../src/agent/store.mjs';
 import { POLICY_FILE, evaluatePolicy, savePolicy } from '../src/agent/policy.mjs';
+import { messageInvocations } from '../src/agent/invocations.mjs';
 import { AgentRuntimeError } from '../src/agent/errors.mjs';
+import { mergePolicyAttributes } from '../src/agent/policy-attributes.mjs';
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const message = text => ({ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text }] });
@@ -17,10 +19,19 @@ const toolResult = (request, callId) => {
   const output = typeof item.output === 'string' ? item.output : item.output?.type === 'text' ? item.output.text : item.output;
   return typeof output === 'string' ? JSON.parse(output) : output;
 };
-const context = { trigger: 'smoke', chatName: 'Alice', authorName: 'Alice', message: { id: 'incoming-1', author: 'Alice', text: 'fixture message', time: new Date().toISOString() }, history: [] };
+const context = { trigger: 'smoke', messageId: 'smoke-message', chatName: 'Alice', authorName: 'Alice', message: { id: 'incoming-1', author: 'Alice', text: 'fixture message', time: new Date().toISOString() }, history: [] };
 const policy = source => `export async function handle(ctx, actions) { ${source} }`;
 const freshStore = () => agentStore(':memory:');
 const evaluate = (store, options = {}) => evaluatePolicy(context, { store, ...options });
+
+// Policy log metadata is a validated, bounded scalar map with merge semantics.
+assert.deepEqual(mergePolicyAttributes({ stage: 'triage', count: 1 }, { stage: 'reply', ok: true }),
+  { stage: 'reply', count: 1, ok: true });
+for (const invalid of [
+  { nested: { value: true } }, { nan: Number.NaN }, { tooLong: 'x'.repeat(513) },
+  Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`k${index}`, true])),
+  { 'bad key': 'value' },
+]) assert.throws(() => mergePolicyAttributes({}, invalid));
 
 let config = await loadConfig();
 config.replyPolicy = { mode: 'whitelist', entries: ['Alice'] };
@@ -99,7 +110,7 @@ for (const invalid of ['export async function handle( {', 'export const handle =
 
 // A true policy exception discards every proposal made by that invocation.
 {
-  await savePolicy(policy("await actions.alert({ title: 'Policy', body: 'must be discarded' }); throw new Error('fixture');"), POLICY_FILE);
+  await savePolicy(policy("ctx.log.setAttributes({ stage: 'before-fault', retained: true }); await actions.alert({ title: 'Policy', body: 'must be discarded' }); throw new Error('fixture');"), POLICY_FILE);
   const store = freshStore();
   try {
     const result = await evaluate(store);
@@ -107,6 +118,28 @@ for (const invalid of ['export async function handle( {', 'export const handle =
     assert.equal(result.error.code, 'POLICY_FAULT');
     assert.equal(result.actions, undefined);
     assert.equal(store.actions().length, 0);
+    const event = store.records(20).find(row => row.kind === 'policy_attributes');
+    assert.deepEqual(event?.value?.attributes, { stage: 'before-fault', retained: true }, 'attributes remain durable when policy later fails');
+  } finally { store.close(); }
+}
+
+// Attribute updates merge, expose only snapshots, and keep the policy function
+// out of serialized context/model input.
+{
+  await savePolicy(policy("ctx.log.setAttributes({ stage: 'triage', attempt: 1 }); ctx.log.setAttributes({ stage: 'decision', accepted: true }); return { enumerable: Object.keys(ctx).includes('log'), serialized: JSON.stringify(ctx).includes('setAttributes') };"), POLICY_FILE);
+  const store = freshStore();
+  try {
+    const result = await evaluate(store);
+    assert.equal(result.ok, true, JSON.stringify(result.error));
+    assert.deepEqual(result.value, { enumerable: false, serialized: false });
+    const updates = store.records(20).filter(row => row.kind === 'policy_attributes').reverse().map(row => row.value.attributes);
+    assert.deepEqual(updates, [
+      { stage: 'triage', attempt: 1 },
+      { stage: 'decision', attempt: 1, accepted: true },
+    ]);
+    const invocation = messageInvocations(store, 'smoke-message', null).runs[0];
+    assert.deepEqual(invocation.attributes, { stage: 'decision', attempt: 1, accepted: true });
+    assert.deepEqual(invocation.attributeUpdates.map(update => update.attributes), updates);
   } finally { store.close(); }
 }
 
@@ -150,10 +183,16 @@ for (const invalid of ['export async function handle( {', 'export const handle =
 
 // Failed SDK runs return an error value and leave the original deterministic proposal intact.
 {
-  await savePolicy(policy("const deterministic = await actions.alertMessage(); const review = await actions.llm('review', { tools: [], readChats: ['Alice'], writeChats: [], cancelIds: [], modifyIds: {}, initiateActions: [] }); return { deterministic, review };"), POLICY_FILE);
+  await savePolicy(policy("ctx.log.setAttributes({ stage: 'provider-review' }); const deterministic = await actions.alertMessage(); const review = await actions.llm('review', { tools: [], readChats: ['Alice'], writeChats: [], cancelIds: [], modifyIds: {}, initiateActions: [] }); return { deterministic, review };"), POLICY_FILE);
   const store = freshStore();
   try {
-    const model = { async getResponse() { throw new AgentRuntimeError('PROVIDER_ERROR', 'mock provider unavailable'); } };
+    const model = { async getResponse(request) {
+      const user = request.input.find(item => item.role === 'user');
+      const text = typeof user?.content === 'string' ? user.content : user?.content?.find(item => item.type === 'input_text' || item.type === 'text')?.text;
+      assert(text, 'provider receives the serialized review input');
+      assert.equal(Object.hasOwn(JSON.parse(text).context, 'log'), false, 'policy functions stay outside provider context');
+      throw new AgentRuntimeError('PROVIDER_ERROR', 'mock provider unavailable');
+    } };
     const result = await evaluate(store, { model });
     assert.equal(result.ok, true, JSON.stringify(result.error));
     assert.equal(result.value.review.ok, false);
@@ -204,7 +243,7 @@ for (const invalid of ['export async function handle( {', 'export const handle =
 
 // The bounded subprocess kills an infinite handler at the configured 1-second deadline.
 {
-  await savePolicy(policy('while (true) {}'), POLICY_FILE);
+  await savePolicy(policy("ctx.log.setAttributes({ stage: 'before-timeout' }); while (true) {}"), POLICY_FILE);
   const store = freshStore();
   try {
     const started = Date.now();
@@ -213,6 +252,8 @@ for (const invalid of ['export async function handle( {', 'export const handle =
     assert.equal(result.error.code, 'POLICY_TIMEOUT', JSON.stringify(result));
     assert(Date.now() - started < 5000, 'policy deadline is bounded near one second');
     assert.equal(store.actions().length, 0);
+    const event = store.records(20).find(row => row.kind === 'policy_attributes');
+    assert.deepEqual(event?.value?.attributes, { stage: 'before-timeout' }, 'attributes already emitted survive a policy timeout');
   } finally { store.close(); }
 }
 

@@ -202,7 +202,10 @@ try {
   assert(!page.includes("Monitor dashboard"));
   assert(page.includes('id="pauseUpdates"') && page.includes('id="clearActivity"'));
   assert(page.includes('id="activitySince"'));
-  assert(page.includes('id="showAllActivity"') && page.includes('Use selected message'));
+  assert(page.includes('id="showAllActivity"') && page.includes('Use selected event'));
+  assert(!page.includes('id="messageFilter"'), 'events have no type/outcome dropdown');
+  assert(page.includes('id="peopleView"') && page.includes('id="personForm"'));
+  assert(page.includes('id="actionsView"') && page.includes('Response timeline'));
   assert(!page.includes('id="hideOlder"'));
   assert(!page.includes('Native helper ready'));
   assert(!page.includes('policyVersion') && !page.includes('agentPolicyVersion'), 'internal policy versions are not shown or tracked unnecessarily in the UI');

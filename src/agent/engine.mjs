@@ -116,6 +116,9 @@ export async function runEngine({ handle, onWake, onActionResult, signal, client
       if (!work) return;
       try {
         const context = { ...work.value, trigger: work.kind, now: new Date().toISOString(), userProfile: await profileLoader() };
+        const parentAction = work.value.actionId || work.value.outcome?.id;
+        const sourceMessage = parentAction ? store.action(parentAction)?.messageId : work.value.messageId;
+        if (sourceMessage) context.messageId = sourceMessage;
         if (context.conversationId && context.conversationEpoch !== undefined && store.session(context.conversationId).epoch !== context.conversationEpoch) {
           store.finishWork(work.id, 'cancelled');
           store.record(work.id, 'continuation_cancelled', { conversationId: context.conversationId, reason: 'Conversation reset after queueing' });
@@ -134,7 +137,9 @@ export async function runEngine({ handle, onWake, onActionResult, signal, client
       const context = messageContext(row, store, await configLoader(), await profileLoader());
       context.brief = store.brief(row.chat).text;
       await flow(row, 'policy', { source: 'javascript', reason: 'Running policy' });
-      const result = await handle(context, { store, configLoader, signal: controller.signal });
+      const result = await handle(context, { store, configLoader, signal: controller.signal,
+        onAttributes: attributes => flow(row, 'policy', { attributes }),
+        onModelResult: result => flow(row, 'brain_output', { source: 'agent', status: result.ok ? 'ok' : 'error', result, reason: result.ok ? 'Model call completed' : result.error?.message || 'Model call failed' }) });
       if (stopped()) { store.finishMessage(row.id, 'uncertain'); return; }
       if (!result.ok) { store.finishMessage(row.id, 'failed'); await flow(row, 'error', { source: 'policy', error: result.error?.message }); return; }
       store.commit(result.runId || randomUUID(), result, row.id);
@@ -151,7 +156,11 @@ export async function runEngine({ handle, onWake, onActionResult, signal, client
       onResult: async (outcome, job) => {
         const row = store.message(job.messageId || job.runId);
         if (row) await flow(row, 'effect', { effect: { message: 'teams_reply', alert: 'phone_alert', status: 'teams_status' }[outcome.action?.kind] || 'agent_wake', status: outcome.state === 'completed' ? 'ok' : 'error', result: outcome.result });
-        if (outcome.action?.kind !== 'wake') store.enqueue('action_result', { contextId: `action:${outcome.id}`, outcome });
+        if (outcome.action?.kind !== 'wake') store.enqueue('action_result', {
+          contextId: `action:${outcome.id}`, outcome,
+          chatName: row?.chat || outcome.action?.chat || outcome.action?.chatName,
+          authorName: row?.value?.author || outcome.action?.authorName,
+        });
       } });
     // Existing manual schedules use the very same GUI-owned Teams queue.
     await runScheduledAction({ store: schedules, loadConfig: configLoader, stopped, audit: logActivity,

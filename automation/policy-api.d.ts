@@ -132,6 +132,16 @@ export interface BasePolicyContext {
   now: string;
   userProfile: string;
   contextId?: string;
+  /** Originating recorded event, when a wake/result/intervention is linked to one. */
+  messageId?: string;
+  /** Local policy diagnostics. This function is not included in model/provider input. */
+  log: PolicyLog;
+}
+export type PolicyAttributeValue = string | number | boolean | null;
+export type PolicyAttributes = Record<string, PolicyAttributeValue>;
+export interface PolicyLog {
+  /** Merge scalar attributes into this invocation's durable event log. Reusing a key overwrites it. */
+  setAttributes(attributes: PolicyAttributes): void;
 }
 /** Context for handle(). */
 export interface PolicyContext extends BasePolicyContext {
@@ -154,6 +164,10 @@ export interface WakeContext extends BasePolicyContext {
   ceiling: AgentPermissions;
   conversationId?: string | null;
   conversationEpoch?: number;
+  /** Chat/person context captured when the wake was scheduled, when available. */
+  chatName?: string;
+  authorName?: string;
+  brief?: string;
   due: number;
   latenessMs: number;
   actionId: string;
@@ -166,6 +180,8 @@ export interface InterventionContext extends BasePolicyContext {
   conversationId: string;
   conversationEpoch: number;
   chatName?: string;
+  authorName?: string;
+  brief?: string;
 }
 export interface ActionOutcome {
   id: string;
@@ -179,6 +195,8 @@ export interface ActionResultContext extends BasePolicyContext {
   trigger: 'action_result';
   contextId: string;
   outcome: ActionOutcome;
+  chatName?: string;
+  authorName?: string;
 }
 export type AnyPolicyContext = PolicyContext | WakeContext | InterventionContext | ActionResultContext;
 

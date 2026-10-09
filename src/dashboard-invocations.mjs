@@ -6,6 +6,12 @@ export function invocationViewHTML(data) {
   const time = at => at ? new Date(at).toLocaleString() : '—';
   const detail = (key, label, value) => value == null ? '' : `<details data-invocation-key="${escape(key)}"><summary>${escape(label)}${value?.truncated ? ' · truncated' : ''}</summary><pre>${escape(pretty(value))}</pre></details>`;
   const text = value => typeof value === 'string' ? value : Array.isArray(value) ? value.map(part => part?.text || '').filter(Boolean).join('\n') : '';
+  const inputContext = input => {
+    try {
+      const content = Array.isArray(input) ? text(input.findLast(item => item?.role === 'user')?.content) : typeof input === 'string' ? input : '';
+      return JSON.parse(content)?.context;
+    } catch { return null; }
+  };
   const transcript = (items, key) => Array.isArray(items) ? items.map((item, index) => {
     if (!item || typeof item !== 'object') return detail(key + index, 'Invalid log format', item);
     if (item.type === 'function_call') return detail(key + index, 'Tool call · ' + item.name, item);
@@ -23,7 +29,8 @@ export function invocationViewHTML(data) {
     const decisionText = typeof decision?.alert === 'boolean' ? `Policy decision: ${decision.alert ? 'Alert' : 'No alert'} · ${decision.decidedBy === 'llm' ? 'LLM' : 'Deterministic fallback'}${typeof decision.deterministicAlert === 'boolean' ? ' · heuristic: ' + (decision.deterministicAlert ? 'alert' : 'no alert') : ''}` : '';
     return `<section class="invocation-policy"><p class="invocation-decision">${escape(decisionText || (run.replay ? 'Policy replay' : 'Policy invocation'))}${run.replay && decisionText ? ' · replay' : ''}</p>${run.error ? `<p class="error-text">${escape(pretty(run.error))}</p>` : ''}${run.invocations.map(call => {
       const history = Array.isArray(call.history) ? call.history : call.input;
-      return `<details class="invocation-call" data-invocation-key="call:${escape(call.runId)}" open><summary>${escape(time(call.startedAt))} · ${escape(call.status)} · ${escape(call.conversationId || 'Fresh call')}</summary>${call.error ? `<p class="error-text">${escape(call.error.code || 'Model failed')} · ${escape(call.error.message || '')}</p>` : ''}${detail('instructions:' + call.runId, 'System instructions', call.instructions)}<div class="invocation-transcript">${transcript(history, 'turn:' + call.runId + ':')}${!Array.isArray(call.history) && call.output != null ? `<div class="invocation-turn assistant-turn"><strong>Assistant</strong><pre>${escape(pretty(call.output))}</pre></div>` : ''}</div>${!history ? '<p class="hint">No request transcript was saved for this call.</p>' : ''}${detail('permissions:' + call.runId, 'Granted permissions', call.permissions)}${detail('events:' + call.runId, 'Execution log · tools, timing and errors', call.events)}${call.history?.truncated ? detail('history:' + call.runId, 'Transcript excerpt', call.history) : ''}</details>`;
+      const context = inputContext(call.input);
+      return `<details class="invocation-call" data-invocation-key="call:${escape(call.runId)}" open><summary>${escape(time(call.startedAt))} · ${escape(call.status)} · ${escape(call.conversationId || 'Fresh call')}</summary>${call.error ? `<p class="error-text">${escape(call.error.code || 'Model failed')} · ${escape(call.error.message || '')}</p>` : ''}${detail('instructions:' + call.runId, 'System instructions', call.instructions)}${detail('notes:' + call.runId, 'Person notes included · saved snapshot', context?.personNotes)}${detail('brief:' + call.runId, 'Chat brief included · saved snapshot', context?.brief)}<div class="invocation-transcript">${transcript(history, 'turn:' + call.runId + ':')}${!Array.isArray(call.history) && call.output != null ? `<div class="invocation-turn assistant-turn"><strong>Assistant</strong><pre>${escape(pretty(call.output))}</pre></div>` : ''}</div>${!history ? '<p class="hint">No request transcript was saved for this call.</p>' : ''}${detail('permissions:' + call.runId, 'Granted permissions', call.permissions)}${detail('events:' + call.runId, 'Execution log · tools, timing and errors', call.events)}${call.history?.truncated ? detail('history:' + call.runId, 'Transcript excerpt', call.history) : ''}</details>`;
     }).join('') || '<p class="hint">This policy did not record an LLM call.</p>'}${detail('code:' + run.runId, 'Evaluated policy code', run.source)}${detail('context:' + run.runId, 'Policy input context', run.context)}${detail('decision:' + run.runId, 'Policy result', run.decision)}</section>`;
   }).join('');
 }

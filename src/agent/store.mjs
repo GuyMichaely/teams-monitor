@@ -37,6 +37,8 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     CREATE TABLE IF NOT EXISTS records(seq INTEGER PRIMARY KEY AUTOINCREMENT,runId TEXT,kind TEXT,body TEXT,at INTEGER,messageId TEXT,policyRunId TEXT,conversationId TEXT);
     CREATE TABLE IF NOT EXISTS action_sources(actionId TEXT PRIMARY KEY,messageId TEXT);
     CREATE TABLE IF NOT EXISTS documents(kind TEXT,path TEXT,text TEXT,PRIMARY KEY(kind,path));
+    CREATE TABLE IF NOT EXISTS person_notes(normalized TEXT PRIMARY KEY,name TEXT NOT NULL,note TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS chat_memberships(normalized TEXT NOT NULL,chat TEXT NOT NULL,source TEXT NOT NULL,members TEXT NOT NULL,PRIMARY KEY(normalized,source));
     CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,body TEXT,summary TEXT);
     CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY,kind TEXT,body TEXT,created INTEGER,state TEXT);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
@@ -101,6 +103,40 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
       return { path, text: db.query("SELECT text FROM documents WHERE kind='note' AND path=?").get(path)?.text || '' };
     },
     notes() { return db.query("SELECT path,text FROM documents WHERE kind='note' ORDER BY path").all(); },
+    personNote(name, note) {
+      if (typeof name !== 'string' || !name.trim() || name.length > 200) throw Error('Invalid person name');
+      const displayName = name.trim(), key = normalize(displayName);
+      if (note !== undefined) {
+        if (typeof note !== 'string' || note.length > 16000) throw Error('Person note exceeds 16000 characters');
+        if (note.trim().length) db.query('INSERT OR REPLACE INTO person_notes(normalized,name,note) VALUES(?,?,?)').run(key, displayName, note);
+        else db.query('DELETE FROM person_notes WHERE normalized=?').run(key);
+      }
+      return db.query('SELECT name,note FROM person_notes WHERE normalized=?').get(key) || { name: displayName, note: '' };
+    },
+    personNotes() { return db.query('SELECT name,note FROM person_notes ORDER BY normalized').all(); },
+    chatMembers(chat, members) {
+      if (typeof chat !== 'string' || !chat.trim() || chat.length > 300) throw Error('Invalid exact chat name');
+      const displayChat = chat.trim(), key = normalize(displayChat);
+      if (members !== undefined) {
+        if (!Array.isArray(members) || members.length > 100 || members.some(name => typeof name !== 'string' || !name.trim() || name.length > 200)) throw Error('Invalid chat membership');
+        const unique = [], seen = new Set();
+        for (const raw of members) { const name = raw.trim(), normalized = normalize(name); if (!seen.has(normalized)) { seen.add(normalized); unique.push(name); } }
+        db.query('INSERT OR REPLACE INTO chat_memberships(normalized,chat,source,members) VALUES(?,?,?,?)').run(key, displayChat, 'manual', JSON.stringify(unique));
+      }
+      const rows = db.query('SELECT chat,members,source FROM chat_memberships WHERE normalized=? ORDER BY source').all(key);
+      if (!rows.length) return { chat: displayChat, members: [], source: 'unavailable' };
+      const merged = [], seen = new Set();
+      for (const row of rows) {
+        let values; try { values = JSON.parse(row.members); } catch { continue; }
+        if (!Array.isArray(values)) continue;
+        values = values.filter(name => typeof name === 'string' && name.trim() && name.length <= 200);
+        for (const name of values) { const normalized = normalize(name); if (!seen.has(normalized)) { seen.add(normalized); merged.push(name); } }
+      }
+      return { chat: rows[0].chat, members: merged, source: rows.map(row => row.source).join('+') };
+    },
+    chatMemberships() {
+      return db.query('SELECT chat FROM chat_memberships GROUP BY normalized ORDER BY normalized').all().map(row => store.chatMembers(row.chat));
+    },
     brief(chat, text) {
       if (typeof chat !== 'string' || !chat.trim() || chat.length > 300) throw Error('Invalid exact chat name');
       if (text !== undefined) {
@@ -156,7 +192,7 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
         }
         const work = workId ? decode(db.query('SELECT * FROM work WHERE id=?').get(workId))?.value : null;
         const parentId = work?.actionId || work?.outcome?.id;
-        const source = messageId || (parentId ? store.action(parentId)?.messageId : null);
+        const source = messageId || (parentId ? store.action(parentId)?.messageId : work?.messageId) || null;
         store.plan(messageId || runId, plan.actions || [], source);
         for (const id of plan.cancellations || []) if (!store.cancel(id)) throw Error('Action is no longer pending; no plan committed');
         for (const [id, edit] of Object.entries(plan.modifications || {})) {
@@ -231,7 +267,7 @@ export function agentStore(file = join(DATA_DIR, 'agent', 'store.sqlite')) {
     messageRuns(messageId) {
       const runs = db.query("SELECT runId FROM records WHERE kind='policy_input' AND messageId=? ORDER BY seq DESC LIMIT 10").all(messageId);
       return runs.map(({ runId }) => {
-        const policy = db.query("SELECT * FROM records WHERE runId=? AND kind IN ('policy_input','policy_result','policy_failed') ORDER BY seq").all(runId).map(decodeRecord);
+        const policy = db.query("SELECT * FROM records WHERE runId=? AND kind IN ('policy_input','policy_attributes','policy_result','policy_failed') ORDER BY seq").all(runId).map(decodeRecord);
         const modelIds = db.query("SELECT DISTINCT runId FROM records WHERE kind IN ('agent_input','agent_result') AND policyRunId=? LIMIT 20").all(runId);
         const models = modelIds.flatMap(({ runId }) => db.query('SELECT * FROM records WHERE runId=? ORDER BY seq DESC LIMIT 300').all(runId).reverse().map(decodeRecord));
         return { policy, models };

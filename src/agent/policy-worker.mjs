@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
+import { mergePolicyAttributes } from './policy-attributes.mjs';
 
 let nonce;
 const emit = value => new Promise(resolve => process.stdout.write('TM_RPC:' + nonce + ':' + JSON.stringify(value) + '\n', resolve));
@@ -20,6 +21,15 @@ lines.on('line', async line => {
     if (typeof policy.handle !== 'function' || ['onWake', 'onIntervention', 'onActionResult'].some(key => policy[key] !== undefined && typeof policy[key] !== 'function')) throw Error('Invalid exports');
     if (item.validate) { await emit({ type: 'done', ok: true }); process.exit(0); }
     const actions = Object.fromEntries(['readReactions', 'sendMessage', 'alert', 'alertMessage', 'setStatus', 'delay', 'cancel', 'modify', 'wake', 'llm'].map(name => [name, (...args) => call(name, args)]));
+    let attributes = {};
+    const log = Object.freeze({
+      setAttributes(patch) {
+        attributes = mergePolicyAttributes(attributes, patch);
+        emit({ type: 'attributes', attributes });
+      },
+    });
+    // The policy-only API must never travel into provider/model context serialization.
+    Object.defineProperty(item.context, 'log', { enumerable: false, value: log });
     const handler = policy[item.handler] || (['onWake', 'onIntervention'].includes(item.handler) ? (ctx, api) => api.llm(ctx.prompt, { ...ctx.ceiling, conversationId: ctx.conversationId }) : null);
     const value = handler ? await handler(item.context, actions) : null;
     if (pending.size) throw Error('Unawaited action calls');

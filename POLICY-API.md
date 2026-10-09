@@ -45,11 +45,35 @@ extend `BasePolicyContext`. `AnyPolicyContext` is their discriminated union;
 | `userProfile` | The configured user introduction/context. |
 | `brief` | Optional saved brief for this chat/person. |
 | `mentionNames` | Configured names used to recognize the user and mentions. |
+| `log` | Local diagnostic API described below; its function is not serialized into model/provider input. |
 
 `latest`, the duplicate `chat` field, `ignoreAuthors` and `notifyAll` are no
 longer supplied. Conditions such as author exclusions belong in your policy.
 `outcome` belongs only to `ActionResultContext`. `ceiling`, `prompt` and
 `conversationId` are supplied for wakes/interventions, not incoming messages.
+
+### `ctx.log.setAttributes(attributes)`
+
+Record bounded, scalar metadata alongside this policy run's durable events:
+
+```ts
+ctx.log.setAttributes({ stage: 'triage', priority: 2, matched: true });
+ctx.log.setAttributes({ stage: 'response' }); // merges; overwrites only `stage`
+```
+
+Updates merge into the run's current attribute map. Reusing a key overwrites its
+value; omitted keys remain. Each update is durably recorded with its full merged
+snapshot and is retained even when the policy later throws or reaches its
+deadline. Invocation data exposes the latest map and ordered update snapshots.
+The API is synchronous and returns `void`; the host records each update over the
+existing policy RPC stream before accepting the policy's completion event.
+
+Allowed values are strings, finite numbers, booleans, or `null`. Maps may have
+at most 32 entries; keys must match `[A-Za-z][A-Za-z0-9_.-]{0,63}`; strings may
+use at most 512 UTF-8 bytes each, and the complete JSON map may use at most 4096
+UTF-8 bytes. Invalid values throw in the policy and are rejected again by the
+host. The property is non-enumerable at runtime, so serializing `ctx` does not
+serialize its function or pass it into an LLM/provider request.
 
 ## `ctx.message`
 

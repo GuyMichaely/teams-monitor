@@ -144,14 +144,35 @@ snapshots. There is no old rules runtime/API or `.mjs` policy loading path.
 
 ## Agent permissions and continuity
 
-To inspect a message's model calls, select it in **Message activity → Seen by
-the orchestrator**. **Agent invocations** above its handling trace shows the
-policy decision, requests, responses, tools, timing/errors, permissions, input
-context and evaluated code. Fresh calls are inspectable here without creating
-named history. Requests are recorded before model execution, including runs that
-fail or time out. This viewer is read-only and preserves expanded details and
-scroll position during live refresh. Oversized records have explicit truncation.
+The dashboard opens on **Events**: messages and reactions, newest first, with
+search and an editable **After** cutoff. There is no event-type dropdown.
+Select an event to see one chronological **Response timeline** combining policy
+execution, calculated attributes, model calls, and action results. Expand a model
+call to inspect its exact input, person-note snapshot, output, tools, permissions,
+and errors. Fresh calls are inspectable without creating named history. Requests
+are saved before execution, including failures and timeouts. Expanded details,
+selection, and scroll position survive live refresh; oversized records are
+explicitly marked as truncated. Policy attributes use `ctx.log.setAttributes()`;
+they are display metadata, never action authority. See POLICY-API.md.
+
+**Actions** collects pending/completed actions and the message/status/wake
+scheduling forms. Agent mode and named-conversation interventions remain there.
+**System logs** holds runtime/transport logs, the raw execution log, and replay.
+
+**People & notes** associates human-written context with exact Teams display
+names (matching ignores case and repeated whitespace). Author notes are included
+automatically in model calls. For groups, enter the full member list under
+**Group membership**; automatic Teams roster discovery is not implemented.
+Notes for listed members are included even if they have not recently spoken.
+Each call reads the latest saved notes and records the exact snapshot; editing
+a note never rewrites an old call. Wakes, action-result hooks, and named
+interventions preserve relevant chat/person context. Blank notes remove the
+association. Chat briefs and agent-managed freeform notes remain available in
+the same view. These records use the existing local SQLite store.
+
 The authenticated endpoint is `GET /api/agent/invocations?messageId=...`.
+Person-note CRUD uses `/api/agent/person-notes`; explicit membership uses
+`/api/agent/chat-members`. Both require normal GUI authentication.
 
 The dashboard's **Agent permissions** YAML editor edits the complete `agent.ceiling`
 mapping (not the whole config). It displays effective defaults, preserves unsaved

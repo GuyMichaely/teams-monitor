@@ -86,6 +86,8 @@ export function actionAPI({ plan, context, configLoader, store, llm, origin = 'p
       if (Object.hasOwn(options, 'contextId')) bad('Use conversationId for explicit history continuation.');
       const id = conversationId(options.conversationId);
       return add({ kind: 'wake', prompt, conversationId: id, conversationEpoch: id ? store.session(id).epoch : undefined,
+        chatName: context.chatName || (id ? store.session(id).chatName : undefined),
+        authorName: context.authorName || (id ? store.session(id).authorName : undefined),
         due: Date.parse(options.dueAt), ceiling: options.permissions || authority || bounded });
     }, 'wake'),
     llm: expected((prompt, options) => llm(prompt, options), 'llm'),

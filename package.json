@@ -12,6 +12,7 @@
     "test:agent-sdk": "bun --no-env-file scripts/smoke-agent-sdk.mjs",
     "test:agent-nvidia": "bun --no-env-file scripts/smoke-agent-nvidia.mjs",
     "test:agent-storage": "bun --no-env-file scripts/smoke-agent-storage.mjs",
+    "test:agent-person-notes": "bun --no-env-file scripts/smoke-agent-person-notes.mjs",
     "test:agent-intake": "bun --no-env-file scripts/smoke-agent-intake.mjs",
     "test:agent-policy": "bun --no-env-file scripts/smoke-agent-policy.mjs",
     "test:agent-continuity": "bun --no-env-file scripts/smoke-agent-continuity.mjs",

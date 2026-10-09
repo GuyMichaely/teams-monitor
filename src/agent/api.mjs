@@ -12,6 +12,7 @@ import { conversationId } from './conversations.mjs';
 import { sandboxStatus } from './sandbox.mjs';
 import { sandboxLimits } from './sandbox-limits.mjs';
 import { messageInvocations } from './invocations.mjs';
+import { validateChatMembers, validatePersonName, validatePersonNote } from './person-notes.mjs';
 
 const input = (value, max = 16000) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new AgentRuntimeError('INVALID_INPUT', 'Invalid or oversized input.');
@@ -106,7 +107,7 @@ export async function agentAPI({ url, method, body, store, running = false }) {
     const granted = active?.permissions || (!s.invalid && s.permissions);
     if (!granted) throw new AgentRuntimeError('NOT_FOUND', 'Select an existing conversation with granted permissions.');
     const ceiling = permissions(granted, permissionCeiling(await loadConfig()));
-    const queued = store.enqueue('intervention', { prompt, conversationId: id, conversationEpoch: active?.conversationEpoch ?? s.epoch, ceiling, chatName: s.chatName });
+    const queued = store.enqueue('intervention', { prompt, conversationId: id, conversationEpoch: active?.conversationEpoch ?? s.epoch, ceiling, chatName: active?.chatName || s.chatName, authorName: active?.authorName || s.authorName, messageId: active?.messageId || s.messageId });
     store.record(queued.id, 'intervention_queued', { conversationId: id, prompt, ceiling });
     return { ok: true, ...queued };
   }
@@ -120,7 +121,8 @@ export async function agentAPI({ url, method, body, store, running = false }) {
     const cfg = await loadConfig(), id = randomUUID();
     const key = conversationId(body.conversationId), s = key ? store.session(key) : null;
     const action = validateAction({ id, kind: 'wake', origin: 'user', prompt: input(body.prompt), conversationId: key,
-      conversationEpoch: s?.epoch, due: Date.parse(body.dueAt), ceiling: s?.permissions ? permissions(s.permissions, permissionCeiling(cfg)) : permissionCeiling(cfg) });
+      conversationEpoch: s?.epoch, chatName: s?.chatName, authorName: s?.authorName,
+      due: Date.parse(body.dueAt), ceiling: s?.permissions ? permissions(s.permissions, permissionCeiling(cfg)) : permissionCeiling(cfg) });
     if (action.due <= Date.now()) throw new AgentRuntimeError('INVALID_INPUT', 'Choose a future wake time.');
     store.plan('manual:' + id, [action]); return { ok: true, id, state: 'pending' };
   }
@@ -130,6 +132,28 @@ export async function agentAPI({ url, method, body, store, running = false }) {
     store.record('manual', 'action_cancelled', { id }); return { ok: true, id, state: 'cancelled' };
   }
   if (path === '/api/agent/notes' && method === 'GET') return { notes: store.notes().map(n => ({ path: n.path })) };
+  if (path === '/api/agent/person-notes') {
+    if (method === 'GET') {
+      if (url.searchParams.has('name')) return store.personNote(validatePersonName(url.searchParams.get('name')));
+      return { people: store.personNotes(), memberships: store.chatMemberships() };
+    }
+    if (method === 'PUT') {
+      const name = validatePersonName(body.name), note = validatePersonNote(body.note);
+      return store.personNote(name, note);
+    }
+    if (method === 'DELETE') {
+      const name = validatePersonName(url.searchParams.get('name'));
+      store.personNote(name, '');
+      return { ok: true, name };
+    }
+  }
+  if (path === '/api/agent/chat-members') {
+    if (method === 'GET') return store.chatMembers(input(url.searchParams.get('chat'), 300));
+    if (method === 'PUT') {
+      const { chat, members } = validateChatMembers(body.chat, body.members);
+      return store.chatMembers(chat, members);
+    }
+  }
   if (path === '/api/agent/note') {
     if (method === 'GET') return store.note(url.searchParams.get('path'));
     if (method === 'PUT') { const note = store.note(body.path, body.text); store.mirrorNotes(); return note; }

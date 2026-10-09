@@ -10,7 +10,7 @@ import { actionAPI, blankPlan } from '../src/agent/plan.mjs';
 import { runEngine } from '../src/agent/engine.mjs';
 
 const store = agentStore(':memory:');
-const context = { trigger: 'message', contextId: 'chat:Alice', chatName: 'Alice', message: { text: 'incoming' } };
+const context = { trigger: 'message', messageId: 'source-event', contextId: 'chat:Alice', chatName: 'Alice', message: { text: 'incoming' } };
 const message = text => ({ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text }] });
 const response = text => ({ output: [message(text)], usage: new Usage({ requests: 1 }) });
 const configLoader = loadConfig;
@@ -65,6 +65,7 @@ try {
   const queued = await api('/api/agent/intervene', 'POST', { conversationId: 'chosen', prompt: 'change direction' });
   assert(queued.ok);
   const work = store.claimWork();
+  assert.equal(work.value.messageId, 'source-event', 'intervention stays attached to its originating event');
   assert.deepEqual(work.value.ceiling, store.session('chosen').permissions, 'intervention retains prior grant, not global maximum');
   const oldHistory = store.session('chosen').history;
   await api('/api/agent/conversation/reset', 'POST', { conversationId: 'chosen' });
@@ -144,3 +145,33 @@ try {
   assert(engineStore.records().some(row => row.kind === 'continuation_cancelled'));
   console.log('PASS engine intervention routing, serialized commit/resume and stale-generation cancellation');
 } finally { clearTimeout(timeout); controller.abort(); engineStore.close(); }
+
+// Follow-up policies retain their source event without treating it as new intake.
+const followups = agentStore(':memory:'), followupStop = new AbortController();
+followups.plan('source-run', [{ id: 'parent', kind: 'wake', due: Date.now() + 60000, prompt: 'later', ceiling }], 'source-event');
+const seen = [];
+const followupTimeout = setTimeout(() => followupStop.abort(), 6000);
+let followupsQueued = false;
+const followupHandler = async ctx => {
+  assert.equal(ctx.messageId, 'source-event');
+  const runId = `followup-${ctx.trigger}`;
+  followups.record(runId, 'policy_input', { context: ctx });
+  seen.push(ctx.trigger);
+  return { ok: true, runId, actions: [] };
+};
+try {
+  await runEngine({ store: followups, signal: followupStop.signal, profileLoader: async () => '',
+    configLoader: async () => ({ ...(await loadConfig()), gui: { port: 0 }, pollIntervalMs: 250 }),
+    client: { unread: async () => {
+      if (!followupsQueued) {
+        followupsQueued = true;
+        followups.enqueue('wake', { actionId: 'parent', prompt: 'follow up', ceiling });
+        followups.enqueue('action_result', { outcome: { id: 'parent' } });
+      }
+      if (seen.length === 2) followupStop.abort();
+      return [];
+    } }, onWake: followupHandler, onActionResult: followupHandler });
+  assert.deepEqual(seen, ['wake', 'action_result']);
+  assert.equal(followups.messageRuns('source-event').length, 2);
+  console.log('PASS wake and action-result invocations remain linked to their originating event');
+} finally { clearTimeout(followupTimeout); followupStop.abort(); followups.close(); }

@@ -3,6 +3,8 @@ import { filterActivityAfter, parseActivityDate } from './activity-filter.mjs';
 import { invocationViewHTML } from './dashboard-invocations.mjs';
 import { logYaml } from './dashboard-yaml.mjs';
 import { renderActionCards } from './dashboard-actions.mjs';
+import { EVENT_WORKSPACE, EVENT_WORKSPACE_CSS } from './dashboard-workspace.mjs';
+import { eventResponseHTML } from './dashboard-event-response.mjs';
 
 export function syncAgentRecordList(panel, rows, makeRow) {
   const previous = panel._agentRecordRows || new Map(), next = new Map();
@@ -63,8 +65,11 @@ function dashboardClient() {
   let agentPermissionsDirty = false, agentPermissionsSaving = false, agentPermissionsRevision = 0;
   let sandboxDirty = false, sandboxSaving = false, sandboxRevision = 0;
   let listFingerprint = "", flowFingerprint = "";
-  let invocationMessage = null, invocationLoading = null, invocationRevision = 0, invocationFingerprint = '';
-  let messageActions = [], globalActionFilter = 'all';
+  let paintedMessage = null;
+  let invocationMessage = null, invocationLoading = null, invocationRevision = 0;
+  const invocationData = new Map();
+  let globalActionFilter = 'all';
+  let personDirty = false, membersDirty = false, people = [], personLoadRevision = 0;
   const failures = new Map();
 
   async function api(path, method = "GET", body) {
@@ -188,11 +193,10 @@ function dashboardClient() {
   }
   function renderMessages(force = false) {
     const query = $('searchMessages').value.toLowerCase();
-    const filter = $('messageFilter').value;
-    const filtered = groups.filter((g) => (!query || [g.chat, g.latest?.author, g.latest?.text].join(' ').toLowerCase().includes(query)) && (filter === 'all' || (filter === 'error' ? g.error : g.outcomes?.includes(filter))));
+    const filtered = groups.filter(g => !query || [g.chat, g.latest?.author, g.latest?.text].join(' ').toLowerCase().includes(query));
     if (!filtered.some(g => g.id === selected)) selected = filtered[0]?.id || null;
     renderDateFilter();
-    setText('messageCount', filtered.length + (filtered.length === 1 ? ' message' : ' messages'));
+    setText('messageCount', filtered.length + (filtered.length === 1 ? ' event' : ' events'));
     setText('messagesHandled', filtered.filter(g => g.done && !g.error && !g.invalid).length + ' handled');
     const errors = filtered.filter(g => g.error).length;
     setText('messageErrors', errors + (errors === 1 ? ' error' : ' errors'));
@@ -202,30 +206,41 @@ function dashboardClient() {
     if (!force && !selection?.isCollapsed && $('messages').contains(selection?.anchorNode)) return;
     if (!force && fingerprint === listFingerprint) return;
     listFingerprint = fingerprint;
+    const scrollTop = $('messages').scrollTop;
     $('messages').innerHTML = filtered.length ? filtered.map((g) => {
       const [label, tone] = outcome(g);
       const icons = g.icons.map(i => `<span class="action-icon" role="img" aria-label="${escape(i.label)}" title="${escape(i.label)}">${i.symbol}</span>`).join('');
-      return `<article class="message ${g.id === selected ? 'selected' : ''} ${g.error ? 'message-error' : ''}" data-flow="${escape(g.id)}" tabindex="0" aria-label="${escape(g.chat)} message" aria-current="${g.id === selected}"><div class="message-top"><strong>${escape(g.chat || 'Unknown chat')}</strong><span class="action-icons">${icons}</span></div><div class="message-author">${escape(g.latest?.author || (g.invalid ? 'Invalid log format' : 'Unknown author'))}</div><p class="message-copy">${escape(g.latest?.text || (g.invalid ? 'Invalid log format' : ''))}</p><div class="message-meta">${badge(label, tone)}<time>${escape(time(g.at))}</time></div></article>`;
-    }).join('') : '<div class="empty"><span class="empty-icon">◎</span><h3>No messages to show</h3><p>New messages appear as the orchestrator reads them. Try clearing your filters.</p></div>';
+      const attributes = Object.entries(g.attributes || {});
+      const chips = attributes.slice(0, 3).map(([key,value]) => `<span class="policy-attribute">${escape(key)} <b>${escape(value === null ? 'null' : value)}</b></span>`).join('');
+      return `<article class="message ${g.id === selected ? 'selected' : ''} ${g.error ? 'message-error' : ''}" data-flow="${escape(g.id)}" tabindex="0" aria-label="${escape(g.chat)} event" aria-current="${g.id === selected}"><div class="message-top"><strong>${escape(g.chat || 'Unknown chat')}</strong><span class="message-kind">${g.latest?.reaction ? 'Reaction' : 'Message'}</span><span class="action-icons">${icons}</span></div>${g.latest?.author !== g.chat ? `<div class="message-author">${escape(g.latest?.author || 'Unknown author')}</div>` : ''}<p class="message-copy">${escape(g.latest?.text || (g.invalid ? 'Invalid log format' : ''))}</p>${chips ? `<div class="policy-attributes">${chips}${attributes.length > 3 ? `<span class="policy-attribute">+${attributes.length - 3}</span>` : ''}</div>` : ''}<div class="message-meta">${badge(label, tone)}<time>${escape(time(g.at))}</time></div></article>`;
+    }).join('') : '<div class="empty"><h3>No events to show</h3><p>Messages and reactions appear as the orchestrator reads them.</p></div>';
+    $('messages').scrollTop = scrollTop;
+  }
+  function paintEventResponse(force = false) {
+    const group = groups.find(g => g.id === selected), data = invocationData.get(selected);
+    const panel = $('pipeline'), fingerprint = JSON.stringify([group, data]);
+    if (!force && fingerprint === flowFingerprint) return;
+    const selection = window.getSelection();
+    if (!force && !selection?.isCollapsed && panel.contains(selection?.anchorNode)) return;
+    const changedMessage = paintedMessage !== selected;
+    const expanded = new Map(changedMessage ? [] : [...panel.querySelectorAll('details')].map(node => [node.dataset.invocationKey || node.dataset.actionDetail || node.dataset.key, node.open]));
+    const scroller = panel.closest('.trace-column'), scrollTop = changedMessage ? 0 : scroller.scrollTop;
+    panel.innerHTML = eventResponseHTML(group, data); flowFingerprint = fingerprint;
+    paintedMessage = selected;
+    for (const node of panel.querySelectorAll('details')) {
+      const key = node.dataset.invocationKey || node.dataset.actionDetail || node.dataset.key;
+      if (expanded.has(key)) node.open = expanded.get(key);
+    }
+    scroller.scrollTop = scrollTop;
+    if (data?.loadError) {
+      const error = document.createElement('p'); error.className = 'error-text';
+      error.textContent = data.loadError; panel.append(error);
+    }
   }
   function renderFlow(force = false) {
-    const group = groups.find((g) => g.id === selected);
+    const group = groups.find(g => g.id === selected);
+    paintEventResponse(force);
     refreshMessageInvocations(group && !group.invalid ? group.id : null);
-    const fingerprint = JSON.stringify(group);
-    if (!force && fingerprint === flowFingerprint) return;
-    flowFingerprint = fingerprint;
-    const open = [...$('pipeline').querySelectorAll('details[open]')].map((d) => d.dataset.key);
-    if (!group) { $('pipeline').innerHTML = '<div class="empty"><span class="empty-icon">⋮</span><h3>Message details</h3><p>Select a message to see what the system read, what the brain decided, and what happened next.</p></div>'; return; }
-    if (group.invalid) { $('pipeline').innerHTML = '<div class="empty"><h3>Invalid log format</h3><p>This entry is missing a valid message or handling trace. The diagnostic log remains available.</p></div>'; return; }
-    const names = { message: 'Message received', policy: 'Reply permissions checked', brain_input: 'Sent to the brain', brain_output: 'Brain responded', decision: 'Decision made', effect: 'Action result', error: 'Handling failed' };
-    const stages = group.events;
-    $('pipeline').innerHTML = `<div class="flow-intro"><div class="eyebrow">HANDLING TRACE</div><h3>${escape(group.chat)}</h3><p>${escape(group.latest?.author || '')} · ${escape(time(group.at))}</p>${badge(...outcome(group))}</div>` + (stages.length ? `<ol class="timeline">${stages.map((event, index) => {
-      const seconds = ((Date.parse(event.at) - Date.parse(group.at)) / 1000).toFixed(1);
-      const key = event.stage + ':' + index;
-      const body = event.stage === 'message' ? event.latest?.text : event.reason || event.error || event.detail || (event.stage === 'brain_input' ? [event.provider, event.model].filter(Boolean).join(' · ') : event.stage === 'brain_output' ? 'Model response captured' : event.effect?.replaceAll('_', ' ') || '');
-      const details = event.stage === 'brain_input' ? { system: event.system, user: event.user, input: event.input, skipped: event.skipped } : event.stage === 'brain_output' ? event.raw : event.ruleActions || event.ruleEvaluations || event.results || event.reply || event.result;
-      return `<li class="stage ${event.stage === 'error' || event.status === 'error' ? 'failed' : ''}"><span class="stage-dot">${index + 1}</span><div class="stage-title"><strong>${escape(event.source === 'javascript' ? 'JavaScript policy' : event.source === 'rules' ? 'Configured rules evaluated' : event.source === 'rule_review' ? 'LLM review failed · configured actions retained' : names[event.stage] || event.stage)}</strong><span>+${escape(seconds)}s</span></div><time>${escape(time(event.at))}</time>${event.action ? badge(event.action) : ''}<p>${escape(body)}</p>${details ? `<details data-key="${escape(key)}" ${open.includes(key) ? 'open' : ''}><summary>${event.stage === 'brain_input' ? 'View exact brain input' : 'View details'}</summary><pre>${escape(pretty(details))}</pre></details>` : ''}</li>`;
-    }).join('')}</ol>` : '<div class="empty"><p>Invalid log format</p></div>') + (!group.done && stages.length ? '<p class="trace-note">No completed action is recorded in this log window. New stages appear here while live updates are on.</p>' : '');
   }
   function renderLogs(lines) {
     setText('orchestratorLog', lines?.lines?.join('\n') || 'No orchestrator output yet.');
@@ -375,13 +390,8 @@ function dashboardClient() {
     setText('activityClearState', activityDateInvalid ? 'Invalid date — keeping the last valid filter.' : activitySaveError ? 'Filter not saved — edit the date to retry.' : activitySaving ? 'Saving…' : '');
   }
   async function refreshMessageInvocations(messageId) {
-    const panel = $('messageInvocations');
-    const actionsPanel = $('messageActions');
     if (invocationMessage !== messageId) {
-      invocationMessage = messageId; invocationRevision++; invocationLoading = null; invocationFingerprint = '';
-      messageActions = []; actionsPanel._actionHTML = '';
-      renderActionPanel(actionsPanel, [], 'all');
-      panel.textContent = messageId ? 'Loading agent invocations…' : 'Select a message to inspect its agent invocations.';
+      invocationMessage = messageId; invocationRevision++; invocationLoading = null;
     }
     if (!messageId || invocationLoading === messageId) return;
     invocationLoading = messageId;
@@ -389,17 +399,14 @@ function dashboardClient() {
     try {
       const data = await api('/api/agent/invocations?messageId=' + encodeURIComponent(messageId));
       if (revision !== invocationRevision || selected !== messageId) return;
-      messageActions = data.actions || [];
-      renderActionPanel(actionsPanel, messageActions, 'all');
-      const fingerprint = JSON.stringify(data), selection = window.getSelection();
-      if (fingerprint === invocationFingerprint || (!selection?.isCollapsed && panel.contains(selection?.anchorNode))) return;
-      const expanded = new Map([...panel.querySelectorAll('details')].map(node => [node.dataset.invocationKey, node.open]));
-      const scroller = panel.closest('.trace-column'), scrollTop = scroller.scrollTop;
-      panel.innerHTML = invocationViewHTML(data); invocationFingerprint = fingerprint;
-      for (const node of panel.querySelectorAll('details')) if (expanded.has(node.dataset.invocationKey)) node.open = expanded.get(node.dataset.invocationKey);
-      scroller.scrollTop = scrollTop;
+      invocationData.set(messageId, data);
+      if (invocationData.size > 100) invocationData.delete(invocationData.keys().next().value);
+      paintEventResponse();
     } catch (error) {
-      if (revision === invocationRevision) { panel.textContent = 'Could not load invocations: ' + error.message; invocationFingerprint = ''; }
+      if (revision === invocationRevision) {
+        invocationData.set(messageId, { ...(invocationData.get(messageId) || {}), loadError: 'Could not load event details: ' + error.message });
+        paintEventResponse();
+      }
     } finally { if (revision === invocationRevision) invocationLoading = null; }
   }
   async function saveActivityView() {
@@ -551,11 +558,8 @@ function dashboardClient() {
     renderActionPanel($('agentActions'), value.actions || [], globalActionFilter);
     const conversations = $('agentConversations'); conversations.replaceChildren();
     for (const conversation of value.conversations || []) {
-      const button = document.createElement('button'); button.type = 'button'; button.className = 'agent-conversation';
-      button.textContent = `${conversation.chat} · ${conversation.count} messages · ${time(conversation.last)}`;
-      button.dataset.agentChat = conversation.chat; conversations.append(button);
+      conversations.append(new Option(conversation.chat, conversation.chat));
     }
-    if (!conversations.childElementCount) conversations.textContent = 'No conversation history available yet.';
   }
   async function refreshAgent() {
     if (agentRefreshing || $('login').open) return;
@@ -661,19 +665,19 @@ function dashboardClient() {
     const link = e.target.closest('[data-action-message]'); if (!link) return;
     const id = link.dataset.actionMessage;
     if (!groups.some(group => group.id === id)) { notify('The originating message is outside the retained activity view.', true); return; }
-    $('searchMessages').value = ''; $('messageFilter').value = 'all'; selected = id;
+    $('searchMessages').value = ''; selected = id;
     document.querySelector('[data-view="activity"]').click(); renderMessages(true); renderFlow(true);
     $('messages').querySelector(`[data-flow="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
   }
   $('agentActions').onclick = handleActionClick;
-  $('messageActions').onclick = handleActionClick;
+  $('pipeline').onclick = e => {
+    const person = e.target.closest('[data-person-note]');
+    if (person) { if (openPerson(person.dataset.personNote)) document.querySelector('[data-view="people"]').click(); }
+    else handleActionClick(e);
+  };
   $('agentActionFilter').onchange = () => {
     globalActionFilter = $('agentActionFilter').value; $('agentActions')._actionHTML = '';
     renderActionPanel($('agentActions'), agentStatus?.actions || [], globalActionFilter);
-  };
-  $('agentConversations').onclick = e => {
-    const button = e.target.closest('[data-agent-chat]'); if (!button) return;
-    $('agentBriefChat').value = button.dataset.agentChat; $('agentBriefLoad').click();
   };
   $('agentNotesRefresh').onclick = async () => {
     try {
@@ -727,9 +731,64 @@ function dashboardClient() {
       $('agentBriefChat').value = saved.chat; agentBriefDirty = false; setText('agentBriefState', 'Saved');
     }, 'Brief saved');
   };
+  function renderPeople() {
+    const name = $('personName').value;
+    $('peopleList').innerHTML = people.length ? people.map(person => `<button class="person-button ${person.name === name ? 'selected' : ''}" data-person="${escape(person.name)}">${escape(person.name)}</button>`).join('') : '<p class="hint">No person notes yet.</p>';
+  }
+  async function refreshPeople() {
+    try {
+      const data = await api('/api/agent/person-notes'); people = data.people || []; renderPeople();
+      if (!personDirty) {
+        const person = people.find(p => p.name === $('personName').value);
+        if (person) $('personNote').value = person.note;
+      }
+    } catch (error) { setText('personState', error.message); }
+  }
+  function openPerson(name) {
+    if (personDirty && !confirm('Discard unsaved person note edits?')) return false;
+    personLoadRevision++; personDirty = false;
+    $('personName').value = name; $('personNote').value = people.find(p => p.name === name)?.note || '';
+    setText('personState', ''); renderPeople(); return true;
+  }
+  $('peopleList').onclick = e => { const button = e.target.closest('[data-person]'); if (button) openPerson(button.dataset.person); };
+  $('personNew').onclick = () => { if (openPerson('')) $('personName').focus(); };
+  $('peopleRefresh').onclick = refreshPeople;
+  for (const id of ['personName','personNote']) $(id).oninput = () => { personDirty = true; personLoadRevision++; setText('personState', 'Unsaved'); };
+  $('personForm').onsubmit = async e => {
+    e.preventDefault(); const name = $('personName').value.trim(), note = $('personNote').value;
+    if (!name) return;
+    const revision = personLoadRevision; $('personSave').disabled = true;
+    try {
+      await api('/api/agent/person-notes', 'PUT', { name, note });
+      if (revision === personLoadRevision) { personDirty = false; setText('personState', note.trim() ? 'Saved · applies to future calls' : 'Note removed'); }
+      await refreshPeople();
+    } catch (error) { setText('personState', error.message); }
+    finally { $('personSave').disabled = false; }
+  };
+  for (const id of ['membersChat','membersNames']) $(id).oninput = () => { membersDirty = true; setText('membersState', 'Unsaved'); };
+  $('membersLoad').onclick = async () => {
+    const chat = $('membersChat').value.trim(); if (!chat) return;
+    if (membersDirty && $('membersNames').value && !confirm('Discard unsaved member edits?')) return;
+    try {
+      const value = await api('/api/agent/chat-members?chat=' + encodeURIComponent(chat));
+      if ($('membersChat').value.trim() !== chat) return;
+      $('membersNames').value = (value.members || []).join('\n'); membersDirty = false;
+      setText('membersState', value.source === 'teams' ? 'Read from Teams' : value.source === 'manual' ? 'Manually specified' : 'Membership unavailable');
+    } catch (error) { setText('membersState', error.message); }
+  };
+  $('membersForm').onsubmit = async e => {
+    e.preventDefault(); const chat = $('membersChat').value.trim(), text = $('membersNames').value;
+    if (!chat) return;
+    const button = e.submitter; button.disabled = true;
+    try {
+      await api('/api/agent/chat-members', 'PUT', { chat, members: text.split('\n').map(s => s.trim()).filter(Boolean) });
+      if ($('membersChat').value.trim() === chat && $('membersNames').value === text) { membersDirty = false; setText('membersState', 'Saved manual members'); }
+    } catch (error) { setText('membersState', error.message); }
+    finally { button.disabled = false; }
+  };
+  refreshPeople();
   $('agentNotesRefresh').click();
   $('searchMessages').oninput = () => { renderMessages(true); renderFlow(true); };
-  $('messageFilter').onchange = () => { renderMessages(true); renderFlow(true); };
   function selectMessage(e) {
     const row = e.target.closest('[data-flow]'); if (!row || !window.getSelection()?.isCollapsed) return;
     selected = row.dataset.flow; renderMessages(true); renderFlow(true);
@@ -738,11 +797,12 @@ function dashboardClient() {
   $('messages').onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectMessage(e); } };
   for (const button of document.querySelectorAll('[data-view]')) button.onclick = () => {
     for (const tab of document.querySelectorAll('[data-view]')) { const active = tab === button; tab.classList.toggle('active', active); tab.setAttribute('aria-selected', String(active)); }
-    $('activityView').hidden = button.dataset.view !== 'activity'; $('logsView').hidden = button.dataset.view !== 'logs';
+    for (const view of ['activity','actions','people','logs']) $(view + 'View').hidden = button.dataset.view !== view;
+    if (button.dataset.view === 'people') refreshPeople();
   };
   $('logSource').onchange = () => { for (const node of document.querySelectorAll('.log-output')) node.hidden = node.id !== $('logSource').value; };
   $('copyLog').onclick = async () => { try { await navigator.clipboard.writeText($($('logSource').value).textContent); notify('Log copied'); } catch { notify('Could not copy. Select the log text to copy it manually.', true); } };
-    window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty || agentModeDirty || agentNoteDirty || agentBriefDirty || agentPermissionsDirty || agentPermissionsSaving || activityDirty || activitySaving) { e.preventDefault(); e.returnValue = ''; } });
+    window.addEventListener('beforeunload', (e) => { if (deliveryDirty || policyDirty || profileDirty || pollDirty || rulesDirty || agentModeDirty || agentNoteDirty || agentBriefDirty || personDirty || membersDirty || agentPermissionsDirty || agentPermissionsSaving || activityDirty || activitySaving) { e.preventDefault(); e.returnValue = ''; } });
   policySummary(); refresh(true);
   refreshSupervisor();
   // Supervisor safety status stays live even while message/log tailing is paused.
@@ -775,6 +835,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 .schedule-layout{display:grid;grid-template-columns:minmax(220px,.85fr) minmax(280px,1.15fr);gap:24px}.schedule-job{padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:9px;background:#151e23}.schedule-job strong{font-size:12px;overflow-wrap:anywhere}.schedule-job time{font-size:12px}.scheduled-text{white-space:pre-wrap;font-size:12px;margin-top:8px}.schedule-queue{max-height:430px;overflow:auto}.schedule-layout details{margin:0}.schedule-layout summary{font-size:12px}@media(max-width:900px){.schedule-layout{grid-template-columns:1fr}}
 .agent-current{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;background:#131d21;border:1px solid var(--line);border-radius:8px;font-size:12px}.agent-current span:nth-child(2){color:#c2d0d7}.agent-controls{display:flex;align-items:center;gap:8px}.agent-controls>*{min-width:0}.agent-controls input,.agent-controls select{flex:1}.agent-mode-form{margin-top:12px}.agent-form{margin-top:13px}.agent-tools,.agent-columns,.agent-memory{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:17px;padding-top:15px;border-top:1px solid var(--line)}.agent-memory{grid-template-columns:repeat(3,minmax(0,1fr))}.agent-columns h3,.agent-memory h3{font-size:12px}.agent-list{display:grid;gap:8px;margin-top:8px;max-height:340px;overflow:auto}.agent-entry{border:1px solid var(--line);border-radius:7px;background:#141e23;padding:9px;min-width:0}.agent-entry strong{font-size:11px;overflow-wrap:anywhere}.agent-entry .inline-heading>span{font-size:10px;color:var(--muted)}.agent-entry pre,.agent-output{background:#10191d;border:1px solid #2a363c;border-radius:5px;padding:8px;margin:7px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.55 Consolas,monospace;color:#c4d2d9}.agent-entry .hint{white-space:pre-wrap}.agent-entry button{margin-top:8px}.agent-conversations{display:grid;gap:6px;max-height:300px;overflow:auto;margin-top:8px}.agent-conversation{width:100%;text-align:left;font-size:10px;padding:7px 9px;overflow-wrap:anywhere}.agent-tools form{min-width:0}.agent-memory>div{min-width:0}.agent-memory .agent-controls{align-items:stretch}.agent-memory .agent-controls button{flex:0 0 auto}.agent-memory textarea{min-height:100px}.agent-current .save-state{margin-left:auto}@media(max-width:900px){.agent-memory{grid-template-columns:1fr 1fr}}@media(max-width:600px){.agent-tools,.agent-columns,.agent-memory{grid-template-columns:1fr}.agent-controls{flex-wrap:wrap}.agent-current .save-state{margin-left:0}}
 .action-card{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#141e23}.action-card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.action-card-top strong{font-size:12px;overflow-wrap:anywhere}.action-meta{font-size:10px;color:var(--muted);margin-top:5px}.action-status,.action-preview{font-size:11px;color:#c3cdd3;white-space:pre-wrap;margin-top:6px}.action-preview{color:var(--muted)}.action-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:5px}.action-controls details{flex-basis:100%;margin-top:3px}.action-controls pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;background:#10191d;border:1px solid var(--line);padding:8px;border-radius:5px;font:10px/1.55 Consolas,monospace}.action-list{max-height:360px;overflow:auto}.agent-actions-global{margin-top:16px;padding-top:15px;border-top:1px solid var(--line)}.agent-actions-global .inline-heading{justify-content:flex-start}.agent-actions-global h3{margin-right:auto}.agent-actions-global select{width:auto;min-width:150px;padding:5px 8px;font-size:11px}.action-filter-label{margin:0;font-size:10px}.execution-log{margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}.execution-log summary{font-size:12px}.execution-log .agent-list{max-height:280px}.message-model .action-list{max-height:420px}.policy-file{color:var(--green);overflow-wrap:anywhere;text-decoration:underline}.policy-file:focus-visible{outline:3px solid #75c9a7;outline-offset:2px}
+${EVENT_WORKSPACE_CSS}
 </style></head><body>
 <header><div class="brand"><span class="brandmark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>TM <span class="workspace-label">/ LOCAL CONTROL</span></div><div class="header-right"><span id="lastRefresh" class="sync-time">Waiting for server</span><button id="pauseUpdates" class="live-toggle warn" aria-pressed="true" title="Connecting · Pause live log tailing">Pause live log tailing</button><button id="refreshButton" title="Manually sync tail" aria-label="Manually sync tail">↻</button><button id="accountButton">Access token</button></div></header>
 <main class="shell">
@@ -803,23 +864,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <section class="card" aria-labelledby="advancedTitle"><div class="card-body"><div class="section-title"><h2 id="advancedTitle">JavaScript policy</h2></div>
 <p class="hint">Policy runs for each message with <code>handle(ctx, actions)</code>. Use the scoped action functions in <code>actions</code>; model work is explicit through <code>actions.llm(...)</code>. Saves validate before activation. Replay disables model calls and external actions.</p>
 <form id="rulesForm"><fieldset id="ruleFields" class="settings-fields" disabled><label for="alertRules"><a id="policyFile" class="policy-file">policy.ts</a></label><textarea id="alertRules" class="code-input" rows="24" spellcheck="false" placeholder="export async function handle(ctx: PolicyContext, actions: PolicyActions) {&#10;  // Decide what to do with this message.&#10;}"></textarea><div class="form-footer"><span id="rulesSaveState" class="save-state" aria-live="polite"></span><button id="saveRules" class="small">Save TypeScript policy</button></div></fieldset></form></div></section>
-</aside><section class="main-column" aria-label="Live monitoring">
-<section class="card" aria-labelledby="agentHeading"><div class="card-body"><div class="section-title"><h2 id="agentHeading">Agent</h2><div class="button-row"><span id="agentModeBadge" class="badge neutral">Checking</span><button id="agentRefresh" class="small" type="button">Refresh agent</button></div></div>
-<p class="hint">Paused stops model runs; deterministic policy still runs. Read-only prevents model-originated external actions and note edits; deterministic policy still runs. Neither mode changes manual messages/status scheduling.</p>
-<div class="agent-current"><strong>Current work</strong><span id="agentCurrent">Checking…</span><span id="agentRefreshState" class="save-state"></span></div>
-<form id="agentModeForm" class="agent-controls agent-mode-form"><label for="agentMode">Autonomy mode</label><select id="agentMode"><option value="active">Active</option><option value="read_only">Read only</option><option value="paused">Paused</option></select><button id="agentModeSave" class="small">Save mode</button></form>
-<form id="agentInterveneForm" class="agent-form"><label for="agentConversationSelect">Model conversation</label><select id="agentConversationSelect"><option value="">No named conversations yet</option></select><label for="agentIntervention">Intervention</label><textarea id="agentIntervention" rows="2" placeholder="Instructions for the selected conversation’s next turn…"></textarea><div class="button-row"><button id="agentInterveneSubmit" class="primary small" disabled>Queue intervention</button><button id="agentRunCancel" class="small danger" type="button" disabled>Cancel current run</button><button id="agentConversationInspect" class="small" type="button" disabled>View history</button><button id="agentConversationReset" class="small danger" type="button" disabled>Reset history</button></div><p class="hint">Named conversations are created by explicit policy calls. Intervention continues one with its previously granted permissions, limited by the current ceiling. It queues after the current run; it does not cancel it or undo actions already executed. Responses appear in the Execution log.</p><details><summary>Selected conversation history</summary><pre id="agentConversationHistory" class="agent-output">Select a conversation and choose View history.</pre></details></form>
-<div class="agent-tools"><form id="agentReplayForm"><label for="agentReplayId">Replay recorded message ID</label><div class="agent-controls"><input id="agentReplayId" placeholder="Recorded message ID"><button id="agentReplaySubmit" class="small">Replay safely</button></div><p class="hint">Replay disables model calls and external actions.</p><pre id="agentReplayResult" class="agent-output">No replay yet.</pre></form>
-<form id="agentWakeForm"><label for="agentWakePrompt">Schedule an agent wake</label><textarea id="agentWakePrompt" rows="2" placeholder="What should the agent check at that time?"></textarea><label for="agentWakeConversation">Conversation ID · optional</label><input id="agentWakeConversation" placeholder="Blank starts with fresh history"><label for="agentWakeWhen">Run at</label><input id="agentWakeWhen" type="datetime-local"><p id="agentWakeTimezone" class="hint"></p><button id="agentWakeSubmit" class="small">Schedule wake</button><p class="hint">A named wake continues that history. Existing conversations retain their prior permission limits; fresh wakes use the current ceiling. All limits are rechecked at execution. Wakeups appear with other agent actions.</p></form></div>
-<div class="agent-actions-global"><div class="inline-heading"><h3>Actions</h3><label class="action-filter-label" for="agentActionFilter">Show</label><select id="agentActionFilter" aria-label="Filter actions"><option value="all">All</option><option value="pending">Pending / queued</option><option value="running">Running</option><option value="finished">Finished</option></select></div><div id="agentActions" class="agent-list action-list">Loading…</div></div>
-<details class="execution-log"><summary>Execution log · recent tools and results</summary><div id="agentRecords" class="agent-list">Loading…</div></details>
-<div class="agent-memory"><div><div class="inline-heading"><h3>Observed Teams chats</h3></div><div id="agentConversations" class="agent-conversations">Loading…</div></div>
-<div><div class="inline-heading"><h3>Freeform notes</h3><button id="agentNotesRefresh" type="button" class="small">Refresh list</button></div><div class="agent-controls"><select id="agentNoteSelect" aria-label="Choose a note"><option value="">No notes loaded</option></select><button id="agentNoteNew" type="button" class="small">New note</button></div><label for="agentNotePath">Note path</label><input id="agentNotePath" placeholder="people/alex.md"><label for="agentNoteText">Note text</label><textarea id="agentNoteText" rows="7" placeholder="Private notes for continuity…"></textarea><div class="form-footer"><span id="agentNoteState" class="save-state"></span><button id="agentNoteSave" type="button" class="small">Save note</button></div></div>
-<div><h3>Chat brief</h3><label for="agentBriefChat">Exact chat name</label><div class="agent-controls"><input id="agentBriefChat" placeholder="Select from conversation history or type exact name"><button id="agentBriefLoad" type="button" class="small">Load</button></div><label for="agentBriefText">Brief</label><textarea id="agentBriefText" rows="5" placeholder="Optional context for this person or chat…"></textarea><div class="form-footer"><span id="agentBriefState" class="save-state"></span><button id="agentBriefSave" type="button" class="small">Save brief</button></div></div></div>
-</div></section>
-<section class="card" aria-labelledby="scheduleHeading"><div class="card-body"><div class="section-title"><h2 id="scheduleHeading">Scheduled Teams actions</h2><button id="refreshSchedules" class="small" type="button">Refresh schedules</button></div><p id="schedulerState" class="hint">Checking orchestrator…</p><div class="schedule-layout"><form id="scheduleForm"><fieldset id="scheduleFields" class="settings-fields"><label for="scheduleKind">Action</label><select id="scheduleKind"><option value="message">Send a message</option><option value="status">Change availability</option></select><div id="scheduleMessageFields"><label for="scheduleChat">Exact Teams chat name</label><input id="scheduleChat" maxlength="300" placeholder="Person or group chat name"><label for="scheduleText">Message</label><textarea id="scheduleText" maxlength="8000" rows="3"></textarea><p class="hint">Uses Teams reply permissions at send time. An empty whitelist blocks all sends. Duplicate chat names or existing drafts are not sent.</p></div><div id="scheduleStatusField" hidden><label for="schedulePresence">Availability</label><select id="schedulePresence"><option value="available">Available</option><option value="away">Appear away</option><option value="offline">Appear offline</option><option value="busy">Busy</option><option value="dnd">Do not disturb</option><option value="brb">Be right back</option></select></div><label for="scheduleWhen">Date and time</label><input id="scheduleWhen" type="datetime-local" required><p id="scheduleTimezone" class="hint"></p><button id="scheduleSubmit" type="submit" class="primary small" disabled>Schedule action</button></fieldset></form><div><div id="schedulePending" class="schedule-queue">Loading schedules…</div><details><summary>Recent results (latest 100)</summary><div id="scheduleHistory" class="schedule-queue"></div></details><p id="scheduleLoadState" class="error-text" role="status"></p></div></div><p class="hint">One-time schedules, saved locally. The orchestrator must be running; actions wait for current handling to finish. Due while stopped or more than five minutes late: missed, not replayed. Interrupted sends: outcome unconfirmed, never automatically retried. Schedule checks continue while live log tailing is paused.</p></div></section>
-<section class="card" aria-label="Message activity and system logs">
-<div class="activity-poll" aria-label="Latest orchestrator poll"><span id="pollBadge" class="badge neutral">Checking</span><span id="pollStatus">No poll recorded yet</span><span id="pollDetail" hidden></span><span id="pollChats" title="Teams unread count is unavailable">Unread unavailable</span><span id="pollNext">Monitor stopped</span></div>
-<div class="workspace-tabs"><div class="tabs" role="tablist" aria-label="Activity views"><button class="tab active" data-view="activity" role="tab" aria-selected="true" aria-controls="activityView">Message activity</button><button class="tab" data-view="logs" role="tab" aria-selected="false" aria-controls="logsView">System logs</button></div></div><div id="activityView" role="tabpanel"><div class="activity-summary"><span>In this view</span><span id="messagesHandled" title="Messages with a completed handling trace and no recorded errors in the filtered list">0 handled</span><span id="messageErrors" title="Messages with handling errors or invalid logs in the filtered list; each message is counted once">0 errors</span></div><div class="filterbar"><input id="searchMessages" type="search" placeholder="Search messages, people, or chats…" aria-label="Search messages"><select id="messageFilter" aria-label="Filter messages"><option value="all">All outcomes</option><option value="alarm">Alarms</option><option value="ignore">Ignored</option><option value="error">Errors</option></select></div><div class="feed-grid"><div class="feed-column"><div class="feed-caption"><span>SEEN BY THE ORCHESTRATOR</span><span id="messageCount">0 messages</span></div><div class="activity-clear"><div class="date-filter"><label for="activitySince">After</label><input id="activitySince" type="datetime-local" step="0.001" aria-label="Show messages after date and time" aria-describedby="activityClearState"><button id="clearActivity" class="small" title="Use the highlighted message’s date and hide it and earlier messages" disabled>Use selected message</button><button id="showAllActivity" class="small" disabled>Show all</button></div><p id="activityClearState" class="hint" role="status"></p></div><div id="messages" class="message-list"></div></div><div class="trace-column"><section class="message-model" aria-labelledby="messageActionsHeading"><h3 id="messageActionsHeading">Actions for this message</h3><div id="messageActions" class="action-list">Select a message to see its actions.</div></section><section class="message-model" aria-labelledby="messageInvocationsHeading"><h3 id="messageInvocationsHeading">Agent invocations</h3><div id="messageInvocations">Select a message to inspect its agent invocations.</div></section><div id="pipeline" class="pipeline" aria-label="Selected message handling stages"></div></div></div><p class="log-note">Recent retained activity, newest first. Counts follow the date, search, and outcome filters.</p></div><div id="logsView" role="tabpanel" hidden><div class="logs-toolbar"><label for="logSource" class="hidden">Log source</label><select id="logSource"><option value="orchestratorLog">Orchestrator output</option><option value="connectionLog">Connections & delivery</option><option value="tunnelLog">Cloudflare tunnel</option><option value="activityLog">All activity · raw events</option></select><button id="copyLog" class="small">Copy log</button></div><pre id="orchestratorLog" class="log-output">Loading…</pre><pre id="connectionLog" class="log-output" hidden></pre><pre id="tunnelLog" class="log-output" hidden></pre><pre id="activityLog" class="log-output" hidden></pre><p class="log-note">Logs refresh every 10 seconds. Pause live log tailing in the top bar to inspect a stable view.</p></div></section><div class="footer-note"><span>Timestamps use your browser’s timezone</span><span></span></div>
+</aside><section class="main-column" aria-label="Event workspace">
+${EVENT_WORKSPACE}
 </section></div></main><div id="toast" class="toast hidden" role="status"></div><dialog id="login"><form id="loginForm"><div class="eyebrow">TM</div><h2>Dashboard access</h2><p>Enter the access token from your local configuration. It is saved in this browser.</p><label for="tokenInput">Access token</label><input id="tokenInput" type="password" autocomplete="current-password" required><button class="primary">Connect</button></form></dialog>
-<script>${filterActivityAfter.toString()}; ${parseActivityDate.toString()}; ${buildActivityGroups.toString()}; ${syncAgentRecordList.toString()}; ${logYaml.toString()}; ${renderActionCards.toString()}; ${invocationViewHTML.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;
+<script>${filterActivityAfter.toString()}; ${parseActivityDate.toString()}; ${buildActivityGroups.toString()}; ${syncAgentRecordList.toString()}; ${logYaml.toString()}; ${renderActionCards.toString()}; ${invocationViewHTML.toString()}; ${eventResponseHTML.toString()}; ${dashboardClient.toString()}; dashboardClient();</script></body></html>`;

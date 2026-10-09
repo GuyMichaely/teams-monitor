@@ -8,13 +8,14 @@ import { operationQueue } from '../teams-queue.mjs';
 import { blankPlan, actionAPI } from './plan.mjs';
 import { agentReview } from './tools.mjs';
 import { AgentRuntimeError, failure } from './errors.mjs';
+import { mergePolicyAttributes } from './policy-attributes.mjs';
 
 export const POLICY_FILE = join(LOCAL_HOME, 'automation', 'policy.ts');
 const worker = join(ROOT, 'src', 'agent', 'policy-worker.mjs');
 const queue = operationQueue();
 const versionOf = source => createHash('sha256').update(source).digest('hex');
 
-export async function policySubprocess({ path, context, handler = 'handle', validate = false, dispatch, timeoutMs = 90000, signal }) {
+export async function policySubprocess({ path, context, handler = 'handle', validate = false, dispatch, onAttributes, timeoutMs = 90000, signal }) {
   const child = Bun.spawn([process.execPath, '--no-env-file', worker], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', windowsHide: true });
   const nonce = randomUUID(), prefix = 'TM_RPC:' + nonce + ':', decoder = new TextDecoder();
   let finished = false, timer, bytes = 0;
@@ -39,6 +40,16 @@ export async function policySubprocess({ path, context, handler = 'handle', vali
         if (!line.startsWith(prefix)) continue;
         const item = JSON.parse(line.slice(prefix.length));
         if (item.type === 'done') { result = item; break; }
+        if (item.type === 'attributes') {
+          try {
+            const attributes = mergePolicyAttributes({}, item.attributes);
+            await onAttributes?.(attributes);
+          } catch {
+            result = { type: 'done', ok: false, error: { code: 'INVALID_ATTRIBUTES', message: 'Policy supplied invalid logging attributes.' } };
+            stop(); break;
+          }
+          continue;
+        }
         if (item.type === 'call') {
           if (++calls > 200) { stop(); break; }
           let output;
@@ -81,7 +92,7 @@ export async function ensurePolicy() {
   return { source, version: versionOf(source) };
 }
 
-export async function evaluatePolicy(context, { store, configLoader = loadConfig, signal, model, replay = false, handler = 'handle', savedCeiling } = {}) {
+export async function evaluatePolicy(context, { store, configLoader = loadConfig, signal, model, replay = false, handler = 'handle', savedCeiling, onAttributes, onModelResult } = {}) {
   const runId = randomUUID(), plan = blankPlan();
   const cancellation = new AbortController();
   let cancelWatch;
@@ -99,8 +110,19 @@ export async function evaluatePolicy(context, { store, configLoader = loadConfig
   const config = await configLoader();
   const timeoutMs = Math.min(300000, Math.max(1000, config.agent?.policyTimeoutMs || 90000));
   const policySignal = AbortSignal.any([cancellation.signal, ...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
+    let attributes = {};
     const result = await policySubprocess({ path: snapshot, context, handler, signal: policySignal, timeoutMs,
-      dispatch: (name, args) => { if (!Object.hasOwn(api, name) || !Array.isArray(args)) throw new AgentRuntimeError('INVALID_ACTION', 'Unknown policy action.'); return api[name](...args); } });
+      onAttributes: next => {
+        attributes = mergePolicyAttributes(attributes, next);
+        store.record(runId, 'policy_attributes', { attributes });
+        return Promise.resolve(onAttributes?.(attributes)).catch(() => {});
+      },
+      dispatch: async (name, args) => {
+        if (!Object.hasOwn(api, name) || !Array.isArray(args)) throw new AgentRuntimeError('INVALID_ACTION', 'Unknown policy action.');
+        const result = await api[name](...args);
+        if (name === 'llm') { try { await onModelResult?.({ ok: result.ok, runId: result.runId, error: result.error }); } catch {} }
+        return result;
+      } });
     if (!result.ok || policySignal.aborted) {
       const failed = cancellation.signal.aborted ? { ok: false, error: { code: 'CANCELLED', message: 'Run cancelled; uncommitted proposals and history discarded.' } } :
         policySignal.aborted && !signal?.aborted ? { ok: false, error: { code: 'POLICY_TIMEOUT', message: 'Policy exceeded its bounded execution window.' } } : result.ok ? failure(null, { aborted: true }) : result;

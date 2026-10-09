@@ -4,6 +4,9 @@ import type {
 } from '../../automation/policy-api.d.ts';
 
 export async function handle(ctx: PolicyContext, actions: PolicyActions) {
+  ctx.log.setAttributes({ stage: 'triage', urgent: ctx.isDM, score: 0.75, note: null });
+  // @ts-expect-error Nested attribute objects are not scalar values.
+  ctx.log.setAttributes({ unsupported: { nested: true } });
   if (ctx.isDM || ctx.mentionsMe) {
     const result = await actions.alert({ title: 'Incoming message', body: ctx.message.text });
     if (!result.ok) return result.error.code;

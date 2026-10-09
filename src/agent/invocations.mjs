@@ -14,6 +14,10 @@ export function messageInvocations(store, messageId, current) {
   const runs = store.messageRuns(messageId).map(({ policy, models }) => {
     const first = last(policy, 'policy_input'), input = object(first);
     const done = last(policy, 'policy_result'), failed = last(policy, 'policy_failed');
+    const attributeUpdates = policy.filter(row => row.kind === 'policy_attributes').map(row => ({
+      seq: row.seq, at: row.at, attributes: object(row)?.attributes ?? null,
+    }));
+    const attributes = attributeUpdates.findLast(row => row.attributes)?.attributes ?? {};
     const grouped = new Map();
     for (const row of models) {
       if (!grouped.has(row.runId)) grouped.set(row.runId, []);
@@ -21,7 +25,7 @@ export function messageInvocations(store, messageId, current) {
     }
     const active = current?.runId === first?.runId;
     return {
-      runId: first?.runId, startedAt: first?.at, replay: !!input?.replay,
+      runId: first?.runId, startedAt: first?.at, completedAt: done?.at ?? failed?.at ?? null, replay: !!input?.replay,
       status: done ? 'completed' : failed ? 'failed' : active ? 'running' : 'incomplete',
       context: bound(input?.context), source: bound(input?.source),
       decision: bound(object(done)?.value), error: bound(object(failed)?.error),
@@ -38,9 +42,12 @@ export function messageInvocations(store, messageId, current) {
           history: bound(result?.history), output: bound(result?.output), error: bound(result?.error ?? object(terminal)?.error),
           events: rows.filter(row => !['agent_input', 'agent_result'].includes(row.kind)).slice(-100).map(row => ({
             seq: row.seq, at: row.at, kind: object(row) ? row.kind : 'invalid_log', value: bound(object(row) ?? { error: 'Invalid log format' }),
+            attributes: attributeUpdates.filter(update => update.seq <= row.seq).findLast(update => update.attributes)?.attributes ?? {},
           })),
         };
       }).sort((a, b) => a.startedAt - b.startedAt),
+      attributes: bound(attributes),
+      attributeUpdates: bound(attributeUpdates),
     };
   });
   return { messageId, runs };

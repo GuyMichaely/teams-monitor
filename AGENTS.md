@@ -4,6 +4,18 @@ Read this before touching anything. It captures architecture, operational proced
 
 ## Agentic branch
 
+October 9 event workspace: Events is the default view, with search/date cutoff
+and no event-type filter. Selected events have a unified policy/model/action
+timeline. Actions/scheduling, People & notes, and System logs are separate views;
+all existing sidebar controls remain. `ctx.log.setAttributes` emits bounded
+scalar snapshots retained through policy errors; functions never enter model
+input. Person notes use exact normalized display names, are refreshed per model
+call, and are recorded with invocation input. Group member lists are explicitly
+configured; do not infer membership from observed authors or add unverified
+Teams participant-menu selectors. No automatic roster discovery is shipped.
+Tests: smoke-dashboard-event-response, smoke-agent-person-notes, existing
+dashboard/policy/invocation/intake smokes. Implementation stays on agentic.
+
 October 1 recovery: the live agentic installation is now the permanent, manually
 managed Git worktree `C:/Users/GuyMichaely/projects/teams-monitor-agentic`, not the
 disposable `.codex/worktrees/agentic/teams-monitor` checkout. The original chat's

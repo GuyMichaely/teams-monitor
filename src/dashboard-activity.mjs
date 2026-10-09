@@ -17,6 +17,7 @@ export function buildActivityGroups(items) {
     if (g.chat !== item.chat) g.invalid = true;
     if (Date.parse(item.at) < Date.parse(g.at)) g.at = item.at;
     g.events.push(item);
+    if (item.attributes && typeof item.attributes === 'object' && !Array.isArray(item.attributes)) g.attributes = { ...item.attributes };
     if (item.stage === 'message') {
       if (item.latest && typeof item.latest.text === 'string' && (item.latest.author == null || typeof item.latest.author === 'string')) g.latest = item.latest;
       else g.invalid = true;
