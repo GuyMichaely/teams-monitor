@@ -81,7 +81,7 @@ serialize its function or pass it into an LLM/provider request.
 | --- | --- | --- |
 | `id` | optional `string \| null` | Teams DOM message ID. Synthetic reaction messages omit it. |
 | `author` | `string` | Author display name; synthetic reactions use `Unknown reactor`. |
-| `text` | `string` | Extracted body text, with reaction badge labels removed. Synthetic reactions contain generated descriptive text. |
+| `text` | `string` | Extracted body text, with actual Teams mentions prefixed by `@` (including `@Everyone`) and reaction badge labels removed. Synthetic reactions contain generated descriptive text. |
 | `time` | `string \| null` | Original message timestamp from Teams, or observation time for a synthetic reaction. Ordinary invalid/pre-activation timestamps are excluded from handling outside explicit echo tests. |
 | `mentions` | `string[]` | Mention display names found in Teams mention nodes, with leading `@` removed. Synthetic reactions use an empty list. |
 | `reactions` | optional `ReactionBadge[]` | Visible badge snapshot. Other authors' snapshots are omitted from automatic message/history context; explicitly inspect them with `readReactions`. |

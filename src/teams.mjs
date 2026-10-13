@@ -261,6 +261,11 @@ export function readOpenChatFromDocument(doc, limit = 15) {
       .filter(Boolean);
     const clone = n.cloneNode(true);
     clone.querySelectorAll('[data-tid="message-author-name"], time, [data-tid="diverse-reaction-summary"]').forEach((el) => el.remove());
+    // Preserve mention semantics in plain-text history without touching Teams' DOM.
+    clone.querySelectorAll('[itemtype="http://schema.skype.com/Mention"]').forEach((el) => {
+      const name = (el.innerText || '').trim().replace(/^@\s*/, '');
+      if (name) el.textContent = '@' + name;
+    });
     const text = (clone.innerText || '').trim();
     return { id, author, time, text, mentions, reactions };
   });
@@ -269,7 +274,8 @@ export function readOpenChatFromDocument(doc, limit = 15) {
 /**
  * Read the most recent messages from the currently-open chat.
  * Returns [{ author, time (ISO), text, mentions }]. Mentions contains display
- * names found on Teams' explicit mention nodes; plain body text is not inferred.
+ * names found on Teams' explicit mention nodes; text prefixes those nodes with @.
+ * Plain body text is not inferred as mention metadata.
  */
 export async function readOpenChat(session, limit = 15) {
   const reader = readOpenChatFromDocument.toString();

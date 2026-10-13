@@ -1,5 +1,6 @@
 import "./smoke-env.mjs";
 import assert from "node:assert/strict";
+import { runInNewContext } from 'node:vm';
 import { readOpenChatFromDocument } from "../src/teams.mjs";
 
 class FakeElement {
@@ -13,6 +14,11 @@ class FakeElement {
 
   get innerText() {
     return this.text + this.children.map((child) => child.innerText).join("");
+  }
+
+  set textContent(value) {
+    this.text = value;
+    this.children = [];
   }
 
   getAttribute(name) {
@@ -75,9 +81,25 @@ assert.equal(latest.length, 1);
 assert.deepEqual(latest[0].mentions, ["Guy Michaely"]);
 assert.equal(latest[0].author, "Sender");
 assert.equal(latest[0].time, "2026-09-24T12:00:00Z");
-assert.equal(latest[0].text, "Hello Guy Michaely!");
+assert.equal(latest[0].text, "Hello @Guy Michaely!");
+assert.equal(semanticMention.innerText, 'Guy Michaely', 'Live Teams DOM must remain unchanged');
+assert.equal(readOpenChatFromDocument(doc, 2)[0].text, 'A plain @Guy and Guy text.');
 assert.deepEqual(readOpenChatFromDocument(doc, 2)[0].mentions, []);
 assert.deepEqual(readOpenChatFromDocument(doc, 0), []);
+
+const mention = (text, children = []) => new FakeElement('span', { itemtype: 'http://schema.skype.com/Mention' }, text, children);
+const group = message({ body: [
+  new FakeElement('span', {}, 'Everyone: '), mention('Everyone'),
+  new FakeElement('span', {}, ', '), mention('@Alex'),
+  new FakeElement('span', {}, ' / '), mention('', [new FakeElement('b', {}, 'Sam')]),
+  new FakeElement('span', {}, ' / '), mention(' @ Pat '), mention(''),
+] });
+const groupDoc = { querySelectorAll: () => [group] };
+const groupResult = readOpenChatFromDocument(groupDoc)[0];
+assert.equal(groupResult.text, 'Everyone: @Everyone, @Alex / @Sam / @Pat');
+assert.deepEqual(groupResult.mentions, ['Everyone', 'Alex', 'Sam', 'Pat']);
+assert.equal(readOpenChatFromDocument(groupDoc)[0].text, groupResult.text, 'Repeated extraction must not add extra prefixes');
+assert.equal(runInNewContext(`(${readOpenChatFromDocument.toString()})(document)[0].text`, { document: groupDoc }), groupResult.text, 'Serialized CDP reader retains formatting');
 
 const reacted = message({ body: [new FakeElement('p', {}, 'Actual message')] });
 reacted.attrs.set('data-mid', '123');

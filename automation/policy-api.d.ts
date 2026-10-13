@@ -24,6 +24,7 @@ export interface TeamsMessage {
   /** Teams DOM ID; distinct from ctx.messageId, TM's recorded-message ID. */
   id?: string | null;
   author: string;
+  /** Body text; actual Teams mention nodes have an @ prefix (including @Everyone). */
   text: string;
   time: string | null;
   mentions: string[];
